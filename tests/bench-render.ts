@@ -55,6 +55,9 @@ const hud: HudState = {
   capacity: VACUUM.capacity,
   selected: 'Реголит',
   credits: 0,
+  ghost: null,
+  machines: [],
+  machineSummary: '',
 };
 
 /** Средняя стоимость кадра в миллисекундах для заданного положения камеры. */

@@ -35,10 +35,20 @@ import type { Occupant } from '../src/world/simulation';
 import { Digger } from '../src/world/digging';
 import { Vacuum } from '../src/world/vacuum';
 import { reactAround, REACTIONS } from '../src/world/reactions';
+import { Builder } from '../src/world/builder';
 import { DebugPainter } from '../src/world/painter';
 import { Player } from '../src/entities/player';
 import { Inventory } from '../src/entities/inventory';
 import { LandingModule } from '../src/entities/landing-module';
+import { BuildingRegistry } from '../src/entities/buildings';
+import {
+  SEPARATOR_KIND,
+  Separator,
+  OUTLET_ROW,
+  OUTLET_FROM,
+  OUTLET_TO,
+  machineSummary,
+} from '../src/entities/separator';
 import {
   PLAYER,
   FIXED_DT,
@@ -49,6 +59,8 @@ import {
   DIG,
   VACUUM,
   MODULE,
+  SEPARATOR,
+  BUILD_AIM_DISTANCE,
   BACKDROP,
   CAMERA,
   AUDIO,
@@ -80,6 +92,7 @@ import {
   actionTarget,
   AimSourceTracker,
   ToolModeState,
+  ToolMode,
 } from '../src/core/input';
 
 let failures = 0;
@@ -115,6 +128,9 @@ const IDLE_HUD: HudState = {
   capacity: VACUUM.capacity,
   selected: MATERIALS[PORTABLE_MATERIALS[0]!]!.name,
   credits: 0,
+  ghost: null,
+  machines: [],
+  machineSummary: '',
 };
 
 // --- Генерация мира ---
@@ -2315,8 +2331,9 @@ check('Стена 8 ячеек останавливает', !runIntoWall(8));
   {
     const portable = MATERIALS.filter((m) => m.portable).map((m) => m.id);
     check(
-      'Переносимы ровно рыхлый реголит и пульпа',
-      portable.length === 2 && portable.includes(MAT.REGOLITH_LOOSE) && portable.includes(MAT.PULP),
+      'Переносимы ровно реголит, пульпа, иридий и шлак',
+      portable.length === 4 &&
+        [MAT.REGOLITH_LOOSE, MAT.PULP, MAT.IRIDIUM, MAT.SLAG].every((id) => portable.includes(id)),
       `переносимых ${portable.length}: ${portable.map((id) => MATERIALS[id]!.name).join(', ')}`,
     );
     check(
@@ -2330,8 +2347,11 @@ check('Стена 8 ячеек останавливает', !runIntoWall(8));
 
     const indestructible = MATERIALS.filter((m) => !m.diggable).map((m) => m.id);
     check(
-      'Неразрушимое вещество ровно одно — корпус модуля',
-      indestructible.length === 1 && indestructible[0] === MAT.MODULE_HULL,
+      'Неразрушимых веществ два — корпуса модуля и сепаратора, и цвета их различны',
+      indestructible.length === 2 &&
+        indestructible.includes(MAT.MODULE_HULL) &&
+        indestructible.includes(MAT.SEPARATOR_HULL) &&
+        MATERIALS[MAT.MODULE_HULL]!.color !== MATERIALS[MAT.SEPARATOR_HULL]!.color,
       `неразрушимых ${indestructible.length}`,
     );
     // Копание читает развёрнутый массив, а не таблицу. Разъезд между ними
@@ -3170,6 +3190,9 @@ check('Стена 8 ячеек останавливает', !runIntoWall(8));
       capacity: VACUUM.capacity,
       selected: 'Пульпа',
       credits: 1234,
+      ghost: null,
+      machines: [],
+      machineSummary: '',
     };
     renderer.render(camera, new Player(spawn.x, spawn.y), 160, 90, true, hud, 0);
 
@@ -3186,6 +3209,1009 @@ check('Стена 8 ячеек останавливает', !runIntoWall(8));
     check(
       'Диагностики при этом в кадре нет: строка состояния от неё не зависит',
       !text.includes('FPS'),
+    );
+  }
+}
+
+// --- Здания и сепаратор ---
+{
+  /** Мир с полом в две нижние строки: под зданием обязана быть опора. */
+  function ground(width = 96, height = 96): World {
+    const w = new World(width, height, first.world.profile);
+    for (let y = height - 2; y < height; y++) {
+      for (let x = 0; x < width; x++) w.set(x, y, MAT.ROCK);
+    }
+    return w;
+  }
+  function count(w: World, material: number): number {
+    let n = 0;
+    for (const c of w.cells) if (c === material) n++;
+    return n;
+  }
+  function settle(w: World, limit: number): number {
+    const sim = new Simulation();
+    for (let i = 0; i < limit; i++) {
+      sim.update(w, null);
+      if (sim.lastCellsVisited === 0) return i + 1;
+    }
+    return -1;
+  }
+  /** Верхний левый угол здания, стоящего на полу мира высотой 96. */
+  const BX = 40;
+  const BY = 96 - 2 - SEPARATOR.height;
+
+  function scene(credits: number = SEPARATOR.cost): {
+    world: World;
+    module: LandingModule;
+    registry: BuildingRegistry;
+  } {
+    const w = ground();
+    const module = new LandingModule({ x: 2, y: 2, w: 4, h: 4 });
+    module.credits = credits;
+    return { world: w, module, registry: new BuildingRegistry() };
+  }
+
+  /** Ставит сепаратор в известную точку и отдаёт его. */
+  function build(
+    w: World,
+    registry: BuildingRegistry,
+    module: LandingModule,
+    x = BX,
+    y = BY,
+  ): 'placed' | 'demolished' | 'rejected' {
+    const cx = x + (SEPARATOR_KIND.width >> 1);
+    const cy = y + (SEPARATOR_KIND.height >> 1);
+    return Builder.apply(w, registry, module, SEPARATOR_KIND, cx, cy, cx, cy, null);
+  }
+
+  /** Насыпает пульпу на приёмную грань. */
+  function feed(w: World, cells: number, x = BX, y = BY): number {
+    let placed = 0;
+    for (let dx = 0; dx < SEPARATOR.width && placed < cells; dx++) {
+      if (w.get(x + dx, y - 1) !== MAT.VACUUM) continue;
+      w.set(x + dx, y - 1, MAT.PULP);
+      placed++;
+    }
+    return placed;
+  }
+
+  // --- Материалы ---
+
+  {
+    const densities = MATERIALS.filter((m) => m.id !== MAT.VACUUM);
+    const heaviest = densities.reduce((a, b) => (b.density > a.density ? b : a));
+    check(
+      'Иридий — самое плотное вещество мира',
+      heaviest.id === MAT.IRIDIUM &&
+        densities.every((m) => m.id === MAT.IRIDIUM || m.density < MAT_DENSITY[MAT.IRIDIUM]!),
+      `иридий ${MAT_DENSITY[MAT.IRIDIUM]}, следом ${heaviest.id === MAT.IRIDIUM ? '' : heaviest.name}` +
+        ` порода ${MAT_DENSITY[MAT.ROCK]}`,
+    );
+
+    const powders = MATERIALS.filter((m) => m.state === MatterState.Powder);
+    const lightest = powders.reduce((a, b) => (b.density < a.density ? b : a));
+    check(
+      'Шлак — самое лёгкое из сыпучих',
+      lightest.id === MAT.SLAG,
+      `сыпучих ${powders.length}, легчайший ${lightest.name} (${lightest.density})`,
+    );
+
+    check(
+      'Ставка растёт от реголита к пульпе и от пульпы к иридию, у шлака ноль',
+      MAT_CREDITS[MAT.REGOLITH_LOOSE]! < MAT_CREDITS[MAT.PULP]! &&
+        MAT_CREDITS[MAT.PULP]! < MAT_CREDITS[MAT.IRIDIUM]! &&
+        MAT_CREDITS[MAT.SLAG] === 0,
+      `${MAT_CREDITS[MAT.REGOLITH_LOOSE]} → ${MAT_CREDITS[MAT.PULP]} → ${MAT_CREDITS[MAT.IRIDIUM]}, шлак ${MAT_CREDITS[MAT.SLAG]}`,
+    );
+
+    const visible = [
+      MAT.REGOLITH_PACKED,
+      MAT.REGOLITH_LOOSE,
+      MAT.PULP,
+      MAT.IRIDIUM,
+      MAT.SLAG,
+      MAT.ICE,
+      MAT.WATER,
+      MAT.LAVA,
+      MAT.STEAM,
+      MAT.MODULE_HULL,
+      MAT.SEPARATOR_HULL,
+    ];
+    let clashes = '';
+    for (let i = 0; i < visible.length; i++) {
+      for (let j = i + 1; j < visible.length; j++) {
+        const a = MATERIALS[visible[i]!]!;
+        const b = MATERIALS[visible[j]!]!;
+        if (a.color === b.color) clashes += `${a.name}=${b.name} `;
+      }
+    }
+    check('Цвета одиннадцати веществ попарно различны', clashes === '', clashes);
+  }
+
+  // --- Постановка ---
+
+  {
+    const { world: w, module, registry } = scene(1000);
+    const before = module.credits;
+    const result = build(w, registry, module);
+
+    // Корпус лёг РОВНО по маске вида: ни ячейкой больше, ни меньше.
+    let wrong = 0;
+    for (let dy = 0; dy < SEPARATOR.height; dy++) {
+      for (let dx = 0; dx < SEPARATOR.width; dx++) {
+        const expected =
+          SEPARATOR_KIND.shape[dy * SEPARATOR.width + dx] === 1 ? MAT.SEPARATOR_HULL : MAT.VACUUM;
+        if (w.get(BX + dx, BY + dy) !== expected) wrong++;
+      }
+    }
+    check(
+      'Годное место принимает здание, корпус лёг ровно по своей форме',
+      result === 'placed' && registry.count === 1 && wrong === 0,
+      `результат ${result}, расхождений ${wrong}`,
+    );
+    check(
+      'Постановка списала стоимость ровно один раз',
+      module.credits === before - SEPARATOR.cost,
+      `${before} → ${module.credits} при стоимости ${SEPARATOR.cost}`,
+    );
+
+    // По корпусу можно ходить.
+    check('Корпус сепаратора твёрдый', w.isSolid(BX, BY) && MAT_SOLID[MAT.SEPARATOR_HULL] === 1);
+  }
+
+  // Все четыре отказа: ни мир, ни счёт не меняются.
+  {
+    const cases: Array<[string, () => { ok: boolean; detail: string }]> = [
+      [
+        'занятое место',
+        () => {
+          const { world: w, module, registry } = scene(1000);
+          w.set(BX + 5, BY + 5, MAT.ROCK);
+          const before = w.cells.slice();
+          const credits = module.credits;
+          const r = build(w, registry, module);
+          let changed = 0;
+          for (let i = 0; i < before.length; i++) if (before[i] !== w.cells[i]) changed++;
+          return {
+            ok: r === 'rejected' && changed === 0 && module.credits === credits,
+            detail: `${r}, изменено ${changed}, счёт ${credits} → ${module.credits}`,
+          };
+        },
+      ],
+      [
+        'нет опоры',
+        () => {
+          const { world: w, module, registry } = scene(1000);
+          const before = w.cells.slice();
+          const credits = module.credits;
+          // Высоко над полом: под областью нет ни одной твёрдой ячейки.
+          const r = build(w, registry, module, BX, 20);
+          let changed = 0;
+          for (let i = 0; i < before.length; i++) if (before[i] !== w.cells[i]) changed++;
+          return {
+            ok: r === 'rejected' && changed === 0 && module.credits === credits,
+            detail: `${r}, изменено ${changed}`,
+          };
+        },
+      ],
+      [
+        'пересечение с персонажем',
+        () => {
+          const { world: w, module, registry } = scene(1000);
+          const before = w.cells.slice();
+          const credits = module.credits;
+          const cx = BX + (SEPARATOR.width >> 1);
+          const cy = BY + (SEPARATOR.height >> 1);
+          const occupant: Occupant = {
+            x: BX + 4,
+            y: BY + 4,
+            w: PLAYER.hitboxW,
+            h: PLAYER.hitboxH,
+          };
+          const r = Builder.apply(w, registry, module, SEPARATOR_KIND, cx, cy, cx, cy, occupant);
+          let changed = 0;
+          for (let i = 0; i < before.length; i++) if (before[i] !== w.cells[i]) changed++;
+          return {
+            ok: r === 'rejected' && changed === 0 && module.credits === credits,
+            detail: `${r}, изменено ${changed}`,
+          };
+        },
+      ],
+      [
+        'не хватает кредитов',
+        () => {
+          const { world: w, module, registry } = scene(SEPARATOR.cost - 1);
+          const before = w.cells.slice();
+          const r = build(w, registry, module);
+          let changed = 0;
+          for (let i = 0; i < before.length; i++) if (before[i] !== w.cells[i]) changed++;
+          return {
+            ok: r === 'rejected' && changed === 0 && module.credits === SEPARATOR.cost - 1,
+            detail: `${r}, изменено ${changed}, счёт ${module.credits}`,
+          };
+        },
+      ],
+    ];
+    for (const [name, run] of cases) {
+      const { ok, detail } = run();
+      check(`Отказ «${name}» не меняет ни мир, ни счёт`, ok, detail);
+    }
+  }
+
+  // Недостижимое место не меняет мир.
+  {
+    const { world: w, module, registry } = scene(1000);
+    const before = w.cells.slice();
+    const cx = BX + (SEPARATOR.width >> 1);
+    const cy = BY + (SEPARATOR.height >> 1);
+    const r = Builder.apply(
+      w,
+      registry,
+      module,
+      SEPARATOR_KIND,
+      cx + DIG.reach + 20,
+      cy,
+      cx,
+      cy,
+      null,
+    );
+    let changed = 0;
+    for (let i = 0; i < before.length; i++) if (before[i] !== w.cells[i]) changed++;
+    check('Постройка за пределом дальности не меняет мир', r === 'rejected' && changed === 0);
+  }
+
+  // --- Снос ---
+
+  {
+    const { world: w, module, registry } = scene(1000);
+    build(w, registry, module);
+    const afterBuild = module.credits;
+    const separator = registry.all[0] as Separator;
+
+    // Внутри что-то лежит: снос обязан вернуть это в мир.
+    feed(w, 3);
+    separator.update(w, FIXED_DT);
+    const stored = separator.stored;
+
+    const cx = BX + (SEPARATOR.width >> 1);
+    const cy = BY + (SEPARATOR.height >> 1);
+    const r = Builder.apply(w, registry, module, SEPARATOR_KIND, cx, cy, cx, cy, null);
+
+    check(
+      'Применение по стоящему зданию сносит его, а не ставит второе поверх',
+      r === 'demolished' && registry.count === 0,
+      `результат ${r}, зданий ${registry.count}`,
+    );
+    check(
+      'Снос вернул стоимость полностью',
+      module.credits === afterBuild + SEPARATOR.cost,
+      `${afterBuild} → ${module.credits}`,
+    );
+    check(
+      'Корпус снесённого здания стал пустотой, а не породой',
+      count(w, MAT.SEPARATOR_HULL) === 0,
+      `корпуса осталось ${count(w, MAT.SEPARATOR_HULL)}`,
+    );
+    check(
+      'Накопленное вернулось в мир и не пропало',
+      stored === 3 && count(w, MAT.PULP) === 3,
+      `было в машине ${stored}, в мире ${count(w, MAT.PULP)}`,
+    );
+  }
+
+  // --- Корпус не трогается инструментами ---
+
+  {
+    const { world: w, module, registry } = scene(1000);
+    build(w, registry, module);
+    const hullBefore = count(w, MAT.SEPARATOR_HULL);
+
+    const excavated = Digger.applyBrush(w, BX, BY);
+    const inv = new Inventory();
+    const collected = Vacuum.collect(w, inv, BX, BY);
+
+    check(
+      'Корпус сепаратора не копается и не собирается',
+      excavated === 0 &&
+        collected === 0 &&
+        inv.used === 0 &&
+        count(w, MAT.SEPARATOR_HULL) === hullBefore,
+      `выемка ${excavated}, собрано ${collected}, корпуса ${hullBefore} → ${count(w, MAT.SEPARATOR_HULL)}`,
+    );
+
+    // И не вытесняется даже самым плотным веществом мира.
+    w.set(BX, BY - 1, MAT.IRIDIUM);
+    settle(w, 500);
+    check(
+      'Корпус не вытесняется даже иридием',
+      count(w, MAT.SEPARATOR_HULL) === hullBefore && w.get(BX, BY) === MAT.SEPARATOR_HULL,
+    );
+  }
+
+  // --- Приёмная грань ---
+
+  {
+    const { world: w, module, registry } = scene(1000);
+    build(w, registry, module);
+    const separator = registry.all[0] as Separator;
+
+    const fed = feed(w, 4);
+    separator.update(w, FIXED_DT);
+    check(
+      'Пульпа с приёмной грани уходит в накопитель, а из мира исчезает',
+      fed === 4 && separator.stored === 4 && count(w, MAT.PULP) === 0,
+      `насыпано ${fed}, в накопителе ${separator.stored}, в мире ${count(w, MAT.PULP)}`,
+    );
+
+    // Посторонний материал не поглощается и забивает вход.
+    for (let dx = 0; dx < SEPARATOR.width; dx++) w.set(BX + dx, BY - 1, MAT.REGOLITH_LOOSE);
+    const storedBefore = separator.stored;
+    separator.update(w, FIXED_DT);
+    check(
+      'Реголит на приёмной грани остаётся и забивает вход',
+      separator.stored === storedBefore && count(w, MAT.REGOLITH_LOOSE) === SEPARATOR.width,
+      `накопитель ${storedBefore} → ${separator.stored}, реголита ${count(w, MAT.REGOLITH_LOOSE)}`,
+    );
+  }
+
+  // --- Порция ---
+
+  {
+    const { world: w, module, registry } = scene(1000);
+    build(w, registry, module);
+    const separator = registry.all[0] as Separator;
+
+    // Неполный накопитель ждёт сколько угодно шагов.
+    feed(w, SEPARATOR.batch - 1);
+    for (let i = 0; i < 600; i++) separator.update(w, FIXED_DT);
+    check(
+      'Неполная порция не выдаётся, сколько бы шагов ни прошло',
+      count(w, MAT.IRIDIUM) === 0 && count(w, MAT.SLAG) === 0 && separator.state === 'idle',
+      `иридия ${count(w, MAT.IRIDIUM)}, шлака ${count(w, MAT.SLAG)}, состояние ${separator.state}`,
+    );
+
+    // Полная — ждёт задержку, а не выдаётся тем же шагом.
+    feed(w, 1);
+    separator.update(w, FIXED_DT);
+    const sameStep = count(w, MAT.IRIDIUM) + count(w, MAT.SLAG);
+    let steps = 0;
+    while (count(w, MAT.IRIDIUM) === 0 && steps < 600) {
+      separator.update(w, FIXED_DT);
+      steps++;
+    }
+    const expected = Math.round(SEPARATOR.delaySec / FIXED_DT);
+    check(
+      'Порция выдаётся не в том же шаге, а по истечении задержки',
+      sameStep === 0 && Math.abs(steps + 1 - expected) <= 1,
+      `в тот же шаг ${sameStep}, шагов до выдачи ${steps + 1} при ожидаемых ${expected}`,
+    );
+    check(
+      'Порция даёт ровно одну ячейку иридия и N−1 ячеек шлака',
+      count(w, MAT.IRIDIUM) === 1 && count(w, MAT.SLAG) === SEPARATOR.batch - 1,
+      `иридий ${count(w, MAT.IRIDIUM)}, шлак ${count(w, MAT.SLAG)}`,
+    );
+
+    // Продукт вышел из выпускного окна, а не сквозь корпус.
+    let outsideWindow = 0;
+    for (let y = 0; y < w.height; y++) {
+      for (let x = 0; x < w.width; x++) {
+        const m = w.get(x, y);
+        if (m !== MAT.IRIDIUM && m !== MAT.SLAG) continue;
+        const dx = x - BX;
+        const dy = y - BY;
+        if (dy !== OUTLET_ROW || dx < OUTLET_FROM || dx >= OUTLET_TO) outsideWindow++;
+      }
+    }
+    check(
+      'Продукт появился только в выпускном окне',
+      outsideWindow === 0,
+      `вне окна ${outsideWindow}`,
+    );
+  }
+
+  // Темп машины задан игровым временем, а не числом кадров: на 144 Гц за те же
+  // три секунды выходит столько же порций, сколько на 60.
+  {
+    function batchesIn(seconds: number, dt: number): number {
+      const { world: w, module, registry } = scene(1000);
+      build(w, registry, module);
+      const separator = registry.all[0] as Separator;
+      const steps = Math.round(seconds / dt);
+      let emitted = 0;
+      for (let i = 0; i < steps; i++) {
+        feed(w, SEPARATOR.batch);
+        separator.update(w, dt);
+        // Убираем выданное, чтобы выход не забился и замер мерил темп,
+        // а не длину просвета под окном.
+        for (let y = BY; y < 96; y++) {
+          for (let x = BX; x < BX + SEPARATOR.width; x++) {
+            const m = w.get(x, y);
+            if (m === MAT.IRIDIUM) {
+              emitted++;
+              w.set(x, y, MAT.VACUUM);
+            } else if (m === MAT.SLAG) {
+              w.set(x, y, MAT.VACUUM);
+            }
+          }
+        }
+      }
+      return emitted;
+    }
+    const at60 = batchesIn(8, 1 / 60);
+    const at144 = batchesIn(8, 1 / 144);
+    check(
+      'Темп машины не зависит от частоты кадров',
+      at60 === at144 && at60 > 0,
+      `на 60 Гц ${at60} порций за 8 с, на 144 Гц ${at144}`,
+    );
+  }
+
+  // Машина работает сама: ни в одном её вызове персонаж не участвует, и здесь
+  // это проверяется явно — во всей сцене его просто нет.
+  {
+    const { world: w, module, registry } = scene(1000);
+    build(w, registry, module);
+    const separator = registry.all[0] as Separator;
+    const sim = new Simulation();
+    feed(w, SEPARATOR.batch);
+    for (let i = 0; i < 200; i++) {
+      sim.update(w, null);
+      registry.update(w, FIXED_DT);
+    }
+    check(
+      'Машина принимает и выдаёт без игрока рядом',
+      count(w, MAT.IRIDIUM) === 1 && separator.stored === 0,
+      `иридия ${count(w, MAT.IRIDIUM)}, в накопителе ${separator.stored}`,
+    );
+  }
+
+  // Сохранение вещества на многих порциях.
+  {
+    const { world: w, module, registry } = scene(1000);
+    build(w, registry, module);
+    const separator = registry.all[0] as Separator;
+    const sim = new Simulation();
+
+    const batches = 6;
+    let absorbed = 0;
+    for (let i = 0; i < 4000; i++) {
+      if (absorbed < SEPARATOR.batch * batches)
+        absorbed += feed(w, SEPARATOR.batch * batches - absorbed);
+      sim.update(w, null);
+      separator.update(w, FIXED_DT);
+    }
+    settle(w, 2000);
+    const out = count(w, MAT.IRIDIUM) + count(w, MAT.SLAG);
+    const inside = separator.drain().length;
+    check(
+      'Сумма выданного и оставшегося внутри равна сумме поглощённого',
+      out + inside + count(w, MAT.PULP) === absorbed,
+      `поглощено ${absorbed}, выдано ${out}, внутри ${inside}, на грани ${count(w, MAT.PULP)}`,
+    );
+    check(
+      'Иридия ровно по одной ячейке на выданную порцию',
+      count(w, MAT.IRIDIUM) === count(w, MAT.SLAG) / (SEPARATOR.batch - 1),
+      `иридий ${count(w, MAT.IRIDIUM)}, шлак ${count(w, MAT.SLAG)}`,
+    );
+  }
+
+  // --- Забитый выход ---
+
+  {
+    const { world: w, module, registry } = scene(1000);
+    build(w, registry, module);
+    const separator = registry.all[0] as Separator;
+
+    // Забиваем окно доверху породой: выйти порции некуда.
+    for (let dy = OUTLET_ROW; dy < SEPARATOR.height; dy++) {
+      for (let dx = OUTLET_FROM; dx < OUTLET_TO; dx++) w.set(BX + dx, BY + dy, MAT.ROCK);
+    }
+
+    feed(w, SEPARATOR.batch);
+    for (let i = 0; i < 400; i++) separator.update(w, FIXED_DT);
+    check(
+      'Забитый выход останавливает машину, и порция не пропадает',
+      separator.state === 'blocked' &&
+        count(w, MAT.IRIDIUM) === 0 &&
+        count(w, MAT.SLAG) === 0 &&
+        separator.drain().length === SEPARATOR.batch,
+      `состояние ${separator.state}, внутри ${separator.drain().length}`,
+    );
+
+    // Накопитель принимает до предела и дальше не растёт.
+    const limit = SEPARATOR.batch * SEPARATOR.bufferBatches;
+    let leftOnFace = 0;
+    for (let round = 0; round < 20; round++) {
+      feed(w, SEPARATOR.width);
+      separator.update(w, FIXED_DT);
+    }
+    leftOnFace = count(w, MAT.PULP);
+    check(
+      'Переполненный накопитель перестаёт принимать, пульпа остаётся на грани',
+      separator.stored === limit && leftOnFace > 0,
+      `накопитель ${separator.stored} при пределе ${limit}, на грани ${leftOnFace}`,
+    );
+
+    // Освобождение выхода возобновляет работу с того же состояния.
+    for (let dy = OUTLET_ROW; dy < SEPARATOR.height; dy++) {
+      for (let dx = OUTLET_FROM; dx < OUTLET_TO; dx++) w.set(BX + dx, BY + dy, MAT.VACUUM);
+    }
+    separator.update(w, FIXED_DT);
+    check(
+      'Освобождение выхода выдаёт задержанную порцию',
+      count(w, MAT.IRIDIUM) === 1 && count(w, MAT.SLAG) === SEPARATOR.batch - 1,
+      `иридий ${count(w, MAT.IRIDIUM)}, шлак ${count(w, MAT.SLAG)}`,
+    );
+  }
+
+  // --- Расслоение продуктов ---
+
+  {
+    const w = ground();
+    // Перемешанная куча: иридий сверху, шлак снизу — заведомо «неправильно».
+    for (let x = 40; x < 56; x++) {
+      for (let y = 80; y < 86; y++) w.set(x, y, y < 83 ? MAT.IRIDIUM : MAT.SLAG);
+    }
+    const iridium = count(w, MAT.IRIDIUM);
+    const slag = count(w, MAT.SLAG);
+    settle(w, 4000);
+
+    let sumIridiumY = 0;
+    let sumSlagY = 0;
+    for (let y = 0; y < w.height; y++) {
+      for (let x = 0; x < w.width; x++) {
+        if (w.get(x, y) === MAT.IRIDIUM) sumIridiumY += y;
+        if (w.get(x, y) === MAT.SLAG) sumSlagY += y;
+      }
+    }
+    check(
+      'Иридий тонет в шлаке: перемешанная куча расслаивается',
+      sumIridiumY / iridium > sumSlagY / slag &&
+        count(w, MAT.IRIDIUM) === iridium &&
+        count(w, MAT.SLAG) === slag,
+      `центр иридия ${(sumIridiumY / iridium).toFixed(1)}, центр шлака ${(sumSlagY / slag).toFixed(1)}`,
+    );
+  }
+
+  // --- Экономика ---
+
+  {
+    const direct = SEPARATOR.batch * MAT_CREDITS[MAT.PULP]!;
+    const processed = MAT_CREDITS[MAT.IRIDIUM]! + (SEPARATOR.batch - 1) * MAT_CREDITS[MAT.SLAG]!;
+    check(
+      'Переработка порции выгоднее сдачи той же пульпы напрямую',
+      processed > direct,
+      `напрямую ${direct} ₡, через сепаратор ${processed} ₡`,
+    );
+    check(
+      'Здание окупается за обозримое число порций',
+      SEPARATOR.cost / processed <= 10,
+      `${(SEPARATOR.cost / processed).toFixed(1)} порций на окупаемость`,
+    );
+
+    // Приёмник принимает иридий и не принимает шлак.
+    const w = ground();
+    const zone = { x: 40, y: 40, w: 6, h: 4 };
+    const module = new LandingModule(zone);
+    for (let x = zone.x; x < zone.x + 3; x++) w.set(x, zone.y, MAT.IRIDIUM);
+    for (let x = zone.x + 3; x < zone.x + 6; x++) w.set(x, zone.y, MAT.SLAG);
+    const earned = module.update(w);
+    check(
+      'Приёмник принимает иридий по его ставке и не принимает шлак',
+      earned === 3 * MAT_CREDITS[MAT.IRIDIUM]! &&
+        count(w, MAT.IRIDIUM) === 0 &&
+        count(w, MAT.SLAG) === 3,
+      `начислено ${earned}, иридия осталось ${count(w, MAT.IRIDIUM)}, шлака ${count(w, MAT.SLAG)}`,
+    );
+  }
+
+  // Счёт не уходит в минус на длинной последовательности покупок и сносов.
+  {
+    const { world: w, module, registry } = scene(SEPARATOR.cost);
+    let negative = false;
+    let placed = 0;
+    let demolished = 0;
+    for (let i = 0; i < 200; i++) {
+      const r = build(w, registry, module);
+      if (r === 'placed') placed++;
+      if (r === 'demolished') demolished++;
+      if (module.credits < 0) negative = true;
+    }
+    check(
+      'Счёт кредитов ни разу не ушёл в минус на длинной последовательности',
+      !negative && module.credits >= 0 && placed > 0 && demolished > 0,
+      `постановок ${placed}, сносов ${demolished}, счёт ${module.credits}`,
+    );
+
+    // Отдельно: покупка при нехватке отвергается целиком.
+    module.credits = SEPARATOR.cost - 1;
+    while (registry.count > 0) Builder.demolish(w, registry, module, registry.all[0]!);
+    const before = module.credits;
+    module.credits = SEPARATOR.cost - 1;
+    build(w, registry, module);
+    check(
+      'Нехватка средств отвергает покупку целиком',
+      registry.count === 0 && module.credits === SEPARATOR.cost - 1,
+      `зданий ${registry.count}, счёт ${before} → ${module.credits}`,
+    );
+  }
+
+  // --- Стоимость и детерминированность ---
+
+  {
+    const { world: w, module, registry } = scene(1000);
+    build(w, registry, module);
+    const sim = new Simulation();
+    let visited = -1;
+    for (let i = 0; i < 2000; i++) {
+      sim.update(w, null);
+      registry.update(w, FIXED_DT);
+      if (sim.lastCellsVisited === 0) {
+        // Ещё несколько шагов: простаивающая машина не имеет права
+        // разбудить мир обратно.
+        for (let k = 0; k < 20; k++) {
+          sim.update(w, null);
+          registry.update(w, FIXED_DT);
+        }
+        visited = sim.lastCellsVisited;
+        break;
+      }
+    }
+    check(
+      'Мир со стоящим без дела сепаратором обходит ноль ячеек за шаг',
+      visited === 0,
+      visited < 0 ? 'мир не улёгся за 2000 шагов' : `обойдено ${visited}`,
+    );
+  }
+
+  {
+    function run(): Uint8Array {
+      const { world: w, module, registry } = scene(1000);
+      build(w, registry, module);
+      const sim = new Simulation();
+      let fed = 0;
+      for (let i = 0; i < 1200; i++) {
+        if (i % 60 === 0 && fed < 40) fed += feed(w, 5);
+        sim.update(w, null);
+        registry.update(w, FIXED_DT);
+      }
+      return w.cells.slice();
+    }
+    const a = run();
+    const b = run();
+    let diff = 0;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) diff++;
+    check(
+      'Одинаковая последовательность шагов с одинаковым набором зданий даёт идентичные сетки',
+      diff === 0,
+      `расхождений ${diff}`,
+    );
+  }
+
+  // --- Режимы и кадр ---
+
+  {
+    const tool = new ToolModeState();
+    const seen: string[] = [tool.name];
+    for (let i = 0; i < 2; i++) {
+      tool.cycle();
+      seen.push(tool.name);
+    }
+    tool.cycle();
+    check(
+      'Режимов три, перебираются по кругу одной клавишей и возвращаются к первому',
+      seen.length === 3 &&
+        new Set(seen).size === 3 &&
+        tool.name === seen[0] &&
+        tool.mode === ToolMode.Dig,
+      seen.join(' → ') + ' → ' + tool.name,
+    );
+
+    // В режиме строительства инструмент не копает и не собирает.
+    tool.cycle();
+    tool.cycle();
+    check(
+      'Третий режим — строительство',
+      tool.building && !tool.digging && !tool.collecting,
+      tool.name,
+    );
+
+    const w = ground();
+    for (let y = 40; y < 46; y++) for (let x = 40; x < 46; x++) w.set(x, y, MAT.ROCK);
+    const digger = new Digger();
+    const vac = new Vacuum();
+    const inv = new Inventory();
+    const rockBefore = count(w, MAT.ROCK);
+    digger.update(FIXED_DT, w, true && tool.digging, 43, 43, 43, 43);
+    vac.updateSuck(FIXED_DT, w, inv, true && tool.collecting, 43, 43, 43, 43);
+    check(
+      'В режиме строительства не копается и не собирается',
+      count(w, MAT.ROCK) === rockBefore && inv.used === 0,
+      `породы ${rockBefore} → ${count(w, MAT.ROCK)}, инвентарь ${inv.used}`,
+    );
+
+    check(
+      'Сводка по машинам различает работу, простой и забитый выход',
+      (() => {
+        const { world: sw, module, registry } = scene(1000);
+        if (registry.count !== 0) return false;
+        if (machineSummary(registry) !== '') return false;
+        build(sw, registry, module);
+        const s = machineSummary(registry);
+        return s.includes('Сепараторы 1') && s.includes('простой');
+      })(),
+    );
+  }
+
+  // Высыпанная пульпа принимается так же, как упавшая, а шлак из-под машины
+  // убирается тем же пылесосом — это единственный способ разблокировать выход.
+  {
+    const { world: w, module, registry } = scene(1000);
+    build(w, registry, module);
+    const separator = registry.all[0] as Separator;
+
+    const inv = new Inventory();
+    inv.add(MAT.PULP, 10);
+    while (inv.selected !== MAT.PULP) inv.cycleSelected();
+    Vacuum.dump(w, inv, BX + 2, BY - 1);
+    const onFace = (() => {
+      let n = 0;
+      for (let dx = 0; dx < SEPARATOR.width; dx++) if (w.get(BX + dx, BY - 1) === MAT.PULP) n++;
+      return n;
+    })();
+    separator.update(w, FIXED_DT);
+    let leftOnFace = 0;
+    for (let dx = 0; dx < SEPARATOR.width; dx++)
+      if (w.get(BX + dx, BY - 1) === MAT.PULP) leftOnFace++;
+    check(
+      'Высыпанная на приёмную грань пульпа поглощается так же, как упавшая',
+      onFace > 0 && leftOnFace === 0 && separator.drain().length === onFace,
+      `на грань легло ${onFace}, осталось ${leftOnFace}, в машине ${separator.drain().length}`,
+    );
+
+    // Шлак под окном забирается сбором, и выход освобождается.
+    const outletY = BY + OUTLET_ROW;
+    for (let dx = OUTLET_FROM; dx < OUTLET_TO; dx++) w.set(BX + dx, outletY, MAT.SLAG);
+    const bag = new Inventory();
+    const taken = Vacuum.collect(w, bag, BX + (SEPARATOR.width >> 1), outletY);
+    check(
+      'Шлак убирается пылесосом и освобождает выход машины',
+      taken > 0 && bag.count(MAT.SLAG) === taken,
+      `собрано ${taken}`,
+    );
+  }
+
+  // Постройка и снос без единого события мыши.
+  //
+  // Клавиатурная цель постройки обязана быть ДАЛЬШЕ копательной: здание
+  // центрируется на цели, а место негодно, если область накрывает персонажа.
+  // При общей дистанции шесть пересечение возникало в любом направлении,
+  // то есть построить с клавиатуры было нельзя вовсе. Проверяются все восемь.
+  {
+    const { world: w, module, registry } = scene(100000);
+    const tool = new ToolModeState();
+    while (!tool.building) tool.cycle();
+    check('Режим строительства выбирается той же клавишей', tool.building);
+
+    // Персонаж стоит на полу мира: пол ровный, поэтому годность зависит только
+    // от направления прицела.
+    const px = 48;
+    const py = 96 - 2 - Math.ceil(PLAYER.hitboxH / 2);
+    const occupant: Occupant = {
+      x: px - (PLAYER.hitboxW >> 1),
+      y: py - (PLAYER.hitboxH >> 1),
+      w: PLAYER.hitboxW,
+      h: PLAYER.hitboxH,
+    };
+
+    const dirs: Array<[number, number]> = [
+      [1, 0],
+      [-1, 0],
+      [0, 1],
+      [0, -1],
+      [1, 1],
+      [1, -1],
+      [-1, 1],
+      [-1, -1],
+    ];
+    let overlapping = 0;
+    let unreachable = 0;
+    for (const [ax, ay] of dirs) {
+      const dir = aimDirection(ax, ay, 1);
+      const target = aimTarget(px, py, dir.x, dir.y, BUILD_AIM_DISTANCE);
+      const at = Builder.originFor(SEPARATOR_KIND, target.x, target.y);
+      if (Builder.issueAt(w, SEPARATOR_KIND, at.x, at.y, occupant, 100000) === 'player') {
+        overlapping++;
+      }
+      if (!Digger.inReach(px, py, target.x, target.y)) unreachable++;
+    }
+    check(
+      'Клавиатурная цель постройки не накрывает персонажа ни в одном из восьми направлений',
+      overlapping === 0 && unreachable === 0,
+      `пересечений ${overlapping}, недостижимых ${unreachable}`,
+    );
+
+    // Полный круг: поставить и снести, ни разу не тронув мышь.
+    const dir = aimDirection(1, 0, 1);
+    const target = aimTarget(px, py, dir.x, dir.y, BUILD_AIM_DISTANCE);
+    const placedByKeys = Builder.apply(
+      w,
+      registry,
+      module,
+      SEPARATOR_KIND,
+      px,
+      py,
+      target.x,
+      target.y,
+      occupant,
+    );
+    const demolishedByKeys =
+      registry.count > 0 &&
+      Builder.apply(w, registry, module, SEPARATOR_KIND, px, py, target.x, target.y, occupant);
+
+    check(
+      'Постройка и снос проходятся без мыши',
+      placedByKeys === 'placed' && demolishedByKeys === 'demolished' && registry.count === 0,
+      `постановка ${placedByKeys}, снос ${demolishedByKeys}`,
+    );
+  }
+
+  // Контур и постановка обязаны говорить об ОДНОЙ точке.
+  //
+  // У кистей цель выбирает удерживаемый орган управления. Постройке этого
+  // правила мало: контур показывается ДО нажатия, когда удерживаемого органа
+  // нет вовсе, — и цель вставала бы у персонажа, а нажатие ставило бы здание
+  // под курсором. Поэтому цель постройки следует за АКТИВНЫМ ИСТОЧНИКОМ
+  // прицела. Проверяется композиция ровно из тех же вызовов, что в главном цикле.
+  {
+    const aim = new AimSourceTracker();
+    const cursorX = 200;
+    const cursorY = 90;
+    const px = 48;
+    const py = 100;
+    const dir = aimDirection(1, 0, 1);
+
+    const byKeys = actionTarget(
+      aim.source === 'mouse',
+      cursorX,
+      cursorY,
+      px,
+      py,
+      dir.x,
+      dir.y,
+      BUILD_AIM_DISTANCE,
+    );
+    aim.note('mouse', false);
+    const byMouse = actionTarget(
+      aim.source === 'mouse',
+      cursorX,
+      cursorY,
+      px,
+      py,
+      dir.x,
+      dir.y,
+      BUILD_AIM_DISTANCE,
+    );
+
+    check(
+      'Цель постройки следует за источником прицела, а не за удержанием кнопки',
+      byKeys.x === px + BUILD_AIM_DISTANCE && byMouse.x === cursorX && byMouse.y === cursorY,
+      `с клавиатуры (${byKeys.x},${byKeys.y}), мышью (${byMouse.x},${byMouse.y})`,
+    );
+
+    // Прежнее правило дало бы при ненажатой кнопке клавиатурную цель даже
+    // мышиному игроку — то есть контур в одном месте, здание в другом.
+    const oldRule = actionTarget(false, cursorX, cursorY, px, py, dir.x, dir.y, BUILD_AIM_DISTANCE);
+    check(
+      'Прежнее правило «по удержанию» разводило контур и постановку',
+      oldRule.x !== byMouse.x,
+      `по удержанию (${oldRule.x},${oldRule.y}) против курсора (${byMouse.x},${byMouse.y})`,
+    );
+  }
+
+  // Контур будущего здания и состояние машины действительно попадают в кадр.
+  {
+    const pixels = new Uint8ClampedArray(VIEW_W * VIEW_H * 4);
+    const display = {
+      pixels,
+      ctx: {
+        putImageData() {},
+        fillText() {},
+        measureText: (s: string) => ({ width: s.length * 4.8 }),
+        font: '',
+        textBaseline: '',
+        fillStyle: '',
+      },
+      image: {},
+      present() {},
+    } as unknown as Display;
+
+    const renderer = new Renderer(display, first.world, first.surface, WORLD_SEED);
+    const camera = new Camera(first.world.width, first.world.height);
+    camera.snapTo(spawn.x, spawn.y);
+
+    function countPixels(color: number): number {
+      const r = (color >> 16) & 0xff;
+      const g = (color >> 8) & 0xff;
+      const b = color & 0xff;
+      let n = 0;
+      for (let i = 0; i < pixels.length; i += 4) {
+        if (pixels[i] === r && pixels[i + 1] === g && pixels[i + 2] === b) n++;
+      }
+      return n;
+    }
+
+    const rect = { x: camera.x + 40, y: camera.y + 40, w: SEPARATOR.width, h: SEPARATOR.height };
+    const hud = (over: Partial<HudState>): HudState => ({ ...IDLE_HUD, ...over });
+
+    renderer.render(
+      camera,
+      new Player(spawn.x, spawn.y),
+      160,
+      90,
+      true,
+      hud({ ghost: { ...rect, ok: true } }),
+      0,
+    );
+    const okPixels = countPixels(0x8fe08a);
+
+    renderer.render(
+      camera,
+      new Player(spawn.x, spawn.y),
+      160,
+      90,
+      true,
+      hud({ ghost: { ...rect, ok: false } }),
+      0,
+    );
+    const badPixels = countPixels(0xe0603c);
+
+    const perimeter = 2 * SEPARATOR.width + 2 * (SEPARATOR.height - 2);
+    check(
+      'Контур будущего здания рисуется периметром и меняет цвет по годности',
+      okPixels === perimeter && badPixels === perimeter,
+      `годный ${okPixels}, негодный ${badPixels} при периметре ${perimeter}`,
+    );
+
+    // Состояние машины видно НА САМОЙ машине, а не только в строке состояния.
+    const machine = { ...rect, progress: 0.5 } as const;
+    renderer.render(
+      camera,
+      new Player(spawn.x, spawn.y),
+      160,
+      90,
+      true,
+      hud({ machines: [{ ...machine, state: 'working' }] }),
+      0,
+    );
+    const working = countPixels(0x8fe08a);
+    renderer.render(
+      camera,
+      new Player(spawn.x, spawn.y),
+      160,
+      90,
+      true,
+      hud({ machines: [{ ...machine, state: 'blocked' }] }),
+      0,
+    );
+    const blocked = countPixels(0xe0603c);
+    renderer.render(
+      camera,
+      new Player(spawn.x, spawn.y),
+      160,
+      90,
+      true,
+      hud({ machines: [{ ...machine, state: 'idle' }] }),
+      0,
+    );
+    const idle = countPixels(0x2f4a38);
+
+    check(
+      'Работа, простой и забитый выход различаются на самой машине',
+      working === Math.round(SEPARATOR.width * 0.5) &&
+        blocked === SEPARATOR.width &&
+        idle === SEPARATOR.width,
+      `работа ${working}, забит ${blocked}, простой ${idle}`,
     );
   }
 }

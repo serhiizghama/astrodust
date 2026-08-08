@@ -1,17 +1,20 @@
-import { VIEW_W, VIEW_H, CAMERA, WORLD_SEED } from './config';
+import { VIEW_W, VIEW_H, CAMERA, WORLD_SEED, BUILD_AIM_DISTANCE } from './config';
 import { Display } from './core/display';
 import { Input, ToolModeState, aimDirection, actionTarget } from './core/input';
 import { GameLoop } from './core/loop';
 import { Camera } from './render/camera';
 import { Renderer } from './render/renderer';
-import type { HudState } from './render/renderer';
+import type { HudState, GhostView } from './render/renderer';
 import { Player } from './entities/player';
 import { Inventory } from './entities/inventory';
 import { LandingModule } from './entities/landing-module';
+import { BuildingRegistry } from './entities/buildings';
+import { SEPARATOR_KIND, machineSummary } from './entities/separator';
 import { generateLuna } from './world/worlds/luna';
 import { Simulation } from './world/simulation';
 import { Digger } from './world/digging';
 import { Vacuum } from './world/vacuum';
+import { Builder } from './world/builder';
 import { DebugPainter } from './world/painter';
 import { MATERIALS, PORTABLE_MATERIALS } from './world/materials';
 import { Soundscape } from './audio/soundscape';
@@ -38,6 +41,7 @@ const painter = new DebugPainter();
 const tool = new ToolModeState();
 const inventory = new Inventory();
 const landingModule = new LandingModule(receiver);
+const buildings = new BuildingRegistry();
 
 // Звук — читатель, а не участник: он получает счётчики уже отработавшего шага
 // и ничего в мире не трогает. Снапшот сигналов переиспользуется, как и снапшот
@@ -47,6 +51,11 @@ const signals = createSignals();
 
 let showDebug = true;
 let targetInReach = false;
+/**
+ * Контур будущего здания. Считается в шаге, а не в кадре: годность зависит
+ * от хитбокса персонажа и счёта, а те живут по шагам симуляции.
+ */
+let ghost: GhostView | null = null;
 /**
  * Накопленное время симуляции. Орбитальный объект на заднике обязан двигаться
  * по часам, а не по номеру кадра: на 144 Гц он иначе пересекал бы небо вдвое
@@ -146,6 +155,66 @@ function step(dt: number): void {
     aim.y,
   );
 
+  // Строительство — разовое действие на НАЖАТИЕ, а не на удержание: иначе
+  // одно и то же здание ставилось бы и сносилось по тридцать раз в секунду.
+  //
+  // Клавиатурная цель здесь СВОЯ и дальше копательной: здание центрируется
+  // на цели, а место негодно, если область накрывает персонажа. При общей
+  // дистанции шесть любое клавиатурное направление давало пересечение,
+  // то есть построить без мыши было бы нельзя вовсе.
+  const occupant = { x: player.x, y: player.y, w: PLAYER.hitboxW, h: PLAYER.hitboxH };
+  if (tool.building) {
+    // Цель постройки следует за АКТИВНЫМ ИСТОЧНИКОМ прицела, а не за удержанием
+    // кнопки, как у кистей. У кистей правило «решает удерживаемый орган»
+    // защищает от прыжка цели посреди штриха; у постройки штриха нет, зато есть
+    // контур, который показывается ДО нажатия. Пока кнопка не нажата,
+    // «удерживаемого органа» не существует вовсе — и контур вставал бы
+    // у клавиатурной цели, а нажатие ставило бы здание под курсором.
+    // Показывать одно, а делать другое нельзя.
+    const buildAim = actionTarget(
+      input.aimSource === 'mouse',
+      cursorX,
+      cursorY,
+      player.centerX,
+      player.centerY,
+      dir.x,
+      dir.y,
+      BUILD_AIM_DISTANCE,
+    );
+    const at = Builder.originFor(SEPARATOR_KIND, buildAim.x, buildAim.y);
+    const standing = buildings.findAt(buildAim.x, buildAim.y);
+    ghost = {
+      x: standing ? standing.x : at.x,
+      y: standing ? standing.y : at.y,
+      w: SEPARATOR_KIND.width,
+      h: SEPARATOR_KIND.height,
+      // По стоящему зданию контур означает снос, и он годен всегда: возврат
+      // полный, отказать тут не в чем.
+      // Дальность считается по цели ПОСТРОЙКИ, а не по курсору: с клавиатуры
+      // цель берётся от персонажа, и курсор к ней отношения не имеет.
+      ok:
+        standing !== null ||
+        (Digger.inReach(player.centerX, player.centerY, buildAim.x, buildAim.y) &&
+          Builder.issueAt(world, SEPARATOR_KIND, at.x, at.y, occupant, landingModule.credits) ===
+            null),
+    };
+    if (input.toolPressed) {
+      Builder.apply(
+        world,
+        buildings,
+        landingModule,
+        SEPARATOR_KIND,
+        player.centerX,
+        player.centerY,
+        buildAim.x,
+        buildAim.y,
+        occupant,
+      );
+    }
+  } else {
+    ghost = null;
+  }
+
   // Высыпание от режима не зависит: оно доступно всегда и своим органом
   // управления.
   vacuum.updateDump(
@@ -157,7 +226,7 @@ function step(dt: number): void {
     player.centerY,
     dumpAim.x,
     dumpAim.y,
-    { x: player.x, y: player.y, w: PLAYER.hitboxW, h: PLAYER.hitboxH },
+    occupant,
   );
 
   player.update(dt, input, world);
@@ -169,9 +238,12 @@ function step(dt: number): void {
     h: PLAYER.hitboxH,
   });
 
-  // Приёмник — ПОСЛЕ симуляции: ячейка, скатившаяся в зону на этом шаге,
-  // принимается на нём же, а не через кадр. Игроку рядом с модулем задержка
-  // читалась бы как «иногда не засчитывает».
+  // Машины и приёмник — ПОСЛЕ симуляции и в этом порядке. Ячейка, скатившаяся
+  // на приёмную грань или в зону на этом шаге, обрабатывается на нём же,
+  // а не через кадр: игроку задержка читалась бы как «иногда не засчитывает».
+  // Здания раньше модуля, потому что выданный ими продукт до зоны приёмника
+  // всё равно доедет не раньше следующего шага — падать ему несколько ячеек.
+  buildings.update(world, dt);
   landingModule.update(world);
 
   // Взгляд игрока: кадр смещается в сторону ПРИЦЕЛА, показывая больше там,
@@ -231,6 +303,16 @@ function hudState(): HudState {
     capacity: inventory.capacity,
     selected: inventory.selectedName,
     credits: landingModule.credits,
+    ghost,
+    machines: buildings.all.map((b) => ({
+      x: b.x,
+      y: b.y,
+      w: b.kind.width,
+      h: b.kind.height,
+      state: b.state,
+      progress: b.progress,
+    })),
+    machineSummary: machineSummary(buildings),
   };
 }
 

@@ -73,6 +73,37 @@ export interface HudState {
   readonly capacity: number;
   readonly selected: string;
   readonly credits: number;
+  /**
+   * Контур будущего здания в координатах МИРА и признак годности места.
+   * `null` вне режима строительства.
+   *
+   * Годность показывается контуром, а не сообщением: прицел уже несёт признак
+   * достижимости тем же способом, и второй язык обратной связи для того же типа
+   * отказа игроку учить незачем.
+   */
+  readonly ghost: GhostView | null;
+  /** Стоящие машины: состояние обязано читаться с самой машины, а не из угла кадра. */
+  readonly machines: readonly MachineView[];
+  /** Сводка по машинам для строки состояния. Пустая строка — машин нет. */
+  readonly machineSummary: string;
+}
+
+export interface GhostView {
+  readonly x: number;
+  readonly y: number;
+  readonly w: number;
+  readonly h: number;
+  readonly ok: boolean;
+}
+
+export interface MachineView {
+  readonly x: number;
+  readonly y: number;
+  readonly w: number;
+  readonly h: number;
+  readonly state: 'idle' | 'working' | 'blocked';
+  /** Ход текущей порции, 0..1. */
+  readonly progress: number;
 }
 
 /**
@@ -121,7 +152,9 @@ export class Renderer {
 
     this.backdrop.draw(this.display.pixels, camera.x, camera.y, time, maxSurface);
     this.drawWorld(camera, maxSurface);
+    this.drawMachines(camera, hud.machines);
     this.drawPlayer(camera, player);
+    if (hud.ghost) this.drawGhost(camera, hud.ghost);
     this.drawAim(crosshairX, crosshairY, crosshairInReach, hud.collecting);
     this.display.present();
     this.drawStatus(hud);
@@ -186,6 +219,56 @@ export class Renderer {
           px[idx + 2] = this.caveB;
         }
       }
+    }
+  }
+
+  /**
+   * Состояние машины — на самой машине, а не только в строке состояния.
+   *
+   * Игрок обязан отличать работающую машину от остановленной, глядя на неё,
+   * а не сверяясь с углом кадра. Полоса по приёмной грани показывает ход
+   * порции, её цвет — состояние: работа, простой, забитый выход. Причина
+   * остановки читается тем же взглядом, что и сам факт остановки.
+   */
+  private drawMachines(camera: Camera, machines: readonly MachineView[]): void {
+    for (const m of machines) {
+      const sx = m.x - camera.x;
+      const sy = m.y - camera.y;
+      if (sx + m.w < 0 || sy + m.h < 0 || sx >= VIEW_W || sy >= VIEW_H) continue;
+
+      const colors = {
+        idle: 0x2f4a38,
+        working: 0x8fe08a,
+        blocked: 0xe0603c,
+      } as const;
+      const color = colors[m.state];
+
+      // Полоса заполняется слева направо по ходу порции. У простоя и забитого
+      // выхода хода нет, поэтому полоса рисуется целиком: важен цвет.
+      const filled = m.state === 'working' ? Math.max(1, Math.round(m.w * m.progress)) : m.w;
+      for (let i = 0; i < filled; i++) this.setPixel(sx + i, sy, color);
+    }
+  }
+
+  /**
+   * Контур будущего здания под целью.
+   *
+   * Периметр, а не заливка: заливка закрыла бы ровно то место, куда игрок
+   * смотрит, выбирая, встанет ли машина в рельеф. Цвет несёт годность —
+   * тот же язык, что у прицела, и второй учить не надо.
+   */
+  private drawGhost(camera: Camera, ghost: GhostView): void {
+    const x0 = ghost.x - camera.x;
+    const y0 = ghost.y - camera.y;
+    const color = ghost.ok ? 0x8fe08a : 0xe0603c;
+
+    for (let i = 0; i < ghost.w; i++) {
+      this.setPixel(x0 + i, y0, color);
+      this.setPixel(x0 + i, y0 + ghost.h - 1, color);
+    }
+    for (let i = 1; i < ghost.h - 1; i++) {
+      this.setPixel(x0, y0 + i, color);
+      this.setPixel(x0 + ghost.w - 1, y0 + i, color);
     }
   }
 
@@ -298,7 +381,10 @@ export class Renderer {
       hud.carried.length > 0 ? hud.carried.map((c) => `${c.name} ${c.count}`).join('  ') : 'пусто';
 
     this.text(`${hud.mode}   ${hud.used}/${hud.capacity}   ${carried}`, 4, VIEW_H - 14, 0xe8e4dc);
-    this.text(`Высыпать: ${hud.selected}`, 4, VIEW_H - 4, 0xe8e4dc);
+    const second = hud.machineSummary
+      ? `Высыпать: ${hud.selected}   ${hud.machineSummary}`
+      : `Высыпать: ${hud.selected}`;
+    this.text(second, 4, VIEW_H - 4, 0xe8e4dc);
 
     // Счёт — справа и цветом корпуса модуля: единственное место, куда кредиты
     // приходят, и единственное золотое пятно в кадре. Связь читается без подписи.

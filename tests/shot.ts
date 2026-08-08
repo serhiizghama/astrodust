@@ -16,8 +16,14 @@ import { generateLuna } from '../src/world/worlds/luna';
 import { Camera } from '../src/render/camera';
 import { Renderer } from '../src/render/renderer';
 import { Player } from '../src/entities/player';
+import { LandingModule } from '../src/entities/landing-module';
+import { BuildingRegistry } from '../src/entities/buildings';
+import { SEPARATOR_KIND } from '../src/entities/separator';
+import { Builder } from '../src/world/builder';
+import { Simulation } from '../src/world/simulation';
+import { MAT, MATERIALS } from '../src/world/materials';
 import type { HudState } from '../src/render/renderer';
-import { WORLD_SEED, VIEW_W, VIEW_H, VACUUM, MODULE } from '../src/config';
+import { WORLD_SEED, VIEW_W, VIEW_H, VACUUM, MODULE, SEPARATOR, PLAYER, FIXED_DT } from '../src/config';
 import type { Display } from '../src/core/display';
 
 const CRC_TABLE = new Int32Array(256);
@@ -110,7 +116,7 @@ const fakeDisplay = {
   present() {},
 } as unknown as Display;
 
-const { world, spawn, surface } = generateLuna(WORLD_SEED);
+const { world, spawn, surface, receiver } = generateLuna(WORLD_SEED);
 const renderer = new Renderer(fakeDisplay, world, surface, WORLD_SEED);
 
 const suffix = process.argv[2] ? `-${process.argv[2]}` : '';
@@ -179,6 +185,9 @@ const hud: HudState = {
   capacity: VACUUM.capacity,
   selected: 'Пульпа',
   credits: 1234,
+  ghost: null,
+  machines: [],
+  machineSummary: '',
 };
 
 for (const shot of SHOTS) {
@@ -198,5 +207,82 @@ for (const shot of SHOTS) {
   console.log(
     `${path.padEnd(28)} камера=(${camera.x},${camera.y})  ` +
       `звёзд ${stars}  кромок ${rims}  свечения ${glow}  слои ${fills.join('/')}`,
+  );
+}
+
+// --- Работающий сепаратор ---
+//
+// Строго ПОСЛЕ остальных снимков: постройка меняет мир, и любой снимок после
+// неё перестал бы сравниваться с базовым. Здесь проверяется то, о чём числа
+// не говорят: читается ли корпус машиной, отличим ли иридий от шлака в общей
+// куче и не сливается ли зелёный корпус с золотым модулем.
+{
+  const module = new LandingModule(receiver);
+  module.credits = 100000;
+  const registry = new BuildingRegistry();
+  const sim = new Simulation();
+
+  // На выровненной площадке рядом с посадочным модулем — оба в одном кадре.
+  // Правее выровненной площадки, на естественном рельефе. Верх области берётся
+  // по САМОЙ ВЫСОКОЙ колонке пролёта: тогда область заведомо пуста, а опора
+  // под ней есть хотя бы в одной колонке — ровно то, чего требует постановка.
+  const bx = MODULE.x + MODULE.width + 6;
+  let top = Number.POSITIVE_INFINITY;
+  for (let dx = 0; dx < SEPARATOR.width; dx++) top = Math.min(top, surface[bx + dx]!);
+  const by = top - SEPARATOR.height;
+  const cx = bx + (SEPARATOR.width >> 1);
+  const cy = by + (SEPARATOR.height >> 1);
+  const placed = Builder.apply(world, registry, module, SEPARATOR_KIND, cx, cy, cx, cy, null);
+
+  // Гоняем машину, подсыпая пульпу на приёмную грань.
+  for (let i = 0; i < 900; i++) {
+    if (i % 20 === 0) {
+      for (let dx = 0; dx < SEPARATOR.width; dx++) {
+        if (world.get(bx + dx, by - 1) === MAT.VACUUM) world.set(bx + dx, by - 1, MAT.PULP);
+      }
+    }
+    sim.update(world, null);
+    registry.update(world, FIXED_DT);
+  }
+
+  const camera = new Camera(world.width, world.height);
+  camera.snapTo(cx, by);
+  const player = new Player(bx - 14, by + SEPARATOR.height - PLAYER.hitboxH);
+  const machine = registry.all[0];
+  renderer.render(camera, player, VIEW_W / 2, VIEW_H / 2, true, {
+    ...hud,
+    mode: 'Строительство',
+    machineSummary: machine ? `Сепараторы 1 · ${machine.state}` : '',
+    machines: machine
+      ? [
+          {
+            x: machine.x,
+            y: machine.y,
+            w: SEPARATOR.width,
+            h: SEPARATOR.height,
+            state: machine.state,
+            progress: machine.progress,
+          },
+        ]
+      : [],
+  }, 0);
+
+  writeFileSync(`shots/separator${suffix}.png`, encodePng(pixels, 3, FULL));
+  // Вырезка вокруг самой машины: камера у левого края мира упирается в кламп,
+  // поэтому экранная колонка совпадает с мировой, и центрировать вырезку
+  // на середине кадра нельзя.
+  writeFileSync(
+    `shots/zoom-separator${suffix}.png`,
+    encodePng(pixels, 8, {
+      x: bx - camera.x - 8,
+      y: by - camera.y - 6,
+      w: SEPARATOR.width + 16,
+      h: SEPARATOR.height + 18,
+    }),
+  );
+  console.log(
+    `shots/separator${suffix}.png`.padEnd(28) +
+      ` постановка ${placed}, состояние ${machine?.state}, ` +
+      `иридия ${countColor(MATERIALS[MAT.IRIDIUM]!.color)}, шлака ${countColor(MATERIALS[MAT.SLAG]!.color)}`,
   );
 }

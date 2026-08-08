@@ -52,15 +52,17 @@ const AIM_KEYS = new Set([
 export const ToolMode = {
   Dig: 0,
   Collect: 1,
+  Build: 2,
 } as const;
 
 export type ToolModeValue = (typeof ToolMode)[keyof typeof ToolMode];
 
 /** Порядок перебора по кругу и подписи для кадра. */
-const MODE_CYCLE: readonly ToolModeValue[] = [ToolMode.Dig, ToolMode.Collect];
+const MODE_CYCLE: readonly ToolModeValue[] = [ToolMode.Dig, ToolMode.Collect, ToolMode.Build];
 const MODE_NAMES: Record<ToolModeValue, string> = {
   [ToolMode.Dig]: 'Копание',
   [ToolMode.Collect]: 'Сбор',
+  [ToolMode.Build]: 'Строительство',
 };
 
 /**
@@ -89,6 +91,17 @@ export class ToolModeState {
     return this.mode === ToolMode.Collect;
   }
 
+  get building(): boolean {
+    return this.mode === ToolMode.Build;
+  }
+
+  /**
+   * Следующий режим по кругу.
+   *
+   * Перебор списком, а не переключатель: добавление режима MUST NOT требовать
+   * новой клавиши, иначе раскладка растёт вместе с числом зданий. Третий режим
+   * встал сюда одной строкой — правила перебора не поменялись.
+   */
   cycle(): void {
     this.index = (this.index + 1) % MODE_CYCLE.length;
   }
@@ -154,10 +167,11 @@ export function aimTarget(
   centerY: number,
   dirX: number,
   dirY: number,
+  distance: number = DIG.aimDistance,
 ): { x: number; y: number } {
   return {
-    x: Math.round(centerX + dirX * DIG.aimDistance),
-    y: Math.round(centerY + dirY * DIG.aimDistance),
+    x: Math.round(centerX + dirX * distance),
+    y: Math.round(centerY + dirY * distance),
   };
 }
 
@@ -179,9 +193,10 @@ export function actionTarget(
   centerY: number,
   dirX: number,
   dirY: number,
+  distance?: number,
 ): { x: number; y: number } {
   if (mouseHeld) return { x: cursorX, y: cursorY };
-  return aimTarget(centerX, centerY, dirX, dirY);
+  return aimTarget(centerX, centerY, dirX, dirY, distance);
 }
 
 /**
@@ -345,6 +360,18 @@ export class Input {
    */
   get toolHeld(): boolean {
     return this.mouseLeftHeld || this.isHeld('Space');
+  }
+
+  /**
+   * Применение инструмента, нажатое ИМЕННО В ЭТОМ ШАГЕ.
+   *
+   * Нужно разовым действиям — постройке и сносу. Кисти работают от удержания
+   * и своего интервала, но здание при удержании ставилось бы и сносилось
+   * по тридцать раз в секунду, и интервал этого не лечит: он лишь замедлил бы
+   * мигание.
+   */
+  get toolPressed(): boolean {
+    return this.mouseLeftJustPressed || this.wasPressed('Space');
   }
 
   /** Высыпание из инвентаря. Доступно в любом режиме и своим органом управления. */
