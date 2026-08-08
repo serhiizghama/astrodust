@@ -16,7 +16,7 @@ import type { Occupant } from './simulation';
  * мира, показывает поведение, которого в игре не бывает, и такая проверка
  * ничего не подтверждает.
  */
-const PALETTE = [MAT.WATER, MAT.LAVA, MAT.STEAM, MAT.REGOLITH_LOOSE] as const;
+const PALETTE = [MAT.WATER, MAT.LAVA, MAT.STEAM, MAT.REGOLITH_LOOSE, MAT.ICE] as const;
 
 export class DebugPainter {
   private index = 0;

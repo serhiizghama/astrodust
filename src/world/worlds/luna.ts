@@ -1,6 +1,6 @@
 import { World } from '../world';
 import type { WorldProfile } from '../world';
-import { MAT } from '../materials';
+import { MAT, MAT_STATE, MatterState } from '../materials';
 import { mulberry32, makeNoise } from '../rng';
 import { WORLD_W, WORLD_H, PLAYER } from '../../config';
 
@@ -85,8 +85,37 @@ const SURFACE_BASE = 168;
 const DEEP_ROCK_Y = 360;
 const DUST_DEPTH = 5;
 
-/** Профиль поверхности: высота твёрдого верха для каждой колонки. */
-function buildSurface(rand: () => number): Int16Array {
+/**
+ * Лавовая трубка. Вынесено в константы, потому что залежи льда выкладываются
+ * ДО прорезания и должны знать, куда трубка придёт: держать эти числа в двух
+ * местах — гарантированный разъезд, при котором якорная залежь однажды
+ * промахнётся мимо стены и требование «залежь выходит в пещеру» тихо отвалится.
+ */
+const TUBE_FROM_X = 470;
+const TUBE_TO_X = 930;
+const TUBE_BASE_Y = 310;
+/** Размах извива средней линии вокруг `TUBE_BASE_Y`. */
+const TUBE_WOBBLE_Y = 22;
+/** Колонка якорной залежи льда — внутри трубки, поодаль от стыка со спуском. */
+const ICE_ANCHOR_X = 620;
+
+/** Описание кратера: то, что о нём известно генератору поверхности. */
+export interface Crater {
+  /** Колонка центра. */
+  readonly x: number;
+  readonly radius: number;
+  readonly depth: number;
+}
+
+/**
+ * Профиль поверхности: высота твёрдого верха для каждой колонки — и кратеры,
+ * которые её сформировали.
+ *
+ * Кратеры возвращаются, а не остаются локальной переменной: под их днищами
+ * выкладывается лёд, и искать впадину по готовому профилю значило бы
+ * восстанавливать то, что здесь только что было известно точно.
+ */
+function buildSurface(rand: () => number): { surface: Int16Array; craters: Crater[] } {
   const wide = makeNoise(rand, 8);
   const medium = makeNoise(rand, 24);
   const fine = makeNoise(rand, 64);
@@ -103,10 +132,12 @@ function buildSurface(rand: () => number): Int16Array {
   // (2*depth/radius) остаётся ниже 3 ячеек — автоподъём справляется, и кратер
   // проходим пешком.
   const craterCount = 6;
+  const craters: Crater[] = [];
   for (let c = 0; c < craterCount; c++) {
     const cx = Math.floor(80 + rand() * (WORLD_W - 160));
     const depth = Math.floor(14 + rand() * 13);
     const radius = Math.floor(depth * 2.2 + rand() * 26);
+    craters.push({ x: cx, radius, depth });
     const outer = Math.ceil(radius * 1.4);
     for (let dx = -outer; dx <= outer; dx++) {
       const x = cx + dx;
@@ -120,7 +151,42 @@ function buildSurface(rand: () => number): Int16Array {
     }
   }
 
-  return surface;
+  return { surface, craters };
+}
+
+/**
+ * Ледяная линза: эллипс льда, записываемый ТОЛЬКО поверх уже существующей
+ * твёрдой ячейки и только ниже слоя пыли.
+ *
+ * Оговорка про твёрдое — та же, что у валунов, и по той же причине: линза,
+ * задевшая склон кратера или свод пещеры, повисла бы глыбой в воздухе. Залежь —
+ * включение в толще, а не парящее тело.
+ *
+ * Оговорка про пыль нужна из-за рельефа. Линза кладётся от днища кратера, но
+ * поверхность вокруг днища не гладкая: на соседней колонке шум опускает её
+ * ниже центра, и верх линзы оказывается выше местного грунта — залежь выходит
+ * наружу проплешиной голого льда. Замер до этой проверки: 15 колонок с пылью
+ * тоньше пяти ячеек, из них одна с льдом прямо на поверхности.
+ */
+function placeIceLens(
+  world: World,
+  surface: Int16Array,
+  cx: number,
+  cy: number,
+  rx: number,
+  ry: number,
+): void {
+  for (let dy = -ry; dy <= ry; dy++) {
+    for (let dx = -rx; dx <= rx; dx++) {
+      if ((dx * dx) / (rx * rx) + (dy * dy) / (ry * ry) > 1) continue;
+      const x = cx + dx;
+      const y = cy + dy;
+      if (x < 0 || y < 0 || x >= WORLD_W || y >= WORLD_H) continue;
+      if (y < surface[x]! + DUST_DEPTH) continue;
+      if (MAT_STATE[world.get(x, y)] !== MatterState.Solid) continue;
+      world.setRaw(x, y, MAT.ICE);
+    }
+  }
 }
 
 /** Вырезает вертикальный столбец пустоты — общий примитив для тоннелей. */
@@ -157,12 +223,11 @@ function carveRamp(
  */
 function carveLavaTube(world: World, rand: () => number, fromX: number, toX: number): Int16Array {
   const wobble = makeNoise(rand, 10);
-  const baseY = 310;
   const floors = new Int16Array(WORLD_W);
 
   for (let x = fromX; x <= toX; x++) {
     const t = (x - fromX) / (toX - fromX);
-    const centerY = baseY + wobble(t) * 22;
+    const centerY = TUBE_BASE_Y + wobble(t) * TUBE_WOBBLE_Y;
     const height = 24 + Math.round(wobble(t * 2.7) * 5);
     const top = Math.round(centerY - height / 2);
     carveColumn(world, x, top, height);
@@ -196,7 +261,7 @@ export interface GeneratedWorld {
 export function generateLuna(seed: number): GeneratedWorld {
   const rand = mulberry32(seed);
   const world = new World(WORLD_W, WORLD_H, LUNA);
-  const surface = buildSurface(rand);
+  const { surface, craters } = buildSurface(rand);
 
   // Заливка: пыль тонким слоем поверх породы, глубже — тёмная порода.
   // Граница глубинной породы идёт по шуму: ровная горизонталь через весь мир
@@ -235,11 +300,50 @@ export function generateLuna(seed: number): GeneratedWorld {
     }
   }
 
-  // Трубка режется первой: спуск должен закончиться ровно на её полу.
-  // Иначе на стыке получается уступ в два десятка ячеек — вниз игрок падает,
-  // а обратно пешком выйти уже не может.
-  const junctionX = 470;
-  const tubeFloors = carveLavaTube(world, rand, junctionX, 930);
+  // Залежи льда — ДО прорезания тоннелей.
+  //
+  // Порядок принципиален: `carveColumn` пишет пустоту безусловно, поэтому всё,
+  // что попало в тоннель, стирается. Связность уровня тем самым не зависит
+  // от того, куда лёг лёд: перегородить существующий проход залежь физически
+  // не может. Обратный порядок пришлось бы страховать проверками «не задел ли
+  // я тоннель», и каждая новая залежь была бы риском для маршрута.
+
+  // 1. Якорная залежь на стене лавовой трубки. Стоит в фиксированной точке
+  //    и потому не зависит от зерна — это и есть гарантия требования «залежь
+  //    выходит в объём пещеры». Полувысота линзы взята с запасом от размаха
+  //    извива (22) плюс половина наибольшей высоты трубки (~15): при любом
+  //    изгибе средней линии линза заведомо перекрывает стену, прорезание
+  //    съедает её середину, а остаток выходит в пещеру.
+  placeIceLens(world, surface, ICE_ANCHOR_X, TUBE_BASE_Y, 14, TUBE_WOBBLE_Y + 8);
+
+  // 2. Кратерные: под днищами самых глубоких кратеров, сразу под слоем пыли.
+  //    Затенённый лёд на дне лунных кратеров — реальность и лор игры, а заодно
+  //    видимый ориентир: кратер говорит игроку, где копать.
+  const deepest = craters.slice().sort((a, b) => b.depth - a.depth);
+  for (const crater of deepest.slice(0, 3)) {
+    const ry = 5 + Math.floor(rand() * 4);
+    const rx = Math.max(6, Math.round(crater.radius * 0.45));
+    // Верх линзы — ровно под пылью. Днище кратера — самая нижняя его точка,
+    // поэтому на соседних колонках слой пыли остаётся не тоньше.
+    placeIceLens(world, surface, crater.x, surface[crater.x]! + DUST_DEPTH + ry, rx, ry);
+  }
+
+  // 3. Рассеянные в толще: чтобы лёд встречался и при обычном копании вглубь,
+  //    а не только в двух отмеченных местах.
+  const scatteredCount = 8;
+  for (let i = 0; i < scatteredCount; i++) {
+    const bx = Math.floor(rand() * WORLD_W);
+    const by = Math.floor(215 + rand() * (WORLD_H - 250));
+    const rx = 5 + Math.floor(rand() * 9);
+    const ry = Math.max(3, Math.floor(rx * (0.45 + rand() * 0.55)));
+    placeIceLens(world, surface, bx, by, rx, ry);
+  }
+
+  // Трубка режется первой из тоннелей: спуск должен закончиться ровно на её
+  // полу. Иначе на стыке получается уступ в два десятка ячеек — вниз игрок
+  // падает, а обратно пешком выйти уже не может.
+  const junctionX = TUBE_FROM_X;
+  const tubeFloors = carveLavaTube(world, rand, TUBE_FROM_X, TUBE_TO_X);
 
   const rampStartX = 210;
   const rampStartY = surface[rampStartX] + 2;
