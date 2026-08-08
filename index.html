@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ASTRODUST — Луна</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        overflow: hidden;
+        background: #000;
+      }
+
+      body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      /*
+       * Канвас держит внутреннее разрешение 320x180 и растягивается целым
+       * множителем через width/height в CSS-пикселях. image-rendering: pixelated
+       * отключает интерполяцию — пиксель остаётся квадратом (game-shell:
+       * «Пиксель не размывается»).
+       */
+      #game {
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
+        display: block;
+        cursor: none;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="game"></canvas>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

@@ -1,0 +1,27 @@
+# dependencies / build
+node_modules/
+dist/
+
+# test & bench artifacts
+shots/
+repomix-output.xml
+
+# local agent/tooling state
+.omc/
+
+# editors
+.idea/
+.vscode/
+
+# os
+.DS_Store
+
+# env & local overrides
+*.local
+.env
+.env.*
+!.env.example
+
+# logs
+*.log
+npm-debug.log*
