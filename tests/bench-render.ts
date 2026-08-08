@@ -55,6 +55,8 @@ const hud: HudState = {
   capacity: VACUUM.capacity,
   selected: 'Реголит',
   credits: 0,
+  buildKind: '',
+  buildIssue: '',
   ghost: null,
   machines: [],
   machineSummary: '',

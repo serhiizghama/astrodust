@@ -21,9 +21,20 @@ import { BuildingRegistry } from '../src/entities/buildings';
 import { SEPARATOR_KIND } from '../src/entities/separator';
 import { Builder } from '../src/world/builder';
 import { Simulation } from '../src/world/simulation';
-import { MAT, MATERIALS } from '../src/world/materials';
+import { MAT, MATERIALS, CONVEYOR_STRIPE_COLOR } from '../src/world/materials';
 import type { HudState } from '../src/render/renderer';
-import { WORLD_SEED, VIEW_W, VIEW_H, VACUUM, MODULE, SEPARATOR, PLAYER, FIXED_DT } from '../src/config';
+import {
+  WORLD_SEED,
+  VIEW_W,
+  VIEW_H,
+  VACUUM,
+  MODULE,
+  SEPARATOR,
+  PLAYER,
+  FIXED_DT,
+  CONVEYOR,
+  SIM_HZ,
+} from '../src/config';
 import type { Display } from '../src/core/display';
 
 const CRC_TABLE = new Int32Array(256);
@@ -185,6 +196,8 @@ const hud: HudState = {
   capacity: VACUUM.capacity,
   selected: 'Пульпа',
   credits: 1234,
+  buildKind: '',
+  buildIssue: '',
   ghost: null,
   machines: [],
   machineSummary: '',
@@ -232,7 +245,7 @@ for (const shot of SHOTS) {
   const by = top - SEPARATOR.height;
   const cx = bx + (SEPARATOR.width >> 1);
   const cy = by + (SEPARATOR.height >> 1);
-  const placed = Builder.apply(world, registry, module, SEPARATOR_KIND, cx, cy, cx, cy, null);
+  const placed = Builder.apply(world, registry, module, SEPARATOR_KIND, cx, cy, cx, cy);
 
   // Гоняем машину, подсыпая пульпу на приёмную грань.
   for (let i = 0; i < 900; i++) {
@@ -249,23 +262,31 @@ for (const shot of SHOTS) {
   camera.snapTo(cx, by);
   const player = new Player(bx - 14, by + SEPARATOR.height - PLAYER.hitboxH);
   const machine = registry.all[0];
-  renderer.render(camera, player, VIEW_W / 2, VIEW_H / 2, true, {
-    ...hud,
-    mode: 'Строительство',
-    machineSummary: machine ? `Сепараторы 1 · ${machine.state}` : '',
-    machines: machine
-      ? [
-          {
-            x: machine.x,
-            y: machine.y,
-            w: SEPARATOR.width,
-            h: SEPARATOR.height,
-            state: machine.state,
-            progress: machine.progress,
-          },
-        ]
-      : [],
-  }, 0);
+  renderer.render(
+    camera,
+    player,
+    VIEW_W / 2,
+    VIEW_H / 2,
+    true,
+    {
+      ...hud,
+      mode: 'Строительство',
+      machineSummary: machine ? `Сепараторы 1 · ${machine.state}` : '',
+      machines: machine
+        ? [
+            {
+              x: machine.x,
+              y: machine.y,
+              w: SEPARATOR.width,
+              h: SEPARATOR.height,
+              state: machine.state,
+              progress: machine.progress,
+            },
+          ]
+        : [],
+    },
+    0,
+  );
 
   writeFileSync(`shots/separator${suffix}.png`, encodePng(pixels, 3, FULL));
   // Вырезка вокруг самой машины: камера у левого края мира упирается в кламп,
@@ -284,5 +305,98 @@ for (const shot of SHOTS) {
     `shots/separator${suffix}.png`.padEnd(28) +
       ` постановка ${placed}, состояние ${machine?.state}, ` +
       `иридия ${countColor(MATERIALS[MAT.IRIDIUM]!.color)}, шлака ${countColor(MATERIALS[MAT.SLAG]!.color)}`,
+  );
+}
+
+// --- Конвейеры ---
+//
+// Тоже строго ПОСЛЕ базовых снимков: сцена вырезает в мире полость и кладёт
+// в неё ленты. Числа про ленту не говорят ничего: читается ли направление
+// без подсказки, видно ли разрыв, не сливается ли сталь с породой — всё это
+// решается только глазом. Снимаются два кадра подряд с интервалом в один шаг
+// переноса: по паре видно, куда бежит полоса.
+{
+  const module = new LandingModule(receiver);
+  const registry = new BuildingRegistry();
+  const sim = new Simulation();
+
+  // Полость под поверхностью: ленте нужен ровный пролёт, а рельеф его не даёт.
+  const left = 60;
+  const right = 300;
+  const top = 176;
+  const bottom = 208;
+  for (let y = top; y <= bottom; y++) {
+    for (let x = left; x <= right; x++) world.set(x, y, MAT.VACUUM);
+  }
+
+  // Ленты кладутся СЕКЦИЯМИ по сетке — так же, как их кладёт игрок.
+  const sz = CONVEYOR.size;
+  const rows = [
+    { y: 204, kind: MAT.CONVEYOR_RIGHT, gapAt: -1 },
+    { y: 192, kind: MAT.CONVEYOR_LEFT, gapAt: -1 },
+    // Разрыв в ленте: пропущенная секция обязана читаться глазом — там,
+    // где ленты нет, нет ни корпуса, ни полосы.
+    { y: 180, kind: MAT.CONVEYOR_RIGHT, gapAt: 188 },
+  ];
+  for (const row of rows) {
+    for (let sx = left + 8; sx <= right - 8; sx += sz) {
+      if (sx === row.gapAt) continue;
+      for (let dy = 0; dy < sz; dy++) {
+        for (let dx = 0; dx < sz; dx++) world.set(sx + dx, row.y + dy, row.kind);
+      }
+    }
+    // Груз: все четыре сыпучих вещества вперемешку — лента не сортирует.
+    const cargo = [MAT.REGOLITH_LOOSE, MAT.PULP, MAT.IRIDIUM, MAT.SLAG];
+    for (let i = 0; i < 24; i++) {
+      world.set(left + 20 + i * 4, row.y - 1, cargo[i % cargo.length]!);
+    }
+  }
+
+  for (let i = 0; i < 240; i++) {
+    sim.update(world, null);
+    registry.update(world, FIXED_DT);
+    module.update(world);
+  }
+
+  const camera = new Camera(world.width, world.height);
+  camera.snapTo((left + right) / 2, 194);
+  const player = new Player(150, 204 - PLAYER.hitboxH);
+  const hudBelt: HudState = { ...hud, mode: 'Строительство', buildKind: 'Конвейер ▶' };
+
+  // Два кадра подряд: время различается ровно на один шаг переноса, поэтому
+  // на верхней ленте полоса сдвинута вправо, на средней — влево.
+  renderer.render(camera, player, VIEW_W / 2, VIEW_H / 2, true, hudBelt, 0, 3);
+  writeFileSync(`shots/conveyor${suffix}.png`, encodePng(pixels, 3, FULL));
+  const stripes = countColor(CONVEYOR_STRIPE_COLOR);
+  writeFileSync(
+    `shots/zoom-conveyor${suffix}.png`,
+    encodePng(pixels, 6, { x: 168 - camera.x, y: 176 - camera.y, w: 64, h: 34 }),
+  );
+
+  renderer.render(
+    camera,
+    player,
+    VIEW_W / 2,
+    VIEW_H / 2,
+    true,
+    hudBelt,
+    0,
+    3 + CONVEYOR.stepsPerCell / SIM_HZ,
+  );
+  writeFileSync(
+    `shots/zoom-conveyor-next${suffix}.png`,
+    encodePng(pixels, 6, { x: 168 - camera.x, y: 176 - camera.y, w: 64, h: 34 }),
+  );
+  // Вырезка вплотную к разрыву: там, где ленты нет, нет ни корпуса, ни полосы,
+  // и пропуск обязан читаться как пропуск, а не как тёмный участок ленты.
+  writeFileSync(
+    `shots/zoom-conveyor-gap${suffix}.png`,
+    encodePng(pixels, 14, { x: 176 - camera.x, y: 178 - camera.y, w: 28, h: 8 }),
+  );
+
+  console.log(
+    `shots/conveyor${suffix}.png`.padEnd(28) +
+      ` камера=(${camera.x},${camera.y})  полосы ${stripes}  ` +
+      `лент ${rows.length}, секция ${sz}×${sz}, разрыв на x=188`,
   );
 }

@@ -1,8 +1,8 @@
-import { VIEW_W, VIEW_H, DIG, VACUUM } from '../config';
+import { VIEW_W, VIEW_H, DIG, VACUUM, CONVEYOR, SIM_HZ } from '../config';
 import { Display } from '../core/display';
 import { Camera } from './camera';
 import { World } from '../world/world';
-import { MAT, MAT_R, MAT_G, MAT_B } from '../world/materials';
+import { MAT, MAT_R, MAT_G, MAT_B, MAT_CARRY, CONVEYOR_STRIPE_COLOR } from '../world/materials';
 import { Backdrop } from './backdrop';
 import {
   Player,
@@ -56,6 +56,25 @@ export const BRUSH_OUTLINE = brushOutline(DIG.radius);
  */
 export const VACUUM_OUTLINE = brushOutline(VACUUM.radius);
 
+const STRIPE_R = (CONVEYOR_STRIPE_COLOR >> 16) & 0xff;
+const STRIPE_G = (CONVEYOR_STRIPE_COLOR >> 8) & 0xff;
+const STRIPE_B = CONVEYOR_STRIPE_COLOR & 0xff;
+
+/**
+ * Насколько бегущая полоса ушла вперёд к данному моменту игрового времени,
+ * в ячейках.
+ *
+ * Считается ИЗ `stepsPerCell`, а не из своей константы: по полосе игрок судит
+ * о темпе ленты, и полоса, бегущая вдвое быстрее груза, — это врущий прибор.
+ * Общий источник — единственный способ не дать им разойтись.
+ *
+ * Игровым временем, а не номером кадра: на 144 Гц полоса обязана бежать с той
+ * же скоростью, что и на 60, — ровно как и сам груз.
+ */
+export function stripeOffset(time: number): number {
+  return Math.floor((time * SIM_HZ) / CONVEYOR.stepsPerCell);
+}
+
 /**
  * Что показать в строке состояния и каким нарисовать прицел.
  *
@@ -82,6 +101,26 @@ export interface HudState {
    * отказа игроку учить незачем.
    */
   readonly ghost: GhostView | null;
+  /**
+   * Подпись выбранного вида постройки с ценой. Пустая строка — не в режиме
+   * строительства.
+   *
+   * Видна ДО применения: постройка вслепую — это списание кредитов за то, чего
+   * игрок не выбирал. Контур под целью показывает размер и годность, но не
+   * говорит ни цену, ни направление ленты.
+   */
+  readonly buildKind: string;
+  /**
+   * Почему место негодно, словами. Пустая строка — годно или не в режиме
+   * строительства.
+   *
+   * Красный контур отвечает «нельзя», но не отвечает «почему», а причин
+   * четыре, и три из них исправимы прямо сейчас: отойти, расчистить, накопить.
+   * Игрок, жмущий кнопку без результата и без объяснения, читает это как
+   * поломку — живая проверка показала ровно этот случай: не хватало
+   * пятнадцати кредитов, и узнать об этом было неоткуда.
+   */
+  readonly buildIssue: string;
   /** Стоящие машины: состояние обязано читаться с самой машины, а не из угла кадра. */
   readonly machines: readonly MachineView[];
   /** Сводка по машинам для строки состояния. Пустая строка — машин нет. */
@@ -151,7 +190,7 @@ export class Renderer {
     const maxSurface = this.backdrop.maxSurfaceInView(camera.x);
 
     this.backdrop.draw(this.display.pixels, camera.x, camera.y, time, maxSurface);
-    this.drawWorld(camera, maxSurface);
+    this.drawWorld(camera, maxSurface, stripeOffset(time));
     this.drawMachines(camera, hud.machines);
     this.drawPlayer(camera, player);
     if (hud.ghost) this.drawGhost(camera, hud.ghost);
@@ -168,14 +207,25 @@ export class Renderer {
    * части кадра пустоту приходится различать на небо и пещеру, в нижней —
    * не приходится, и оттуда ветвление убрано совсем. Под землёй верхняя часть
    * пуста, и весь кадр идёт по короткому пути.
+   *
+   * Бегущая полоса несущих поверхностей рисуется ЗДЕСЬ, внутри уже
+   * существующей ветки «ячейка не пустота», а не отдельным проходом: цена —
+   * одна выборка `MAT_CARRY[m]` на непустой пиксель, неизмеримая против
+   * прохода задника. Отдельный проход пришлось бы вести по списку лент,
+   * которого нет и не будет: лента — вещество, а не сущность.
+   *
+   * Полоса — единственный признак направления: цвет у обоих конвейеров один,
+   * иначе игрок был бы обязан запомнить, какой оттенок куда везёт.
    */
-  private drawWorld(camera: Camera, maxSurface: number): void {
+  private drawWorld(camera: Camera, maxSurface: number, offset: number): void {
     const px = this.display.pixels;
     const cells = this.world.cells;
     const worldW = this.world.width;
     const camX = camera.x;
     const camY = camera.y;
     const surface = this.surface;
+    const period = CONVEYOR.stripePeriod;
+    const stripe = CONVEYOR.stripeWidth;
 
     let splitRow = maxSurface - camY;
     if (splitRow < 0) splitRow = 0;
@@ -193,9 +243,16 @@ export class Renderer {
         const m = cells[rowBase + wx]!;
 
         if (m !== MAT.VACUUM) {
-          px[idx] = MAT_R[m]!;
-          px[idx + 1] = MAT_G[m]!;
-          px[idx + 2] = MAT_B[m]!;
+          const carry = MAT_CARRY[m]!;
+          if (carry !== 0 && (((wx - carry * offset) % period) + period) % period < stripe) {
+            px[idx] = STRIPE_R;
+            px[idx + 1] = STRIPE_G;
+            px[idx + 2] = STRIPE_B;
+          } else {
+            px[idx] = MAT_R[m]!;
+            px[idx + 1] = MAT_G[m]!;
+            px[idx + 2] = MAT_B[m]!;
+          }
         } else if (wy >= surface[wx]!) {
           px[idx] = this.caveR;
           px[idx + 1] = this.caveG;
@@ -208,11 +265,19 @@ export class Renderer {
     for (let sy = splitRow; sy < VIEW_H; sy++) {
       const rowBase = (camY + sy) * worldW;
       for (let sx = 0; sx < VIEW_W; sx++, idx += 4) {
-        const m = cells[rowBase + camX + sx]!;
+        const wx = camX + sx;
+        const m = cells[rowBase + wx]!;
         if (m !== MAT.VACUUM) {
-          px[idx] = MAT_R[m]!;
-          px[idx + 1] = MAT_G[m]!;
-          px[idx + 2] = MAT_B[m]!;
+          const carry = MAT_CARRY[m]!;
+          if (carry !== 0 && (((wx - carry * offset) % period) + period) % period < stripe) {
+            px[idx] = STRIPE_R;
+            px[idx + 1] = STRIPE_G;
+            px[idx + 2] = STRIPE_B;
+          } else {
+            px[idx] = MAT_R[m]!;
+            px[idx + 1] = MAT_G[m]!;
+            px[idx + 2] = MAT_B[m]!;
+          }
         } else {
           px[idx] = this.caveR;
           px[idx + 1] = this.caveG;
@@ -380,7 +445,16 @@ export class Renderer {
     const carried =
       hud.carried.length > 0 ? hud.carried.map((c) => `${c.name} ${c.count}`).join('  ') : 'пусто';
 
-    this.text(`${hud.mode}   ${hud.used}/${hud.capacity}   ${carried}`, 4, VIEW_H - 14, 0xe8e4dc);
+    // Выбранный вид постройки стоит рядом с подписью режима, а не в отдельной
+    // строке: он относится к режиму и без него бессмыслен.
+    const mode = hud.buildKind ? `${hud.mode}: ${hud.buildKind}` : hud.mode;
+    this.text(`${mode}   ${hud.used}/${hud.capacity}   ${carried}`, 4, VIEW_H - 14, 0xe8e4dc);
+    // Причина отказа — тем же цветом, что и негодный контур: связь между
+    // красной рамкой и надписью не должна требовать догадки.
+    if (hud.buildIssue) {
+      const at = 4 + ctx.measureText(`${mode}   `).width;
+      this.text(hud.buildIssue, at, VIEW_H - 24, 0xe0603c);
+    }
     const second = hud.machineSummary
       ? `Высыпать: ${hud.selected}   ${hud.machineSummary}`
       : `Высыпать: ${hud.selected}`;

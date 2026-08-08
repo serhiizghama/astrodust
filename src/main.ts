@@ -9,12 +9,14 @@ import { Player } from './entities/player';
 import { Inventory } from './entities/inventory';
 import { LandingModule } from './entities/landing-module';
 import { BuildingRegistry } from './entities/buildings';
-import { SEPARATOR_KIND, machineSummary } from './entities/separator';
+import { BuildCatalogState, sectionKindByHull } from './entities/catalog';
+import { machineSummary } from './entities/separator';
 import { generateLuna } from './world/worlds/luna';
 import { Simulation } from './world/simulation';
 import { Digger } from './world/digging';
 import { Vacuum } from './world/vacuum';
 import { Builder } from './world/builder';
+import type { PlacementIssue } from './world/builder';
 import { DebugPainter } from './world/painter';
 import { MATERIALS, PORTABLE_MATERIALS } from './world/materials';
 import { Soundscape } from './audio/soundscape';
@@ -39,6 +41,7 @@ const digger = new Digger();
 const vacuum = new Vacuum();
 const painter = new DebugPainter();
 const tool = new ToolModeState();
+const catalog = new BuildCatalogState();
 const inventory = new Inventory();
 const landingModule = new LandingModule(receiver);
 const buildings = new BuildingRegistry();
@@ -56,6 +59,8 @@ let targetInReach = false;
  * от хитбокса персонажа и счёта, а те живут по шагам симуляции.
  */
 let ghost: GhostView | null = null;
+/** Почему место негодно, словами. Пустая строка — годно или не строим. */
+let buildIssue = '';
 /**
  * Накопленное время симуляции. Орбитальный объект на заднике обязан двигаться
  * по часам, а не по номеру кадра: на 144 Гц он иначе пересекал бы небо вдвое
@@ -67,6 +72,25 @@ function clamp(value: number, limit: number): number {
   return Math.max(-limit, Math.min(limit, value));
 }
 
+/**
+ * Причина отказа словами.
+ *
+ * Нехватка кредитов называет НЕДОСТАЮЩУЮ сумму, а не цену: цена и так стоит
+ * рядом с видом постройки, а игроку нужно знать, сколько ещё донести.
+ */
+function placementIssueText(issue: PlacementIssue | null, cost: number): string {
+  switch (issue) {
+    case 'funds':
+      return `не хватает ${cost - landingModule.credits} ₡`;
+    case 'occupied':
+      return 'место занято';
+    case 'unsupported':
+      return 'нет опоры';
+    default:
+      return '';
+  }
+}
+
 function step(dt: number): void {
   simTime += dt;
   if (input.debugTogglePressed) showDebug = !showDebug;
@@ -76,6 +100,9 @@ function step(dt: number): void {
   // менять то, что произойдёт на этом же шаге, а не на следующем.
   if (input.toolModePressed) tool.cycle();
   if (input.cycleCarriedPressed) inventory.cycleSelected();
+  // Вид постройки перебирается своей клавишей и в любом режиме: `C` остаётся
+  // за веществом инвентаря, потому что высыпание доступно всегда.
+  if (input.buildKindPressed) catalog.cycle();
 
   // Цель под курсором. Крестик всегда здесь и никуда не переезжает: он
   // указатель мыши, а не индикатор режима. Цвет крестика относится к нему же,
@@ -181,38 +208,62 @@ function step(dt: number): void {
       dir.y,
       BUILD_AIM_DISTANCE,
     );
-    const at = Builder.originFor(SEPARATOR_KIND, buildAim.x, buildAim.y);
+    // Клавиатурный прицел ВБОК ставит постройку на уровень ступней, а не пояса
+    // (см. `Builder.groundedTargetY`). Поправка касается только бокового
+    // прицела: вверх и вниз игрок целится намеренно, и подменять там его выбор
+    // нечем оправдать. Мышь не трогается — у неё есть курсор, и она уже
+    // целится куда надо.
+    if (input.aimSource !== 'mouse' && dir.y === 0) {
+      buildAim.y = Builder.groundedTargetY(catalog.kind, player.y, PLAYER.hitboxH);
+    }
+    // Контур размером ВЫБРАННОГО вида и в том месте, куда постройка встанет:
+    // у машины это её прямоугольник вокруг цели, у секционной постройки —
+    // клетка сетки, к которой цель притянулась.
+    const kind = catalog.kind;
+    const at = Builder.originFor(kind, buildAim.x, buildAim.y);
     const standing = buildings.findAt(buildAim.x, buildAim.y);
-    ghost = {
-      x: standing ? standing.x : at.x,
-      y: standing ? standing.y : at.y,
-      w: SEPARATOR_KIND.width,
-      h: SEPARATOR_KIND.height,
-      // По стоящему зданию контур означает снос, и он годен всегда: возврат
-      // полный, отказать тут не в чем.
+    // Ячейка секционной постройки под целью означает снос — так же, как запись
+    // реестра под целью. Вид, выбранный в каталоге, на снос не влияет.
+    const section = sectionKindByHull(world.get(buildAim.x, buildAim.y));
+    // Контур показывает то, что СЛУЧИТСЯ, а не то, что выбрано: над стоящей
+    // постройкой это её снос, и обводить её прямоугольником выбранной машины
+    // значило бы обещать одно, а сделать другое.
+    if (standing) {
+      ghost = {
+        x: standing.x,
+        y: standing.y,
+        w: standing.kind.width,
+        h: standing.kind.height,
+        ok: true,
+      };
+    } else if (section) {
+      // Границы сносимой секции — те же, что у постановки: обе выводятся
+      // из сетки, поэтому контур сноса совпадает с тем, что исчезнет.
+      const hit = Builder.originFor(section, buildAim.x, buildAim.y);
+      ghost = { x: hit.x, y: hit.y, w: section.width, h: section.height, ok: true };
+    } else {
       // Дальность считается по цели ПОСТРОЙКИ, а не по курсору: с клавиатуры
       // цель берётся от персонажа, и курсор к ней отношения не имеет.
-      ok:
-        standing !== null ||
-        (Digger.inReach(player.centerX, player.centerY, buildAim.x, buildAim.y) &&
-          Builder.issueAt(world, SEPARATOR_KIND, at.x, at.y, occupant, landingModule.credits) ===
-            null),
-    };
+      const far = !Digger.inReach(player.centerX, player.centerY, buildAim.x, buildAim.y);
+      const issue = Builder.issueAt(world, kind, at.x, at.y, landingModule.credits);
+      buildIssue = far ? 'слишком далеко' : placementIssueText(issue, kind.cost);
+      ghost = { x: at.x, y: at.y, w: kind.width, h: kind.height, ok: !far && issue === null };
+    }
     if (input.toolPressed) {
       Builder.apply(
         world,
         buildings,
         landingModule,
-        SEPARATOR_KIND,
+        kind,
         player.centerX,
         player.centerY,
         buildAim.x,
         buildAim.y,
-        occupant,
       );
     }
   } else {
     ghost = null;
+    buildIssue = '';
   }
 
   // Высыпание от режима не зависит: оно доступно всегда и своим органом
@@ -303,6 +354,8 @@ function hudState(): HudState {
     capacity: inventory.capacity,
     selected: inventory.selectedName,
     credits: landingModule.credits,
+    buildKind: tool.building ? `${catalog.name} ${catalog.kind.cost} ₡` : '',
+    buildIssue: tool.building ? buildIssue : '',
     ghost,
     machines: buildings.all.map((b) => ({
       x: b.x,

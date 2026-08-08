@@ -1,4 +1,4 @@
-import { CHUNK_SIZE } from '../config';
+import { CHUNK_SIZE, CONVEYOR } from '../config';
 import { World } from './world';
 import { hashChance } from './rng';
 import {
@@ -9,6 +9,7 @@ import {
   MAT_FLOW,
   MAT_SLIP,
   MAT_DISSIPATE,
+  MAT_CARRY,
   MAT_FALLS,
   MAT_RISES,
   MAT,
@@ -158,6 +159,20 @@ export class Simulation {
 
       for (let y = yStart; y >= yEnd; y--) {
         const rowBase = y * width;
+        // Куда на этой строке только что уехала ячейка по несущей поверхности.
+        //
+        // Перенос — единственное правило, смещающее ячейку в СВОЮ же строку,
+        // то есть в позицию, которую обход этой строки ещё не прошёл. Без
+        // отметки груз, едущий по ходу обхода, обрабатывался бы на каждой
+        // следующей позиции заново и за один шаг пролетал бы всю свободную
+        // длину ленты — вместо одной ячейки, как требует темп.
+        //
+        // Одной позиции достаточно, а не карты всей строки: смещение ровно
+        // на единицу, обход по x монотонен через все чанки строки, значит
+        // повторно попасться может только ближайшая следующая позиция.
+        // Перенос против хода обхода приземляется в уже пройденную и отметку
+        // тратит впустую — это безвредно.
+        let carriedInto = -1;
 
         for (let ci = 0; ci < chunks.cols; ci++) {
           const cx = rightward ? ci : chunks.cols - 1 - ci;
@@ -169,6 +184,7 @@ export class Simulation {
           for (let xi = xStart; xi < xEnd; xi++) {
             const x = rightward ? xi : xEnd - 1 - (xi - xStart);
             visited++;
+            if (x === carriedInto) continue;
             let m = cells[rowBase + x]!;
 
             // Соприкосновение возникает не только от движения. Вещество,
@@ -182,8 +198,10 @@ export class Simulation {
 
             if (MAT_FALLS[m] !== 1) continue;
 
-            if (MAT_STATE[m] === MatterState.Powder) this.movePowder(world, occupant, x, y, m);
-            else this.moveLiquid(world, occupant, x, y, m);
+            if (MAT_STATE[m] === MatterState.Powder) {
+              const to = this.movePowder(world, occupant, x, y, m);
+              if (to >= 0) carriedInto = to;
+            } else this.moveLiquid(world, occupant, x, y, m);
           }
         }
       }
@@ -511,24 +529,65 @@ export class Simulation {
     return dst - src >= 2;
   }
 
-  /** Сыпучее: вниз, затем по диагонали вниз-вбок. */
+  /**
+   * Сыпучее: вниз, затем перенос несущей поверхностью, затем по диагонали
+   * вниз-вбок.
+   *
+   * ```
+   *   вниз?    ─── занято
+   *   несёт подо мной?  ─── да → вбок по carry, и диагонали больше нет
+   *   иначе диагональ вниз-вбок?
+   * ```
+   *
+   * Перенос ВЫТЕСНЯЕТ диагональ, а не дополняет её: ни вместо, ни после отказа.
+   * Иначе лента течёт — пока едет, часть груза уходит по диагоналям на пол,
+   * а как только упирается, вытекает вся. Очередь на ленте становится
+   * невозможна, а очередь и есть то, чем лента отличается от жёлоба. Ячейки
+   * выше первого слоя лежат не на ленте, а на другом веществе, и подчиняются
+   * обычным правилам: куча на ленте по-прежнему расплывается, едет подошва.
+   *
+   * @returns x, куда ячейка уехала по несущей поверхности, или −1
+   */
   private movePowder(
     world: World,
     occupant: Occupant | null,
     x: number,
     y: number,
     material: number,
-  ): void {
-    if (this.tryMove(world, occupant, x, y, x, y + 1, material)) return;
+  ): number {
+    if (this.tryMove(world, occupant, x, y, x, y + 1, material)) return -1;
+
+    // Несущая поверхность читается ИЗ ЯЧЕЙКИ ПОД грузом, а не наоборот.
+    // Правило принадлежит грузу: лента статична, `MAT_FALLS` у неё ноль,
+    // и автомат её не обходит вовсе. Спрашивай ленту — её пришлось бы обходить
+    // каждый шаг, и пустая лента будила бы чанки фактом существования.
+    const carry = MAT_CARRY[world.get(x, y + 1)]!;
+    if (carry !== 0) {
+      // Темп: срабатывание на шагах, кратных `stepsPerCell`, одинаково для всех
+      // лент мира. Пропущенный шаг ОБЯЗАН удержать чанк — но только когда
+      // ячейке есть куда ехать. Ровно тот отказ, что уже случался с вязкой
+      // жидкостью: чанк засыпает в паузе между попытками, будить его некому,
+      // и груз застывает навсегда. Условие обязательно и с другой стороны:
+      // без него вставшая гружёная лента не дала бы чанку уснуть никогда.
+      if (this.step % CONVEYOR.stepsPerCell !== 0) {
+        if (this.canEnter(world, occupant, material, x + carry, y)) world.chunks.touch(x, y);
+        return -1;
+      }
+      // Через тот же `tryMove`, что и падение: второе понятие проходимости
+      // разошлось бы с первым на первом же спорном случае — лента под водой,
+      // лента в пыли, лента в потоке.
+      return this.tryMove(world, occupant, x, y, x + carry, y, material) ? x + carry : -1;
+    }
 
     // Осыпаемость: насколько охотно вещество скатывается по склону. Единица —
     // всегда, и куча расплывается пологой; ниже — держит крутой склон.
     // Решение детерминировано, как и всё остальное в автомате.
-    if (this.chance(x, y) >= MAT_SLIP[material]!) return;
+    if (this.chance(x, y) >= MAT_SLIP[material]!) return -1;
 
     const [first, second] = this.sidePreference(x, y);
-    if (this.tryMove(world, occupant, x, y, x + first, y + 1, material)) return;
+    if (this.tryMove(world, occupant, x, y, x + first, y + 1, material)) return -1;
     this.tryMove(world, occupant, x, y, x + second, y + 1, material);
+    return -1;
   }
 
   /** Жидкость: вниз, диагонали вниз-вбок, затем вбок на дальность растекаемости. */
