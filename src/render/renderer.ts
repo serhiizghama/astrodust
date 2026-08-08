@@ -1,4 +1,4 @@
-import { VIEW_W, VIEW_H, DIG } from '../config';
+import { VIEW_W, VIEW_H, DIG, VACUUM } from '../config';
 import { Display } from '../core/display';
 import { Camera } from './camera';
 import { World } from '../world/world';
@@ -49,6 +49,31 @@ function brushOutline(radius: number): Int8Array {
 }
 
 export const BRUSH_OUTLINE = brushOutline(DIG.radius);
+/**
+ * Контур кисти сбора. Радиус свой, и это единственное, чем отличается вызов:
+ * обещать выемку размером с копательную кисть там, где всосётся вдвое меньше,
+ * — то же враньё, что и не показывать радиус вовсе.
+ */
+export const VACUUM_OUTLINE = brushOutline(VACUUM.radius);
+
+/**
+ * Что показать в строке состояния и каким нарисовать прицел.
+ *
+ * Одна структура, а не восемь аргументов подряд: рендер про инвентарь ничего
+ * не решает, он его показывает, и список того, что показать, обязан читаться
+ * на месте вызова.
+ */
+export interface HudState {
+  /** Подпись текущего режима инструмента. */
+  readonly mode: string;
+  /** Собирает ли инструмент сейчас — от этого зависит вид прицела. */
+  readonly collecting: boolean;
+  readonly carried: readonly { readonly name: string; readonly count: number }[];
+  readonly used: number;
+  readonly capacity: number;
+  readonly selected: string;
+  readonly credits: number;
+}
 
 /**
  * Рендер мира в буфер кадра.
@@ -85,6 +110,7 @@ export class Renderer {
     crosshairX: number,
     crosshairY: number,
     crosshairInReach: boolean,
+    hud: HudState,
     fps: number,
     time = 0,
     debugMaterial = '',
@@ -96,8 +122,9 @@ export class Renderer {
     this.backdrop.draw(this.display.pixels, camera.x, camera.y, time, maxSurface);
     this.drawWorld(camera, maxSurface);
     this.drawPlayer(camera, player);
-    this.drawAim(crosshairX, crosshairY, crosshairInReach);
+    this.drawAim(crosshairX, crosshairY, crosshairInReach, hud.collecting);
     this.display.present();
+    this.drawStatus(hud);
     this.drawDebug(fps, debugMaterial);
   }
 
@@ -209,19 +236,30 @@ export class Renderer {
    * только по факту разрушения, и промах обнаруживается уже после него.
    * Контур приглушён намеренно — кольцо вдвое длиннее крестика и при равной
    * яркости перебивало бы саму точку прицеливания.
+   *
+   * Режим инструмента виден ЗДЕСЬ, а не только в строке состояния: узнавать
+   * режим по углу кадра, а не по тому, на что смотришь, — лишний путь глазами.
+   * Отличается и размер контура (у сбора кисть меньше), и форма крестика:
+   * копание — четыре луча наружу, сбор — четыре штриха внутрь, как всасывание.
+   * Цвет остаётся признаком достижимости и режимом не занят.
    */
-  private drawAim(sx: number, sy: number, inReach: boolean): void {
+  private drawAim(sx: number, sy: number, inReach: boolean, collecting: boolean): void {
     const x = Math.round(sx);
     const y = Math.round(sy);
 
+    const ring = collecting ? VACUUM_OUTLINE : BRUSH_OUTLINE;
     const outline = inReach ? 0x5c3612 : 0x33313a;
-    for (let i = 0; i < BRUSH_OUTLINE.length; i += 2) {
-      this.setPixel(x + BRUSH_OUTLINE[i]!, y + BRUSH_OUTLINE[i + 1]!, outline);
+    for (let i = 0; i < ring.length; i += 2) {
+      this.setPixel(x + ring[i]!, y + ring[i + 1]!, outline);
     }
 
     const color = inReach ? 0xff9a3c : 0x5a5560;
 
-    for (const d of [-3, -2, 2, 3]) {
+    // Копание бьёт наружу, сбор тянет внутрь: лучи у одного начинаются в двух
+    // ячейках от центра и уходят от него, у другого стоят вплотную к кольцу
+    // и указывают на центр.
+    const arms = collecting ? [-1, 1] : [-3, -2, 2, 3];
+    for (const d of arms) {
       this.setPixel(x + d, y, color);
       this.setPixel(x, y + d, color);
     }
@@ -239,6 +277,35 @@ export class Renderer {
     px[i + 2] = color & 0xff;
   }
 
+  /**
+   * Строка состояния: режим, инвентарь, выбранное вещество и счёт.
+   *
+   * Рисуется ВСЕГДА и к диагностике отношения не имеет. Диагностика —
+   * инструмент разработчика, а инвентарь и счёт — состояние игры: не видя их,
+   * игрок не понимает, что делает, и узнаёт о заполненном инвентаре только
+   * по тому, что сбор перестал работать.
+   *
+   * Внизу кадра, а не вверху: верхний левый угол занят диагностикой, а взгляд
+   * во время игры держится на персонаже в центре — служебная строка не должна
+   * спорить с небом и горизонтом.
+   */
+  private drawStatus(hud: HudState): void {
+    const ctx = this.display.ctx;
+    ctx.font = '8px monospace';
+    ctx.textBaseline = 'alphabetic';
+
+    const carried =
+      hud.carried.length > 0 ? hud.carried.map((c) => `${c.name} ${c.count}`).join('  ') : 'пусто';
+
+    this.text(`${hud.mode}   ${hud.used}/${hud.capacity}   ${carried}`, 4, VIEW_H - 14, 0xe8e4dc);
+    this.text(`Высыпать: ${hud.selected}`, 4, VIEW_H - 4, 0xe8e4dc);
+
+    // Счёт — справа и цветом корпуса модуля: единственное место, куда кредиты
+    // приходят, и единственное золотое пятно в кадре. Связь читается без подписи.
+    const credits = `${hud.credits} ₡`;
+    this.text(credits, VIEW_W - 4 - ctx.measureText(credits).width, VIEW_H - 4, 0xe0b83c);
+  }
+
   /** Диагностика поверх кадра. Включается F3 — иначе мешает оценивать картинку. */
   private drawDebug(fps: number, material: string): void {
     if (fps <= 0) return;
@@ -250,12 +317,15 @@ export class Renderer {
     // Установка вслепую бесполезна: игрок обязан видеть, что именно поставит.
     if (material) lines.push(`Q/E: ${material}`);
 
-    lines.forEach((line, i) => {
-      const y = 4 + i * 10;
-      ctx.fillStyle = '#000000';
-      ctx.fillText(line, 5, y + 1);
-      ctx.fillStyle = '#7cf07c';
-      ctx.fillText(line, 4, y);
-    });
+    lines.forEach((line, i) => this.text(line, 4, 4 + i * 10, 0x7cf07c));
+  }
+
+  /** Надпись с чёрной подложкой в один пиксель: без неё текст тонет в кадре. */
+  private text(line: string, x: number, y: number, color: number): void {
+    const ctx = this.display.ctx;
+    ctx.fillStyle = '#000000';
+    ctx.fillText(line, x + 1, y + 1);
+    ctx.fillStyle = `#${color.toString(16).padStart(6, '0')}`;
+    ctx.fillText(line, x, y);
   }
 }

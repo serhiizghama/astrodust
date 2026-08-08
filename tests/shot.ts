@@ -16,7 +16,8 @@ import { generateLuna } from '../src/world/worlds/luna';
 import { Camera } from '../src/render/camera';
 import { Renderer } from '../src/render/renderer';
 import { Player } from '../src/entities/player';
-import { WORLD_SEED, VIEW_W, VIEW_H } from '../src/config';
+import type { HudState } from '../src/render/renderer';
+import { WORLD_SEED, VIEW_W, VIEW_H, VACUUM, MODULE } from '../src/config';
 import type { Display } from '../src/core/display';
 
 const CRC_TABLE = new Int32Array(256);
@@ -95,7 +96,16 @@ for (let i = 3; i < pixels.length; i += 4) pixels[i] = 255;
 
 const fakeDisplay = {
   pixels,
-  ctx: { putImageData() {}, fillText() {}, font: '', textBaseline: '', fillStyle: '' },
+  ctx: {
+    putImageData() {},
+    fillText() {},
+    // Строка состояния выравнивает счёт по правому краю и спрашивает ширину
+    // надписи. Моноширинный 8px — примерно 4.8 пикселя на знак.
+    measureText: (s: string) => ({ width: s.length * 4.8 }),
+    font: '',
+    textBaseline: '',
+    fillStyle: '',
+  },
   image: {},
   present() {},
 } as unknown as Display;
@@ -116,6 +126,19 @@ const FULL: Crop = { x: 0, y: 0, w: VIEW_W, h: VIEW_H };
 const SHOTS: Array<{ name: string; camX: number; camY: number; scale?: number; crop?: Crop }> = [
   { name: 'sky', camX: 500, camY: 0 },
   { name: 'surface', camX: spawn.x, camY: spawn.y },
+  // Посадочный модуль: единственное рукотворное тело в мире, и единственное
+  // место, где проверяется, читается ли оно рукотворным. Камера чуть выше
+  // площадки — иначе стенки уходят за нижний край.
+  { name: 'module', camX: MODULE.x + MODULE.width / 2, camY: spawn.y - 20 },
+  {
+    name: 'zoom-module',
+    camX: MODULE.x + MODULE.width / 2,
+    camY: spawn.y - 20,
+    scale: 6,
+    // Камера у левого края мира упирается в кламп и стоит на x=0, поэтому
+    // экранная колонка корпуса совпадает с мировой.
+    crop: { x: 50, y: 96, w: 56, h: 56 },
+  },
   { name: 'horizon', camX: 780, camY: 60 },
   { name: 'cave', camX: 700, camY: 310 },
   { name: 'zoom-earth', camX: 500, camY: 0, scale: 10, crop: { x: 226, y: 22, w: 44, h: 42 } },
@@ -136,12 +159,34 @@ function countColor(color: number): number {
 
 const bd = world.profile.backdrop;
 
+/**
+ * Строка состояния с непустым инвентарём: на снимке она всё равно не видна —
+ * текст рисуется в контекст канваса ПОСЛЕ вывода буфера, а PNG кодируется
+ * из буфера, — но входит в кадр наравне со всем остальным, и подсовывать
+ * рендеру пустую заглушку значило бы снимать не то, что видит игрок.
+ */
+const hud: HudState = {
+  // Режим копания — тот, с которого начинается партия. Он же оставляет прицел
+  // прежним, поэтому снимки сравнимы с базовыми: расхождение будет означать
+  // изменение мира или задника, а не смену формы крестика.
+  mode: 'Копание',
+  collecting: false,
+  carried: [
+    { name: 'Реголит', count: 210 },
+    { name: 'Пульпа', count: 138 },
+  ],
+  used: 348,
+  capacity: VACUUM.capacity,
+  selected: 'Пульпа',
+  credits: 1234,
+};
+
 for (const shot of SHOTS) {
   const camera = new Camera(world.width, world.height);
   camera.snapTo(shot.camX, shot.camY);
   // Персонаж — в центре кадра, на видимой опоре под ним, если она есть.
   const player = new Player(camera.x + VIEW_W / 2, camera.y + VIEW_H / 2);
-  renderer.render(camera, player, VIEW_W / 2 + 20, VIEW_H / 2, true, 0, 3);
+  renderer.render(camera, player, VIEW_W / 2 + 20, VIEW_H / 2, true, hud, 0, 3);
 
   const path = `shots/${shot.name}${suffix}.png`;
   writeFileSync(path, encodePng(pixels, shot.scale ?? 3, shot.crop ?? FULL));

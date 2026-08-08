@@ -2,7 +2,8 @@ import { World } from '../world';
 import type { WorldProfile } from '../world';
 import { MAT, MAT_STATE, MatterState } from '../materials';
 import { mulberry32, makeNoise } from '../rng';
-import { WORLD_W, WORLD_H, PLAYER } from '../../config';
+import { WORLD_W, WORLD_H, PLAYER, MODULE } from '../../config';
+import type { Rect } from '../../entities/landing-module';
 
 /**
  * Луна — первый мир.
@@ -237,6 +238,68 @@ function carveLavaTube(world: World, rand: () => number, fromX: number, toX: num
   return floors;
 }
 
+/**
+ * Выравнивает профиль поверхности под площадку и выкладывает корпус модуля.
+ *
+ * Выравнивание идёт ДО расчёта точки старта и до прорезания тоннелей: приёмник,
+ * повисший над склоном, не наполнить, а спавн обязан садиться на уже готовый
+ * рельеф. Уровень площадки берётся по центру будущего модуля, а не по минимуму
+ * пролёта: минимум означал бы, что один случайный бугор на краю поднимает
+ * площадку на десяток ячеек над окрестностью, и модуль встаёт на постаменте.
+ *
+ * Форма корпуса — П в разрезе: две боковые стенки, сплошное дно, открытый верх.
+ *
+ * ```
+ *   ▓▓▓▓          ▓▓▓▓     стенки высотой MODULE.depth
+ *   ▓▓▓▓   зона   ▓▓▓▓
+ *   ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓     дно, вровень с площадкой
+ * ```
+ *
+ * `surface` правится на месте: рендер отличает по нему небо от пещеры, и
+ * площадка, о которой он не знает, зияла бы полосой звёздного неба под ногами.
+ *
+ * @returns зона приёмника — прямоугольник пустоты внутри стенок
+ */
+function placeLandingModule(world: World, surface: Int16Array): Rect {
+  const padY = surface[MODULE.x + (MODULE.width >> 1)]!;
+  const padFrom = Math.max(0, MODULE.x - MODULE.padMargin);
+  const padTo = Math.min(WORLD_W - 1, MODULE.x + MODULE.width + MODULE.padMargin - 1);
+
+  for (let x = padFrom; x <= padTo; x++) {
+    const top = surface[x]!;
+    // Грунт ниже площадки — досыпаем спёкшимся: рыхлый обрушился бы на первом
+    // же шаге симуляции, и площадка перестала бы быть площадкой.
+    for (let y = padY; y < top; y++) world.setRaw(x, y, MAT.REGOLITH_PACKED);
+    // Грунт выше площадки — срезаем.
+    for (let y = top; y < padY; y++) world.setRaw(x, y, MAT.VACUUM);
+    surface[x] = padY;
+  }
+
+  const innerX = MODULE.x + MODULE.wall;
+  const innerW = MODULE.width - 2 * MODULE.wall;
+  const topY = padY - MODULE.depth;
+
+  // Стенки: от верха зоны до низа дна, чтобы корпус был одним телом.
+  for (let y = topY; y < padY + MODULE.floor; y++) {
+    for (let d = 0; d < MODULE.wall; d++) {
+      world.setRaw(MODULE.x + d, y, MAT.MODULE_HULL);
+      world.setRaw(MODULE.x + MODULE.width - 1 - d, y, MAT.MODULE_HULL);
+    }
+  }
+  // Дно во всю ширину.
+  for (let y = padY; y < padY + MODULE.floor; y++) {
+    for (let x = MODULE.x; x < MODULE.x + MODULE.width; x++) {
+      world.setRaw(x, y, MAT.MODULE_HULL);
+    }
+  }
+  // Зона приёмника: пустота внутри стенок, открытая сверху.
+  for (let y = topY; y < padY; y++) {
+    for (let x = innerX; x < innerX + innerW; x++) world.setRaw(x, y, MAT.VACUUM);
+  }
+
+  return { x: innerX, y: topY, w: innerW, h: MODULE.depth };
+}
+
 /** Находит верхнюю твёрдую ячейку в колонке. -1, если колонка пуста. */
 export function findGroundY(world: World, x: number): number {
   for (let y = 0; y < world.height; y++) {
@@ -253,6 +316,12 @@ export interface GeneratedWorld {
    * пустота выше поверхности — звёздное небо, ниже — тёмный интерьер.
    */
   surface: Int16Array;
+  /**
+   * Зона приёмника посадочного модуля. Возвращается генератором, потому что
+   * положение модуля зависит от рельефа: искать её потом по сетке значило бы
+   * восстанавливать то, что здесь было известно точно.
+   */
+  receiver: Rect;
 }
 
 /**
@@ -349,6 +418,12 @@ export function generateLuna(seed: number): GeneratedWorld {
   const rampStartY = surface[rampStartX] + 2;
   carveRamp(world, rampStartX, rampStartY, junctionX, tubeFloors[junctionX], 22);
 
+  // Модуль — ПОСЛЕ тоннелей и ДО расчёта точки старта. После тоннелей потому,
+  // что `carveColumn` пишет пустоту безусловно и срезал бы корпус, задень его
+  // спуск; до старта — потому что выравнивание площадки меняет рельеф, и спавн
+  // обязан считаться по уже готовому.
+  const receiver = placeLandingModule(world, surface);
+
   // Старт — левее входа в спуск, на нетронутой поверхности.
   // Опора ищется по всей ширине хитбокса: рельеф неровный, и по одной колонке
   // персонаж встал бы наполовину внутри соседнего бугра.
@@ -364,5 +439,5 @@ export function generateLuna(seed: number): GeneratedWorld {
   // материал, он осядет на первых шагах и чанки тут же уснут.
   world.chunks.wakeAll();
 
-  return { world, spawn, surface };
+  return { world, spawn, surface, receiver };
 }

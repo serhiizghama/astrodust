@@ -1,6 +1,6 @@
 import { DIG } from '../config';
 import { World } from './world';
-import { MAT, MAT_STATE, MAT_YIELDS, MAT_YIELD_RATE, MatterState } from './materials';
+import { MAT, MAT_STATE, MAT_YIELDS, MAT_YIELD_RATE, MAT_DIGGABLE, MatterState } from './materials';
 import { hashChance } from './rng';
 
 /**
@@ -68,8 +68,9 @@ export class Digger {
   }
 
   /**
-   * Круглая кисть: все статичные ячейки в радиусе разрушаются, доля `yieldRate`
-   * разрушенного материала становится его выработкой, остальные — пустотой.
+   * Круглая кисть: все статичные РАЗРУШАЕМЫЕ ячейки в радиусе разрушаются,
+   * доля `yieldRate` разрушенного материала становится его выработкой,
+   * остальные — пустотой.
    *
    * Разрушается СТАТИЧНОЕ, а не «то, что блокирует персонажа»: прежнее условие
    * пользовалось полем коллизии как признаком разрушаемости и вынуждено было
@@ -112,6 +113,11 @@ export class Digger {
 
         const m = world.get(x, y);
         if (MAT_STATE[m] !== MatterState.Solid) continue;
+        // Неразрушимое не меняется и НЕ СЧИТАЕТСЯ выемкой. Второе так же важно,
+        // как первое: попади корпус модуля в счёт, кисть по нему звучала бы
+        // помолом и могла бы сработать запасным правилом ненулевой выработки —
+        // то есть отдать реголит за то, что не разрушено.
+        if (MAT_DIGGABLE[m] !== 1) continue;
 
         if (excavated === 0) {
           firstX = x;

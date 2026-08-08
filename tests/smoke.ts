@@ -11,7 +11,8 @@ import { generateLuna } from '../src/world/worlds/luna';
 import { World } from '../src/world/world';
 import { Camera } from '../src/render/camera';
 import { Backdrop } from '../src/render/backdrop';
-import { Renderer, BRUSH_OUTLINE } from '../src/render/renderer';
+import { Renderer, BRUSH_OUTLINE, VACUUM_OUTLINE } from '../src/render/renderer';
+import type { HudState } from '../src/render/renderer';
 import type { Display } from '../src/core/display';
 import {
   MAT,
@@ -22,14 +23,22 @@ import {
   MAT_DENSITY,
   MAT_YIELDS,
   MAT_YIELD_RATE,
+  MAT_PORTABLE,
+  MAT_DIGGABLE,
+  MAT_CREDITS,
   MatterState,
   MATERIALS,
+  PORTABLE_MATERIALS,
 } from '../src/world/materials';
 import { Simulation } from '../src/world/simulation';
 import type { Occupant } from '../src/world/simulation';
 import { Digger } from '../src/world/digging';
+import { Vacuum } from '../src/world/vacuum';
+import { reactAround, REACTIONS } from '../src/world/reactions';
 import { DebugPainter } from '../src/world/painter';
 import { Player } from '../src/entities/player';
+import { Inventory } from '../src/entities/inventory';
+import { LandingModule } from '../src/entities/landing-module';
 import {
   PLAYER,
   FIXED_DT,
@@ -38,6 +47,8 @@ import {
   VIEW_H,
   CHUNK_SIZE,
   DIG,
+  VACUUM,
+  MODULE,
   BACKDROP,
   CAMERA,
   AUDIO,
@@ -62,8 +73,14 @@ import {
   dustParams,
   dustIntensity,
 } from '../src/audio/voices/dust';
-import type { Input } from '../src/core/input';
-import { aimDirection, aimTarget, digTarget, AimSourceTracker } from '../src/core/input';
+import { Input } from '../src/core/input';
+import {
+  aimDirection,
+  aimTarget,
+  actionTarget,
+  AimSourceTracker,
+  ToolModeState,
+} from '../src/core/input';
 
 let failures = 0;
 function check(name: string, ok: boolean, detail = ''): void {
@@ -88,6 +105,17 @@ class FakeInput {
   }
 }
 const asInput = (f: FakeInput) => f as unknown as Input;
+
+/** Строка состояния в начале партии — для проверок, которым важен не HUD. */
+const IDLE_HUD: HudState = {
+  mode: 'Копание',
+  collecting: false,
+  carried: [],
+  used: 0,
+  capacity: VACUUM.capacity,
+  selected: MATERIALS[PORTABLE_MATERIALS[0]!]!.name,
+  credits: 0,
+};
 
 // --- Генерация мира ---
 const first = generateLuna(WORLD_SEED);
@@ -591,24 +619,31 @@ check('Стена 8 ячеек останавливает', !runIntoWall(8));
     check('Цвета шести веществ попарно различны', clashes === '', clashes);
   }
 
-  // Множество копаемых веществ от смены правила не изменилось. Прежнее условие
-  // пользовалось флагом коллизии и вычитало из него рыхлый реголит; новое
-  // спрашивает состояние. Совпадение обязано быть проверено, а не заявлено.
+  // Копаемость определяется состоянием и признаком разрушаемости — и НИЧЕМ
+  // больше. Прежде здесь стояла проверка совпадения с правилом «блокирует
+  // персонажа и не рыхлый реголит»; совпадение держалось ровно до появления
+  // второго сыпучего вещества, которое тоже держит персонажа. Пульпа его
+  // и сломала — и это ожидаемо: правило по коллизии всегда было случайностью,
+  // а не эквивалентностью, о чём и говорила прежняя формулировка.
   {
-    const byState = MATERIALS.filter((m) => m.state === MatterState.Solid).map((m) => m.id);
-    const byCollision = MATERIALS.filter(
-      (m) => m.blocksPlayer && m.id !== MAT.REGOLITH_LOOSE,
-    ).map((m) => m.id);
-    const same =
-      byState.length === byCollision.length && byState.every((id, i) => id === byCollision[i]);
+    const diggable = MATERIALS.filter((m) => m.state === MatterState.Solid && m.diggable).map(
+      (m) => m.id,
+    );
     check(
-      'Копаются те же вещества, что и по прежнему правилу «блокирует и не рыхлый»',
-      same,
-      `по состоянию ${byState.length}, по коллизии ${byCollision.length}`,
+      'Копается статичное и разрушаемое: породы, спёкшийся реголит, лёд',
+      diggable.length === 4 &&
+        [MAT.ROCK, MAT.ROCK_DEEP, MAT.REGOLITH_PACKED, MAT.ICE].every((id) =>
+          diggable.includes(id),
+        ),
+      `копаемых ${diggable.length}: ${diggable.map((id) => MATERIALS[id]!.name).join(', ')}`,
     );
     check(
       'Жидкости и газы не копаются по построению',
-      ![MAT.WATER, MAT.LAVA, MAT.STEAM].some((id) => byState.includes(id)),
+      ![MAT.WATER, MAT.LAVA, MAT.STEAM].some((id) => diggable.includes(id)),
+    );
+    check(
+      'Сыпучее не копается: его уборка — это сбор в инвентарь',
+      ![MAT.REGOLITH_LOOSE, MAT.PULP].some((id) => diggable.includes(id)),
     );
   }
 }
@@ -942,9 +977,10 @@ check('Стена 8 ячеек останавливает', !runIntoWall(8));
   // Персонаж не тонет в куче, на которой стоит: продавливание вниз запрещено.
   {
     const w = ground();
-    for (let x = 0; x < 200; x++) for (let y = floorY + PLAYER.hitboxH; y < 86; y++) {
-      w.set(x, y, MAT.REGOLITH_LOOSE);
-    }
+    for (let x = 0; x < 200; x++)
+      for (let y = floorY + PLAYER.hitboxH; y < 86; y++) {
+        w.set(x, y, MAT.REGOLITH_LOOSE);
+      }
     const p = new Player(20, floorY);
     const input = new FakeInput();
     const sim = new Simulation();
@@ -1083,45 +1119,58 @@ check('Стена 8 ячеек останавливает', !runIntoWall(8));
     );
   }
 
-  // Вытеснение по плотности: реголит (150) тонет в воде (100).
+  // Вытеснение по плотности: пульпа (150) тонет в воде (100).
+  //
+  // Сыпучее здесь ПУЛЬПА, а не рыхлый реголит, и это вынужденно: реголит
+  // с водой реагирует, пара в контакте не доживает до конца прогона, и мерить
+  // вытеснение было бы нечем. Плотности у обоих одинаковые (150), так что
+  // проверяется ровно то же правило. Заодно это и есть требуемое «пульпа тонет
+  // в воде»: свежая пульпа не имеет права всплыть над водой, из которой
+  // только что получилась.
   {
     const w = box();
     for (let y = 80; y < 94; y++) for (let x = 30; x < 50; x++) w.set(x, y, MAT.WATER);
-    w.set(40, 70, MAT.REGOLITH_LOOSE);
+    w.set(40, 70, MAT.PULP);
     run(w, 300);
-    let regolithY = -1;
-    for (let y = 0; y < 96; y++) if (w.get(40, y) === MAT.REGOLITH_LOOSE) regolithY = y;
-    check('Плотное тонет в менее плотном', regolithY >= 90, `реголит осел на y=${regolithY}`);
+    let pulpY = -1;
+    for (let y = 0; y < 96; y++) if (w.get(40, y) === MAT.PULP) pulpY = y;
+    check('Плотное тонет в менее плотном', pulpY >= 90, `пульпа осела на y=${pulpY}`);
     check(
       'Вода при этом не исчезла',
       count(w, MAT.WATER) === 14 * 20,
       `воды ${count(w, MAT.WATER)}`,
     );
+    check(
+      'Пульпа тонет в воде и не всплывает над ней',
+      pulpY >= 90 && w.get(40, pulpY - 1) === MAT.WATER,
+      `пульпа y=${pulpY}, над ней ${MATERIALS[w.get(40, pulpY - 1)]!.name}`,
+    );
   }
 
-  // Обратное не происходит: вода не проходит сквозь плотный реголит.
+  // Обратное не происходит: вода не проходит сквозь плотное сыпучее.
   //
-  // Считается не прямоугольник под слоем, а «есть ли над водой реголит».
-  // Прямоугольник ловил не то: куча реголита с отвесными боками оседает
-  // в пологий холм шире исходной, вода стекает по его СКЛОНАМ и попадает
-  // в окно замера, ни разу не пройдя сквозь вещество.
+  // Считается не прямоугольник под слоем, а «есть ли над водой сыпучее».
+  // Прямоугольник ловил не то: куча с отвесными боками оседает в пологий холм
+  // шире исходной, вода стекает по его СКЛОНАМ и попадает в окно замера,
+  // ни разу не пройдя сквозь вещество.
+  //
+  // Сыпучее — пульпа: реголит под водой стал бы пульпой за первые же шаги,
+  // и проверка молча измеряла бы пустое множество вместо правила плотности.
   {
     const w = box();
-    for (let x = 20; x < 60; x++) for (let y = 80; y < 94; y++) w.set(x, y, MAT.REGOLITH_LOOSE);
+    for (let x = 20; x < 60; x++) for (let y = 80; y < 94; y++) w.set(x, y, MAT.PULP);
     for (let x = 20; x < 60; x++) w.set(x, 79, MAT.WATER);
     run(w, 200);
-    let waterUnderRegolith = 0;
+    let waterUnderPowder = 0;
     for (let y = 1; y < 96; y++) {
       for (let x = 0; x < 96; x++) {
-        if (w.get(x, y) === MAT.WATER && w.get(x, y - 1) === MAT.REGOLITH_LOOSE) {
-          waterUnderRegolith++;
-        }
+        if (w.get(x, y) === MAT.WATER && w.get(x, y - 1) === MAT.PULP) waterUnderPowder++;
       }
     }
     check(
       'Менее плотное не тонет в более плотном',
-      waterUnderRegolith === 0,
-      `воды под реголитом: ${waterUnderRegolith}`,
+      waterUnderPowder === 0,
+      `воды под сыпучим: ${waterUnderPowder}`,
     );
   }
 
@@ -1138,18 +1187,21 @@ check('Стена 8 ячеек останавливает', !runIntoWall(8));
     check('Статичное не раздвигается независимо от плотности', lavaBelow === 0);
   }
 
-  // Сохранение вещества над смесью.
+  // Сохранение вещества над смесью. Пара нереагирующая: сохранение при
+  // ВЫТЕСНЕНИИ и сохранение при РЕАКЦИИ — разные утверждения, и мерить их
+  // одним прогоном значит не проверить ни одно из них. Реакция проверяется
+  // отдельно, своим счётом ячеек.
   {
     const w = box();
     for (let y = 70; y < 90; y++) for (let x = 30; x < 50; x++) w.set(x, y, MAT.WATER);
-    for (let x = 30; x < 50; x++) for (let y = 60; y < 65; y++) w.set(x, y, MAT.REGOLITH_LOOSE);
+    for (let x = 30; x < 50; x++) for (let y = 60; y < 65; y++) w.set(x, y, MAT.PULP);
     const waterBefore = count(w, MAT.WATER);
-    const regolithBefore = count(w, MAT.REGOLITH_LOOSE);
+    const pulpBefore = count(w, MAT.PULP);
     run(w, 500);
     check(
       'Вещество не исчезает при вытеснении',
-      count(w, MAT.WATER) === waterBefore && count(w, MAT.REGOLITH_LOOSE) === regolithBefore,
-      `вода ${waterBefore}→${count(w, MAT.WATER)}, реголит ${regolithBefore}→${count(w, MAT.REGOLITH_LOOSE)}`,
+      count(w, MAT.WATER) === waterBefore && count(w, MAT.PULP) === pulpBefore,
+      `вода ${waterBefore}→${count(w, MAT.WATER)}, пульпа ${pulpBefore}→${count(w, MAT.PULP)}`,
     );
   }
 
@@ -1948,7 +2000,11 @@ check('Стена 8 ячеек останавливает', !runIntoWall(8));
     const b = dug();
     let diff = 0;
     for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) diff++;
-    check('Одна и та же выемка по льду дважды даёт идентичные сетки', diff === 0, `расхождений ${diff}`);
+    check(
+      'Одна и та же выемка по льду дважды даёт идентичные сетки',
+      diff === 0,
+      `расхождений ${diff}`,
+    );
   }
 
   // Вода подчиняется правилам жидкости с первого же шага: отдельного правила
@@ -2038,10 +2094,13 @@ check('Стена 8 ячеек останавливает', !runIntoWall(8));
       );
     }
 
-    // Реголит, обрушенный в добытую воду, тонет: плотность 150 против 100,
-    // и вытеснение идёт обменом ячеек, а не уничтожением воды.
+    // Реголит, обрушенный в добытую воду, не тонет в ней, а РЕАГИРУЕТ: пара
+    // «реголит рядом с водой» превращается в две ячейки пульпы. Проверяется
+    // на воде, добытой копанием льда, а не налитой руками, — цепочка целиком:
+    // лёд → вода → пульпа.
     {
-      const before = countOf(w, MAT.WATER);
+      const waterBefore = countOf(w, MAT.WATER);
+      const cellsBefore = waterBefore + countOf(w, MAT.REGOLITH_LOOSE) + countOf(w, MAT.PULP);
       let dropped = 0;
       for (let x = 40; x < 56 && dropped < 16; x++) {
         for (let y = 0; y < w.height; y++) {
@@ -2052,17 +2111,42 @@ check('Стена 8 ячеек останавливает', !runIntoWall(8));
           break;
         }
       }
-      settle(w, 4000);
-      let sunk = 0;
+      const steps = settle(w, 4000);
+      const pulp = countOf(w, MAT.PULP);
+      const cellsAfter = countOf(w, MAT.WATER) + countOf(w, MAT.REGOLITH_LOOSE) + pulp;
+
+      // Ни одной несработавшей пары: чанк не имеет права заснуть, оставив
+      // реголит лежать на воде навсегда. Это самый вероятный дефект реакций,
+      // и проявляется он не сразу, а «иногда не превращается».
+      let touching = 0;
       for (let y = 0; y < w.height; y++) {
         for (let x = 0; x < w.width; x++) {
-          if (w.get(x, y) === MAT.REGOLITH_LOOSE && w.get(x, y - 1) === MAT.WATER) sunk++;
+          if (w.get(x, y) !== MAT.REGOLITH_LOOSE) continue;
+          if (
+            w.get(x, y - 1) === MAT.WATER ||
+            w.get(x, y + 1) === MAT.WATER ||
+            w.get(x - 1, y) === MAT.WATER ||
+            w.get(x + 1, y) === MAT.WATER
+          ) {
+            touching++;
+          }
         }
       }
+
       check(
-        'Реголит тонет в добытой воде, и воды от этого не убывает',
-        dropped > 0 && sunk > 0 && countOf(w, MAT.WATER) >= before,
-        `сброшено ${dropped}, под водой ${sunk}, вода ${before} → ${countOf(w, MAT.WATER)}`,
+        'Реголит, упавший в добытую воду, становится пульпой',
+        dropped > 0 && pulp > 0,
+        `сброшено ${dropped}, пульпы ${pulp}, улеглось на шаге ${steps}`,
+      );
+      check(
+        'После покоя не осталось ни одной пары «реголит рядом с водой»',
+        steps > 0 && touching === 0,
+        `таких пар ${touching}, улеглось на шаге ${steps}`,
+      );
+      check(
+        'Реакция сохранила количество ячеек: 1 + 1 дало 2',
+        cellsAfter === cellsBefore + dropped,
+        `${cellsBefore} + ${dropped} = ${cellsBefore + dropped}, стало ${cellsAfter}`,
       );
     }
   }
@@ -2162,6 +2246,1173 @@ check('Стена 8 ячеек останавливает', !runIntoWall(8));
       }
     }
     check('Точка старта не во льду', iceAtSpawn === 0, `ячеек льда в спавне ${iceAtSpawn}`);
+  }
+}
+
+// --- Реакции, инвентарь и приёмник ---
+{
+  /** Пустой мир с полом по нижней строке. */
+  function box(width = 96, height = 96): World {
+    const w = new World(width, height, first.world.profile);
+    for (let x = 0; x < width; x++) w.set(x, height - 1, MAT.ROCK);
+    return w;
+  }
+  function count(w: World, material: number): number {
+    let n = 0;
+    for (const c of w.cells) if (c === material) n++;
+    return n;
+  }
+  /** Прогоняет шаги, пока мир не уляжется. -1, если не улёгся за предел. */
+  function settle(w: World, limit: number): number {
+    const sim = new Simulation();
+    for (let i = 0; i < limit; i++) {
+      sim.update(w, null);
+      if (sim.lastCellsVisited === 0) return i + 1;
+    }
+    return -1;
+  }
+  /** Сколько чанков разбужено на следующий шаг. */
+  function pending(w: World): number {
+    let n = 0;
+    for (let cy = 0; cy < w.chunks.rows; cy++) {
+      for (let cx = 0; cx < w.chunks.cols; cx++) if (w.chunks.isPending(cx, cy)) n++;
+    }
+    return n;
+  }
+  /** Опустошает оба поколения флагов: дальше видно только новые пробуждения. */
+  function quiet(w: World): void {
+    w.chunks.advance();
+    w.chunks.advance();
+  }
+
+  // --- Новые поля таблицы материалов ---
+
+  // Попарная различимость всех восьми веществ. Пульпа обязана быть отличима
+  // от сухого реголита — иначе результат реакции не виден вовсе, — а корпус
+  // модуля должен читаться рукотворным на фоне любого грунта.
+  {
+    const visible = [
+      MAT.REGOLITH_PACKED,
+      MAT.REGOLITH_LOOSE,
+      MAT.PULP,
+      MAT.ICE,
+      MAT.WATER,
+      MAT.LAVA,
+      MAT.STEAM,
+      MAT.MODULE_HULL,
+    ];
+    let clashes = '';
+    for (let i = 0; i < visible.length; i++) {
+      for (let j = i + 1; j < visible.length; j++) {
+        const a = MATERIALS[visible[i]!]!;
+        const b = MATERIALS[visible[j]!]!;
+        if (a.color === b.color) clashes += `${a.name}=${b.name} `;
+      }
+    }
+    check('Цвета восьми веществ попарно различны', clashes === '', clashes);
+  }
+
+  {
+    const portable = MATERIALS.filter((m) => m.portable).map((m) => m.id);
+    check(
+      'Переносимы ровно рыхлый реголит и пульпа',
+      portable.length === 2 && portable.includes(MAT.REGOLITH_LOOSE) && portable.includes(MAT.PULP),
+      `переносимых ${portable.length}: ${portable.map((id) => MATERIALS[id]!.name).join(', ')}`,
+    );
+    check(
+      'Статичное непереносимо: подобрать породу пылесосом нельзя',
+      MATERIALS.filter((m) => m.state === MatterState.Solid).every((m) => !m.portable),
+    );
+    check(
+      'Жидкости и газы непереносимы',
+      [MAT.WATER, MAT.LAVA, MAT.STEAM].every((id) => MAT_PORTABLE[id] === 0),
+    );
+
+    const indestructible = MATERIALS.filter((m) => !m.diggable).map((m) => m.id);
+    check(
+      'Неразрушимое вещество ровно одно — корпус модуля',
+      indestructible.length === 1 && indestructible[0] === MAT.MODULE_HULL,
+      `неразрушимых ${indestructible.length}`,
+    );
+    // Копание читает развёрнутый массив, а не таблицу. Разъезд между ними
+    // означал бы, что неразрушимость записана, но не действует.
+    check(
+      'Развёрнутые массивы совпадают с таблицей',
+      MATERIALS.every(
+        (m) =>
+          MAT_DIGGABLE[m.id] === (m.diggable ? 1 : 0) &&
+          MAT_PORTABLE[m.id] === (m.portable ? 1 : 0) &&
+          MAT_CREDITS[m.id] === m.credits,
+      ),
+    );
+
+    check(
+      'Ставки: реголит и пульпа положительны, пульпа дороже',
+      MAT_CREDITS[MAT.REGOLITH_LOOSE]! > 0 &&
+        MAT_CREDITS[MAT.PULP]! > MAT_CREDITS[MAT.REGOLITH_LOOSE]!,
+      `реголит ${MAT_CREDITS[MAT.REGOLITH_LOOSE]}, пульпа ${MAT_CREDITS[MAT.PULP]}`,
+    );
+    check(
+      'Остальное не принимается: ставка ноль',
+      [
+        MAT.ROCK,
+        MAT.ROCK_DEEP,
+        MAT.REGOLITH_PACKED,
+        MAT.ICE,
+        MAT.WATER,
+        MAT.LAVA,
+        MAT.STEAM,
+        MAT.MODULE_HULL,
+      ].every((id) => MAT_CREDITS[id] === 0),
+    );
+    check(
+      'Плотность пульпы выше плотности воды',
+      MAT_DENSITY[MAT.PULP]! > MAT_DENSITY[MAT.WATER]!,
+      `пульпа ${MAT_DENSITY[MAT.PULP]}, вода ${MAT_DENSITY[MAT.WATER]}`,
+    );
+    check('Пульпа сыпучая, а не жидкая', MAT_STATE[MAT.PULP] === MatterState.Powder);
+    check(
+      'Осыпаемость пульпы ниже, чем у сухого реголита',
+      MAT_SLIP[MAT.PULP]! < MAT_SLIP[MAT.REGOLITH_LOOSE]!,
+      `пульпа ${MAT_SLIP[MAT.PULP]}, реголит ${MAT_SLIP[MAT.REGOLITH_LOOSE]}`,
+    );
+  }
+
+  // --- Реакции ---
+
+  {
+    check(
+      'Реакция реголита с водой описана таблицей',
+      REACTIONS.some(
+        (r) =>
+          ((r.a === MAT.REGOLITH_LOOSE && r.b === MAT.WATER) ||
+            (r.a === MAT.WATER && r.b === MAT.REGOLITH_LOOSE)) &&
+          r.toA === MAT.PULP &&
+          r.toB === MAT.PULP,
+      ),
+    );
+
+    // Соседство по стороне — все четыре направления, а не одно.
+    for (const [dx, dy, name] of [
+      [0, -1, 'сверху'],
+      [0, 1, 'снизу'],
+      [-1, 0, 'слева'],
+      [1, 0, 'справа'],
+    ] as const) {
+      const w = box();
+      w.set(40, 40, MAT.REGOLITH_LOOSE);
+      w.set(40 + dx, 40 + dy, MAT.WATER);
+      const fired = reactAround(w, 40, 40);
+      check(
+        `Реголит и вода ${name} дают две ячейки пульпы`,
+        fired && w.get(40, 40) === MAT.PULP && w.get(40 + dx, 40 + dy) === MAT.PULP,
+        `${MATERIALS[w.get(40, 40)]!.name} / ${MATERIALS[w.get(40 + dx, 40 + dy)]!.name}`,
+      );
+    }
+
+    // Диагональ контактом не считается: две ячейки, разделённые углом двух
+    // стенок, физически не касаются.
+    {
+      const w = box();
+      w.set(40, 40, MAT.REGOLITH_LOOSE);
+      w.set(41, 41, MAT.WATER);
+      w.set(41, 40, MAT.ROCK);
+      w.set(40, 41, MAT.ROCK);
+      const fired = reactAround(w, 40, 40);
+      check(
+        'Диагональ контактом не считается',
+        !fired && w.get(40, 40) === MAT.REGOLITH_LOOSE && w.get(41, 41) === MAT.WATER,
+      );
+    }
+
+    // Проверка, не нашедшая пары, не будит ни одного чанка. Именно это отличает
+    // «реакция пользуется чужими пробуждениями» от «реакция держит мир живым».
+    {
+      const w = box();
+      w.set(40, 40, MAT.REGOLITH_LOOSE);
+      w.set(41, 40, MAT.REGOLITH_LOOSE);
+      quiet(w);
+      const before = pending(w);
+      const fired = reactAround(w, 40, 40);
+      check(
+        'Несработавшая проверка не будит ни одного чанка',
+        !fired && before === 0 && pending(w) === 0,
+        `было ${before}, стало ${pending(w)}`,
+      );
+    }
+
+    // Сработавшая — будит, и это не то же самое: она изменила мир, а продукт
+    // обязан подчиняться своим правилам движения с первого же шага.
+    {
+      const w = box();
+      w.set(40, 40, MAT.REGOLITH_LOOSE);
+      w.set(40, 41, MAT.WATER);
+      quiet(w);
+      reactAround(w, 40, 40);
+      check(
+        'Сработавшая реакция будит окрестность продукта',
+        pending(w) > 0,
+        `чанков ${pending(w)}`,
+      );
+    }
+
+    // Высыпанное вещество реагирует — даже когда двигаться ему НЕКУДА.
+    //
+    // Карман шириной в ячейку с породой снизу и по диагоналям: реголит, попавший
+    // сюда высыпанием, не сделает ни одного перемещения, а вода рядом не сможет
+    // войти в него по плотности. Пара, привязанная к перемещению, осталась бы
+    // несработавшей навсегда — чанк засыпает, и будить его некому. Это и есть
+    // причина, по которой реакция спрашивается на обходе, а не только на сдвиге.
+    {
+      const w = box();
+      // Сплошная порода на всю область кисти: свободна ровно одна ячейка,
+      // поэтому высыпание попадает именно в карман, а не куда придётся.
+      for (let y = 37; y <= 43; y++) for (let x = 36; x <= 45; x++) w.set(x, y, MAT.ROCK);
+      w.set(40, 40, MAT.VACUUM);
+      w.set(41, 40, MAT.WATER);
+
+      const inv = new Inventory();
+      inv.add(MAT.REGOLITH_LOOSE, 1);
+      const placed = Vacuum.dump(w, inv, 40, 40);
+      const settledAt = settle(w, 2000);
+
+      check(
+        'Высыпанный в тупик реголит всё равно реагирует с водой рядом',
+        placed === 1 && w.get(40, 40) === MAT.PULP && w.get(41, 40) === MAT.PULP && settledAt > 0,
+        `размещено ${placed}, в кармане ${MATERIALS[w.get(40, 40)]!.name}, ` +
+          `рядом ${MATERIALS[w.get(41, 40)]!.name}, покой на шаге ${settledAt}`,
+      );
+    }
+
+    // Сохранение количества ячеек и повторяемость на смеси.
+    {
+      function mix(): World {
+        const w = box();
+        for (let y = 70; y < 90; y++) for (let x = 30; x < 60; x++) w.set(x, y, MAT.WATER);
+        for (let y = 50; y < 60; y++) for (let x = 35; x < 55; x++) w.set(x, y, MAT.REGOLITH_LOOSE);
+        return w;
+      }
+      const w = mix();
+      const before = count(w, MAT.WATER) + count(w, MAT.REGOLITH_LOOSE) + count(w, MAT.PULP);
+      const steps = settle(w, 8000);
+      const after = count(w, MAT.WATER) + count(w, MAT.REGOLITH_LOOSE) + count(w, MAT.PULP);
+      check(
+        'Реакция сохраняет количество ячеек на смеси',
+        after === before,
+        `${before} → ${after}, пульпы ${count(w, MAT.PULP)}, улеглось на шаге ${steps}`,
+      );
+      check(
+        'Улёгшийся после реакций мир обходит ноль ячеек',
+        steps > 0,
+        steps < 0 ? 'не улёгся за 8000 шагов' : `улеглось на шаге ${steps}`,
+      );
+
+      const a = mix();
+      settle(a, 8000);
+      let diff = 0;
+      for (let i = 0; i < a.cells.length; i++) if (a.cells[i] !== w.cells[i]) diff++;
+      check('Одна и та же смесь дважды даёт идентичные сетки', diff === 0, `расхождений ${diff}`);
+    }
+
+    // Пульпа держит склон круче сухого реголита при одинаковом объёме.
+    {
+      function pile(material: number, cells: number): { width: number; height: number } {
+        const w = box(200, 96);
+        const sim = new Simulation();
+        let poured = 0;
+        for (let i = 0; i < 8000; i++) {
+          if (poured < cells && w.get(100, 40) === MAT.VACUUM) {
+            w.set(100, 40, material);
+            poured++;
+          }
+          sim.update(w, null);
+          if (poured >= cells && sim.lastCellsVisited === 0) break;
+        }
+        let top = 96;
+        let minX = Infinity;
+        let maxX = -Infinity;
+        for (let y = 0; y < 95; y++) {
+          for (let x = 0; x < 200; x++) {
+            if (w.get(x, y) !== material) continue;
+            if (y < top) top = y;
+            if (x < minX) minX = x;
+            if (x > maxX) maxX = x;
+          }
+        }
+        return { width: maxX - minX + 1, height: 94 - top + 1 };
+      }
+      const dry = pile(MAT.REGOLITH_LOOSE, 300);
+      const wet = pile(MAT.PULP, 300);
+      check(
+        'Пульпа держит склон круче сухого реголита при одинаковом объёме',
+        wet.height > dry.height && wet.width < dry.width,
+        `реголит ${dry.width}×${dry.height}, пульпа ${wet.width}×${wet.height}`,
+      );
+    }
+  }
+
+  // --- Инвентарь и сбор ---
+
+  {
+    // Сбор забирает переносимое и не трогает всё остальное.
+    {
+      const w = box();
+      w.set(40, 40, MAT.REGOLITH_LOOSE);
+      w.set(41, 40, MAT.PULP);
+      w.set(40, 41, MAT.ROCK);
+      w.set(41, 41, MAT.WATER);
+      w.set(39, 40, MAT.MODULE_HULL);
+      const inv = new Inventory();
+      const collected = Vacuum.collect(w, inv, 40, 40);
+      check(
+        'Сбор забирает реголит и пульпу',
+        collected === 2 && inv.count(MAT.REGOLITH_LOOSE) === 1 && inv.count(MAT.PULP) === 1,
+        `собрано ${collected}`,
+      );
+      check(
+        'Сбор не трогает породу, воду и корпус модуля',
+        w.get(40, 41) === MAT.ROCK &&
+          w.get(41, 41) === MAT.WATER &&
+          w.get(39, 40) === MAT.MODULE_HULL,
+      );
+      check(
+        'Собранные ячейки исчезли из мира',
+        w.get(40, 40) === MAT.VACUUM && w.get(41, 40) === MAT.VACUUM,
+      );
+    }
+
+    // Сохранение вещества: сколько исчезло из мира, столько прибавилось.
+    {
+      const w = box();
+      for (let y = 38; y <= 42; y++) for (let x = 38; x <= 42; x++) w.set(x, y, MAT.REGOLITH_LOOSE);
+      const before = count(w, MAT.REGOLITH_LOOSE);
+      const inv = new Inventory();
+      const collected = Vacuum.collect(w, inv, 40, 40);
+      check(
+        'Собранное сохраняется: убыль мира равна приросту инвентаря',
+        before - count(w, MAT.REGOLITH_LOOSE) === collected &&
+          inv.count(MAT.REGOLITH_LOOSE) === collected &&
+          inv.used === collected,
+        `собрано ${collected} из ${before}`,
+      );
+    }
+
+    // Заполненный инвентарь прекращает сбор, а вещество остаётся в мире.
+    {
+      const w = box();
+      for (let y = 38; y <= 42; y++) for (let x = 38; x <= 42; x++) w.set(x, y, MAT.REGOLITH_LOOSE);
+      const before = count(w, MAT.REGOLITH_LOOSE);
+      const inv = new Inventory(4);
+      inv.add(MAT.PULP, 4);
+      const collected = Vacuum.collect(w, inv, 40, 40);
+      check(
+        'На пределе ёмкости сбор не берёт ничего, а куча остаётся',
+        collected === 0 && count(w, MAT.REGOLITH_LOOSE) === before && inv.free === 0,
+        `собрано ${collected}, осталось ${count(w, MAT.REGOLITH_LOOSE)}`,
+      );
+    }
+
+    // Частично помещающаяся кисть забирает ровно остаток ёмкости.
+    {
+      const w = box();
+      for (let y = 38; y <= 42; y++) for (let x = 38; x <= 42; x++) w.set(x, y, MAT.REGOLITH_LOOSE);
+      const covered = (() => {
+        const inv = new Inventory();
+        return Vacuum.collect(box0(w), inv, 40, 40);
+      })();
+      function box0(src: World): World {
+        const c = box();
+        c.cells.set(src.cells);
+        return c;
+      }
+      const inv = new Inventory(3);
+      const collected = Vacuum.collect(w, inv, 40, 40);
+      check(
+        'Кисть, накрывшая больше ячеек, чем влезает, забирает ровно остаток',
+        covered > 3 && collected === 3 && inv.used === 3 && count(w, MAT.REGOLITH_LOOSE) === 25 - 3,
+        `кисть накрывает ${covered}, влезло ${collected}, в мире осталось ${count(w, MAT.REGOLITH_LOOSE)}`,
+      );
+    }
+
+    // Разные материалы делят одну ёмкость.
+    {
+      const inv = new Inventory(10);
+      inv.add(MAT.REGOLITH_LOOSE, 6);
+      const pulp = inv.add(MAT.PULP, 6);
+      check(
+        'Разные материалы делят один предел',
+        pulp === 4 &&
+          inv.count(MAT.REGOLITH_LOOSE) === 6 &&
+          inv.count(MAT.PULP) === 4 &&
+          inv.free === 0,
+        `реголит ${inv.count(MAT.REGOLITH_LOOSE)}, пульпа ${inv.count(MAT.PULP)}, свободно ${inv.free}`,
+      );
+    }
+
+    // Сбор будит область: лежащее выше обязано осыпаться. Столб в шахте
+    // с каменными стенками, а не свободная куча: свободная расплылась бы
+    // в холм шире кисти, и «осело ли верхнее» стало бы вопросом о форме кучи,
+    // а не о пробуждении.
+    {
+      const w = box();
+      for (let y = 60; y < 95; y++) {
+        w.set(39, y, MAT.ROCK);
+        w.set(41, y, MAT.ROCK);
+        w.set(40, y, MAT.REGOLITH_LOOSE);
+      }
+      settle(w, 500);
+      quiet(w);
+      const inv = new Inventory();
+      Vacuum.collect(w, inv, 40, 93);
+      check('Сбор будит область мира', pending(w) > 0, `чанков ${pending(w)}`);
+      const topBefore = (() => {
+        for (let y = 0; y < 96; y++) if (w.get(40, y) === MAT.REGOLITH_LOOSE) return y;
+        return -1;
+      })();
+      settle(w, 500);
+      const topAfter = (() => {
+        for (let y = 0; y < 96; y++) if (w.get(40, y) === MAT.REGOLITH_LOOSE) return y;
+        return -1;
+      })();
+      check(
+        'Оставшееся над собранным осело',
+        topAfter > topBefore,
+        `верх столба ${topBefore} → ${topAfter}`,
+      );
+    }
+
+    // Дальность: недостижимая цель не меняет ни мир, ни инвентарь.
+    {
+      const w = box();
+      for (let y = 38; y <= 42; y++) for (let x = 38; x <= 42; x++) w.set(x, y, MAT.REGOLITH_LOOSE);
+      const before = count(w, MAT.REGOLITH_LOOSE);
+      const inv = new Inventory();
+      const vac = new Vacuum();
+      const far = DIG.reach + 20;
+      vac.updateSuck(FIXED_DT, w, inv, true, 40 + far, 40, 40, 40);
+      check(
+        'Сбор за пределом дальности не меняет ни мир, ни инвентарь',
+        count(w, MAT.REGOLITH_LOOSE) === before && inv.used === 0,
+      );
+      // …а в пределах — меняет, и темп задан интервалом, а не частотой кадров.
+      const first1 = vac.updateSuck(FIXED_DT, w, inv, true, 40, 40, 40, 40);
+      const second = vac.updateSuck(FIXED_DT, w, inv, true, 40, 40, 40, 40);
+      check(
+        'Темп сбора задан интервалом: второе применение в том же кадре не проходит',
+        first1 > 0 && second === 0,
+        `первое ${first1}, второе ${second}`,
+      );
+    }
+
+    // Кисть сбора не больше копательной.
+    check(
+      'Кисть сбора не больше кисти копания',
+      VACUUM.radius <= DIG.radius && VACUUM_OUTLINE.length < BRUSH_OUTLINE.length,
+      `сбор r=${VACUUM.radius}, копание r=${DIG.radius}`,
+    );
+  }
+
+  // --- Высыпание ---
+
+  {
+    // Ставится только в пустоту, мир не разрушается.
+    {
+      const w = box();
+      for (let y = 38; y <= 42; y++) for (let x = 38; x <= 42; x++) w.set(x, y, MAT.ROCK);
+      const rockBefore = count(w, MAT.ROCK);
+      const inv = new Inventory();
+      inv.add(MAT.REGOLITH_LOOSE, 50);
+      const placed = Vacuum.dump(w, inv, 40, 40);
+      check(
+        'Высыпание в породу не проходит и счётчик не трогает',
+        placed === 0 && inv.count(MAT.REGOLITH_LOOSE) === 50 && count(w, MAT.ROCK) === rockBefore,
+        `размещено ${placed}, породы ${rockBefore} → ${count(w, MAT.ROCK)}`,
+      );
+    }
+    {
+      const w = box();
+      const inv = new Inventory();
+      inv.add(MAT.REGOLITH_LOOSE, 50);
+      const placed = Vacuum.dump(w, inv, 40, 40);
+      check(
+        'Высыпание в пустоту ставит вещество и уменьшает счётчик ровно на размещённое',
+        placed > 0 &&
+          count(w, MAT.REGOLITH_LOOSE) === placed &&
+          inv.count(MAT.REGOLITH_LOOSE) === 50 - placed &&
+          inv.used === 50 - placed,
+        `размещено ${placed}`,
+      );
+      // Высыпанное немедленно подчиняется своим правилам: отдельного поведения
+      // у «только что высыпанного» нет.
+      settle(w, 1000);
+      let lowest = -1;
+      for (let y = 0; y < 96; y++) if (w.get(40, y) === MAT.REGOLITH_LOOSE) lowest = y;
+      check(
+        'Высыпанное осыпается по правилам своего вещества',
+        lowest === 94,
+        `нижняя ячейка на y=${lowest}`,
+      );
+    }
+    // Пустой счётчик ничего не даёт.
+    {
+      const w = box();
+      const inv = new Inventory();
+      const before = w.cells.slice();
+      const placed = Vacuum.dump(w, inv, 40, 40);
+      let changed = 0;
+      for (let i = 0; i < before.length; i++) if (before[i] !== w.cells[i]) changed++;
+      check('Высыпание при пустом счётчике не меняет мир', placed === 0 && changed === 0);
+    }
+    // В хитбокс персонажа вещество не попадает.
+    {
+      const w = box();
+      const inv = new Inventory();
+      inv.add(MAT.REGOLITH_LOOSE, 50);
+      const occupant: Occupant = { x: 39, y: 38, w: PLAYER.hitboxW, h: PLAYER.hitboxH };
+      Vacuum.dump(w, inv, 40, 40, occupant);
+      let inside = 0;
+      for (let y = occupant.y; y < occupant.y + occupant.h; y++) {
+        for (let x = occupant.x; x < occupant.x + occupant.w; x++) {
+          if (w.get(x, y) !== MAT.VACUUM) inside++;
+        }
+      }
+      check(
+        'Высыпание в себя не проходит: хитбокс остаётся пустым',
+        inside === 0,
+        `ячеек внутри хитбокса ${inside}`,
+      );
+    }
+    // Смена выбранного вещества меняет то, что высыпается.
+    {
+      const inv = new Inventory();
+      const startName = inv.selectedName;
+      const startId = inv.selected;
+      inv.cycleSelected();
+      const nextId = inv.selected;
+      check(
+        'Смена выбранного вещества меняет и вещество, и подпись',
+        nextId !== startId && inv.selectedName !== startName,
+        `${startName} → ${inv.selectedName}`,
+      );
+      for (let i = 1; i < PORTABLE_MATERIALS.length; i++) inv.cycleSelected();
+      check('Перебор выбранного идёт по кругу', inv.selected === startId);
+
+      const w = box();
+      inv.add(nextId, 5);
+      inv.cycleSelected();
+      while (inv.selected !== nextId) inv.cycleSelected();
+      Vacuum.dump(w, inv, 40, 40);
+      check('Высыпается именно выбранное вещество', count(w, nextId) > 0);
+    }
+    // Высыпание тоже подчиняется дальности.
+    {
+      const w = box();
+      const inv = new Inventory();
+      inv.add(MAT.REGOLITH_LOOSE, 50);
+      const vac = new Vacuum();
+      vac.updateDump(FIXED_DT, w, inv, true, 40 + DIG.reach + 20, 40, 40, 40);
+      check('Высыпание за пределом дальности не меняет мир', count(w, MAT.REGOLITH_LOOSE) === 0);
+    }
+  }
+
+  // --- Режим инструмента ---
+
+  {
+    const tool = new ToolModeState();
+    check(
+      'Режим начинается с копания и виден подписью',
+      tool.digging && !tool.collecting && tool.name.length > 0,
+      tool.name,
+    );
+
+    // Выражение из главного цикла воспроизведено буквально: копание получает
+    // `удержание && режим копания`, сбор — `удержание && режим сбора`.
+    const held = true;
+    const w = box();
+    for (let y = 38; y <= 42; y++) for (let x = 38; x <= 42; x++) w.set(x, y, MAT.ROCK);
+    for (let x = 36; x <= 37; x++) w.set(x, 40, MAT.REGOLITH_LOOSE);
+    const inv = new Inventory();
+    const digger = new Digger();
+    const vac = new Vacuum();
+
+    const dug = digger.update(FIXED_DT, w, held && tool.digging, 40, 40, 40, 40);
+    check('В режиме копания инструмент копает', dug > 0, `выемка ${dug}`);
+
+    tool.cycle();
+    check(
+      'Переключение режима видно сразу, до первого применения',
+      tool.collecting && !tool.digging && tool.name.length > 0,
+      tool.name,
+    );
+
+    const rockBefore = count(w, MAT.ROCK);
+    const dug2 = digger.update(FIXED_DT, w, held && tool.digging, 40, 40, 40, 40);
+    check(
+      'В режиме сбора кисть копания не применяется вовсе',
+      dug2 === 0 && count(w, MAT.ROCK) === rockBefore,
+      `выемка ${dug2}, породы ${rockBefore} → ${count(w, MAT.ROCK)}`,
+    );
+
+    const sucked = vac.updateSuck(FIXED_DT, w, inv, held && tool.collecting, 37, 40, 37, 40);
+    check(
+      'В режиме сбора инструмент собирает',
+      sucked > 0 && inv.used === sucked,
+      `собрано ${sucked}`,
+    );
+
+    // Высыпание от режима не зависит.
+    for (const mode of ['сбора', 'копания']) {
+      const dw = box();
+      const di = new Inventory();
+      di.add(MAT.REGOLITH_LOOSE, 20);
+      const dv = new Vacuum();
+      const placed = dv.updateDump(FIXED_DT, dw, di, true, 40, 40, 40, 40);
+      check(`Высыпание работает в режиме ${mode}`, placed > 0, `размещено ${placed}`);
+      tool.cycle();
+    }
+
+    // Полный цикл без мыши: у каждого действия есть клавиша, и клавиатурная
+    // цель достижима по построению.
+    {
+      const dir = aimDirection(0, 0, 1);
+      const target = actionTarget(false, 999, 999, 40, 40, dir.x, dir.y);
+      check(
+        'Без мыши цель берётся от персонажа, а не от нетронутого курсора',
+        Digger.inReach(40, 40, target.x, target.y) && target.x !== 999,
+        `цель (${target.x},${target.y})`,
+      );
+    }
+  }
+
+  // --- Посадочный модуль и кредиты ---
+
+  {
+    /** Мир с приёмником: дно и две стенки из корпуса, открытый верх. */
+    function withReceiver(): { world: World; module: LandingModule } {
+      const w = box();
+      const zone = { x: 40, y: 40, w: 6, h: 5 };
+      for (let y = zone.y; y < zone.y + zone.h + 2; y++) {
+        for (let d = 0; d < 2; d++) {
+          w.set(zone.x - 1 - d, y, MAT.MODULE_HULL);
+          w.set(zone.x + zone.w + d, y, MAT.MODULE_HULL);
+        }
+      }
+      for (let y = zone.y + zone.h; y < zone.y + zone.h + 2; y++) {
+        for (let x = zone.x - 2; x < zone.x + zone.w + 2; x++) w.set(x, y, MAT.MODULE_HULL);
+      }
+      return { world: w, module: new LandingModule(zone) };
+    }
+
+    // Высыпанное принято, счёт вырос по ставке.
+    {
+      const { world: w, module } = withReceiver();
+      const inv = new Inventory();
+      inv.add(MAT.PULP, 20);
+      while (inv.selected !== MAT.PULP) inv.cycleSelected();
+      const placed = Vacuum.dump(w, inv, 42, 42);
+      const earned = module.update(w);
+      check(
+        'Высыпанная в приёмник пульпа исчезает и даёт кредиты по ставке',
+        placed > 0 && earned === placed * MAT_CREDITS[MAT.PULP]! && count(w, MAT.PULP) === 0,
+        `размещено ${placed}, начислено ${earned}, осталось ${count(w, MAT.PULP)}`,
+      );
+      check('Счёт модуля равен начисленному', module.credits === earned, `${module.credits}`);
+    }
+
+    // Самотёком — так же. Персонажа рядом нет вовсе.
+    {
+      const { world: w, module } = withReceiver();
+      for (let x = 40; x < 46; x++) w.set(x, 30, MAT.REGOLITH_LOOSE);
+      const dropped = count(w, MAT.REGOLITH_LOOSE);
+      const sim = new Simulation();
+      for (let i = 0; i < 400; i++) {
+        sim.update(w, null);
+        module.update(w);
+      }
+      check(
+        'Скатившееся в зону самотёком принимается так же, и игрок для этого не нужен',
+        module.credits === dropped * MAT_CREDITS[MAT.REGOLITH_LOOSE]! &&
+          count(w, MAT.REGOLITH_LOOSE) === 0,
+        `сброшено ${dropped}, начислено ${module.credits}, осталось ${count(w, MAT.REGOLITH_LOOSE)}`,
+      );
+    }
+
+    // Непринимаемое остаётся и ведёт себя по своим правилам.
+    {
+      const { world: w, module } = withReceiver();
+      for (let x = 40; x < 46; x++) w.set(x, 41, MAT.WATER);
+      const before = count(w, MAT.WATER);
+      const sim = new Simulation();
+      for (let i = 0; i < 200; i++) {
+        sim.update(w, null);
+        module.update(w);
+      }
+      check(
+        'Вещество с нулевой ставкой в зоне остаётся и кредитов не даёт',
+        module.credits === 0 && count(w, MAT.WATER) === before,
+        `воды ${before} → ${count(w, MAT.WATER)}, кредитов ${module.credits}`,
+      );
+    }
+
+    // Цепочка выгоднее сырья: одна ячейка реголита через воду даёт больше.
+    {
+      const direct = MAT_CREDITS[MAT.REGOLITH_LOOSE]!;
+
+      const w = box();
+      w.set(40, 40, MAT.REGOLITH_LOOSE);
+      w.set(40, 41, MAT.WATER);
+      reactAround(w, 40, 40);
+      const pulp = count(w, MAT.PULP);
+      const chain = pulp * MAT_CREDITS[MAT.PULP]!;
+      check(
+        'Цепочка выгоднее сырья: реголит через воду даёт больше кредитов',
+        pulp === 2 && chain > direct,
+        `напрямую ${direct} ₡, через воду ${pulp} ячейки пульпы = ${chain} ₡`,
+      );
+    }
+
+    // Счёт монотонно не убывает при любой последовательности действий.
+    {
+      const { world: w, module } = withReceiver();
+      const inv = new Inventory();
+      inv.add(MAT.REGOLITH_LOOSE, 30);
+      inv.add(MAT.PULP, 30);
+      const vac = new Vacuum();
+      const sim = new Simulation();
+      let previous = module.credits;
+      let dropped = false;
+      for (let i = 0; i < 600; i++) {
+        vac.updateDump(FIXED_DT, w, inv, i % 3 === 0, 40, 42, 42, 42);
+        Vacuum.collect(w, inv, 43, 38);
+        sim.update(w, null);
+        module.update(w);
+        if (module.credits < previous) dropped = true;
+        previous = module.credits;
+      }
+      check(
+        'Счёт кредитов ни разу не убыл и остался целым и неотрицательным',
+        !dropped && module.credits > 0 && Number.isInteger(module.credits),
+        `счёт ${module.credits}`,
+      );
+    }
+  }
+
+  // --- Модуль в сгенерированном мире ---
+
+  {
+    const w = first.world;
+    const zone = first.receiver;
+
+    let hull = 0;
+    for (const c of w.cells) if (c === MAT.MODULE_HULL) hull++;
+    check('В сгенерированном мире есть корпус модуля', hull > 0, `ячеек ${hull}`);
+
+    // Площадка горизонтальна: профиль поверхности под модулем — прямая.
+    {
+      const from = MODULE.x - MODULE.padMargin;
+      const to = MODULE.x + MODULE.width + MODULE.padMargin - 1;
+      const level = first.surface[from]!;
+      let uneven = 0;
+      for (let x = from; x <= to; x++) if (first.surface[x] !== level) uneven++;
+      check(
+        'Площадка под модулем горизонтальна',
+        uneven === 0,
+        `колонок вне уровня ${uneven}, уровень ${level}`,
+      );
+    }
+
+    // Зона открыта сверху и ограничена корпусом с трёх сторон.
+    {
+      let openAbove = 0;
+      for (let x = zone.x; x < zone.x + zone.w; x++) {
+        if (w.get(x, zone.y - 1) === MAT.VACUUM) openAbove++;
+      }
+      let walled = 0;
+      for (let y = zone.y; y < zone.y + zone.h; y++) {
+        if (w.get(zone.x - 1, y) === MAT.MODULE_HULL) walled++;
+        if (w.get(zone.x + zone.w, y) === MAT.MODULE_HULL) walled++;
+      }
+      let floored = 0;
+      for (let x = zone.x; x < zone.x + zone.w; x++) {
+        if (w.get(x, zone.y + zone.h) === MAT.MODULE_HULL) floored++;
+      }
+      let empty = 0;
+      for (let y = zone.y; y < zone.y + zone.h; y++) {
+        for (let x = zone.x; x < zone.x + zone.w; x++) if (w.get(x, y) === MAT.VACUUM) empty++;
+      }
+      check(
+        'Зона приёмника пуста, открыта сверху и ограничена корпусом с трёх сторон',
+        empty === zone.w * zone.h &&
+          openAbove === zone.w &&
+          walled === zone.h * 2 &&
+          floored === zone.w,
+        `пустых ${empty}/${zone.w * zone.h}, сверху открыто ${openAbove}, стенок ${walled}, дна ${floored}`,
+      );
+    }
+
+    // Точка старта корректна и находится вне корпуса.
+    {
+      const p = new Player(spawn.x, spawn.y);
+      let hullAtSpawn = 0;
+      for (let x = p.x; x < p.x + PLAYER.hitboxW; x++) {
+        for (let y = p.y; y <= p.y + PLAYER.hitboxH; y++) {
+          if (w.get(x, y) === MAT.MODULE_HULL) hullAtSpawn++;
+        }
+      }
+      check(
+        'Точка старта корректна и вне корпуса модуля',
+        !w.rectHitsSolid(p.x, p.y, PLAYER.hitboxW, PLAYER.hitboxH) &&
+          w.rectHitsSolid(p.x, p.y + PLAYER.hitboxH, PLAYER.hitboxW, 1) &&
+          hullAtSpawn === 0,
+        `корпуса в хитбоксе ${hullAtSpawn}, спавн (${p.x},${p.y})`,
+      );
+    }
+
+    // Модуль на виду: он попадает в кадр, центрированный на точке старта.
+    {
+      const cam = new Camera(w.width, w.height);
+      cam.snapTo(spawn.x, spawn.y);
+      let visible = 0;
+      for (let sy = 0; sy < VIEW_H; sy++) {
+        for (let sx = 0; sx < VIEW_W; sx++) {
+          if (w.get(cam.x + sx, cam.y + sy) === MAT.MODULE_HULL) visible++;
+        }
+      }
+      check('Модуль виден из точки старта', visible > 0, `ячеек корпуса в кадре ${visible}`);
+    }
+
+    // По корпусу можно ходить: персонаж, поставленный на крышу стенки, стоит.
+    {
+      const top = zone.y;
+      const p = new Player(MODULE.x, top - PLAYER.hitboxH);
+      check(
+        'По корпусу модуля можно стоять',
+        !w.rectHitsSolid(p.x, p.y, PLAYER.hitboxW, PLAYER.hitboxH) &&
+          w.rectHitsSolid(p.x, p.y + PLAYER.hitboxH, PLAYER.hitboxW, 1),
+        `позиция (${p.x},${p.y})`,
+      );
+    }
+
+    // Корпус не копается и не собирается.
+    {
+      const probe = new World(64, 64, w.profile);
+      for (let y = 0; y < 64; y++) for (let x = 0; x < 64; x++) probe.set(x, y, MAT.MODULE_HULL);
+      const before = probe.cells.slice();
+      const excavated = Digger.applyBrush(probe, 32, 32);
+      let changed = 0;
+      for (let i = 0; i < before.length; i++) if (before[i] !== probe.cells[i]) changed++;
+      check(
+        'Корпус модуля не копается: ни выемки, ни выработки',
+        excavated === 0 && changed === 0,
+        `выемка ${excavated}, изменено ${changed}`,
+      );
+
+      const inv = new Inventory();
+      const collected = Vacuum.collect(probe, inv, 32, 32);
+      check(
+        'Корпус модуля не собирается пылесосом',
+        collected === 0 && inv.used === 0 && count(probe, MAT.MODULE_HULL) === 64 * 64,
+      );
+
+      // Смешанная кисть: корпус остаётся, порода рядом разрушается.
+      for (let y = 0; y < 64; y++) for (let x = 32; x < 64; x++) probe.set(x, y, MAT.ROCK);
+      const hullBefore = count(probe, MAT.MODULE_HULL);
+      const mixed = Digger.applyBrush(probe, 32, 32);
+      check(
+        'Кисть по границе корпуса и породы берёт только породу',
+        mixed > 0 && count(probe, MAT.MODULE_HULL) === hullBefore,
+        `выемка ${mixed}, корпуса ${hullBefore} → ${count(probe, MAT.MODULE_HULL)}`,
+      );
+    }
+
+    check(
+      'В нетронутом мире с модулем по-прежнему нет жидких ячеек',
+      w.liquidCells === 0,
+      `счётчик жидкого ${w.liquidCells}`,
+    );
+    check(
+      'В нетронутом мире нет ни пульпы, ни рыхлого реголита',
+      !w.cells.includes(MAT.PULP) && !w.cells.includes(MAT.REGOLITH_LOOSE),
+    );
+  }
+
+  // --- Строка состояния ---
+
+  {
+    // Строка обязана рисоваться при ВЫКЛЮЧЕННОЙ диагностике: инвентарь и счёт —
+    // состояние игры, а не инструмент разработчика.
+    const drawn: string[] = [];
+    const pixels = new Uint8ClampedArray(VIEW_W * VIEW_H * 4);
+    const display = {
+      pixels,
+      ctx: {
+        putImageData() {},
+        fillText(line: string) {
+          drawn.push(line);
+        },
+        measureText: (s: string) => ({ width: s.length * 4.8 }),
+        font: '',
+        textBaseline: '',
+        fillStyle: '',
+      },
+      image: {},
+      present() {},
+    } as unknown as Display;
+
+    const renderer = new Renderer(display, first.world, first.surface, WORLD_SEED);
+    const camera = new Camera(first.world.width, first.world.height);
+    camera.snapTo(spawn.x, spawn.y);
+    const hud: HudState = {
+      mode: 'Сбор',
+      collecting: true,
+      carried: [{ name: 'Пульпа', count: 138 }],
+      used: 138,
+      capacity: VACUUM.capacity,
+      selected: 'Пульпа',
+      credits: 1234,
+    };
+    renderer.render(camera, new Player(spawn.x, spawn.y), 160, 90, true, hud, 0);
+
+    const text = drawn.join('\n');
+    check(
+      'Строка состояния показывает режим, инвентарь с пределом, выбранное и счёт',
+      text.includes('Сбор') &&
+        text.includes(`138/${VACUUM.capacity}`) &&
+        text.includes('Пульпа 138') &&
+        text.includes('Высыпать: Пульпа') &&
+        text.includes('1234 ₡'),
+      text.replace(/\n/g, ' | '),
+    );
+    check(
+      'Диагностики при этом в кадре нет: строка состояния от неё не зависит',
+      !text.includes('FPS'),
+    );
+  }
+}
+
+// --- Снапшот ввода ---
+//
+// `Input` вешает слушатели на `window` и `document`, и до сих пор это означало,
+// что раскладка не проверяется вовсе: без DOM класс нельзя было даже создать.
+// Заглушка нужна ровно на две функции — «запомни обработчик» и «позови его», —
+// после чего проверяется настоящий класс, а не его пересказ.
+{
+  type Listener = (event: never) => void;
+  class FakeTarget {
+    private readonly listeners = new Map<string, Listener[]>();
+    addEventListener(type: string, fn: Listener): void {
+      const list = this.listeners.get(type) ?? [];
+      list.push(fn);
+      this.listeners.set(type, list);
+    }
+    emit(type: string, event: Record<string, unknown>): void {
+      for (const fn of this.listeners.get(type) ?? []) fn(event as never);
+    }
+  }
+
+  /** Событие клавиши с учётом того, отменил ли его обработчик. */
+  function keyEvent(code: string): {
+    code: string;
+    repeat: boolean;
+    prevented: boolean;
+    preventDefault(): void;
+  } {
+    return {
+      code,
+      repeat: false,
+      prevented: false,
+      preventDefault(): void {
+        this.prevented = true;
+      },
+    };
+  }
+
+  const win = new FakeTarget();
+  const doc = new FakeTarget();
+  const globals = globalThis as unknown as Record<string, unknown>;
+  const savedWindow = globals.window;
+  const savedDocument = globals.document;
+  globals.window = win;
+  globals.document = Object.assign(doc, { hidden: false });
+
+  const display = {
+    clientToBuffer: (x: number, y: number) => ({ x: x / 2, y: y / 2 }),
+  } as unknown as import('../src/core/display').Display;
+  const input = new Input(display);
+
+  globals.window = savedWindow;
+  globals.document = savedDocument;
+
+  const down = (code: string) => {
+    const e = keyEvent(code);
+    win.emit('keydown', e);
+    return e;
+  };
+  const up = (code: string) => {
+    const e = keyEvent(code);
+    win.emit('keyup', e);
+    return e;
+  };
+
+  // Первое действие игрока: до него признак ложен.
+  check('Ввод: до первого нажатия признак взаимодействия ложен', !input.hasInteracted);
+
+  // Одиночное нажатие читается один раз, удержание — на всех шагах.
+  {
+    down('KeyW');
+    let pressedSteps = 0;
+    let heldSteps = 0;
+    for (let i = 0; i < 10; i++) {
+      if (input.jumpPressed) pressedSteps++;
+      if (input.jumpHeld) heldSteps++;
+      input.endStep();
+    }
+    up('KeyW');
+    check(
+      'Ввод: одиночное нажатие истинно ровно на одном шаге, удержание — на всех десяти',
+      pressedSteps === 1 && heldSteps === 10,
+      `нажата ${pressedSteps}, удерживается ${heldSteps}`,
+    );
+    check('Ввод: первое нажатие включило признак взаимодействия', input.hasInteracted);
+  }
+
+  // Прыжок с обеих половин раскладки, и `Space` к нему отношения не имеет.
+  {
+    down('ArrowUp');
+    const byArrow = input.jumpPressed;
+    up('ArrowUp');
+    input.endStep();
+    const space = down('Space');
+    const jumpedBySpace = input.jumpPressed;
+    const toolBySpace = input.toolHeld;
+    up('Space');
+    input.endStep();
+    check('Ввод: прыжок работает и со стрелки', byArrow);
+    check(
+      'Ввод: пробел применяет инструмент, а не прыгает',
+      !jumpedBySpace && toolBySpace,
+      `прыжок ${jumpedBySpace}, инструмент ${toolBySpace}`,
+    );
+    check('Ввод: пробел подавляет прокрутку страницы', space.prevented);
+  }
+
+  // Каждая новая кнопка мыши имеет клавишу, и все три подавляют прокрутку.
+  {
+    const r = down('KeyR');
+    const modeByKey = input.toolModePressed;
+    up('KeyR');
+    input.endStep();
+
+    const f = down('KeyF');
+    const dumpByKey = input.dumpHeld;
+    up('KeyF');
+    input.endStep();
+
+    const c = down('KeyC');
+    const cycleByKey = input.cycleCarriedPressed;
+    up('KeyC');
+    input.endStep();
+
+    check(
+      'Ввод: режим, высыпание и выбор вещества доступны с клавиатуры',
+      modeByKey && dumpByKey && cycleByKey,
+      `R ${modeByKey}, F ${dumpByKey}, C ${cycleByKey}`,
+    );
+    check('Ввод: новые клавиши подавляют прокрутку', r.prevented && f.prevented && c.prevented);
+  }
+
+  // Не игровая клавиша остаётся браузеру.
+  {
+    const e = down('KeyZ');
+    up('KeyZ');
+    input.endStep();
+    check('Ввод: посторонняя клавиша странице не мешает', !e.prevented);
+  }
+
+  // Отключение звука — одноразовое состояние.
+  {
+    down('KeyM');
+    const first1 = input.muteTogglePressed;
+    input.endStep();
+    const second = input.muteTogglePressed;
+    up('KeyM');
+    input.endStep();
+    check('Ввод: переключение звука истинно ровно на одном шаге', first1 && !second);
+  }
+
+  // Правая кнопка: удерживаемое состояние и никакого контекстного меню.
+  {
+    let prevented = false;
+    win.emit('contextmenu', {
+      preventDefault: () => {
+        prevented = true;
+      },
+    });
+    win.emit('mousedown', { button: 2 });
+    const heldRight = input.mouseRightHeld;
+    const heldLeft = input.mouseLeftHeld;
+    const dumpByMouse = input.dumpHeld;
+    win.emit('mouseup', { button: 2 });
+    check(
+      'Ввод: правая кнопка удерживается и не открывает меню браузера',
+      prevented && heldRight && !heldLeft && dumpByMouse && !input.mouseRightHeld,
+      `меню отменено ${prevented}, удержание ${heldRight}, высыпание ${dumpByMouse}`,
+    );
+  }
+
+  // Потеря фокуса отпускает обе кнопки и все клавиши: иначе персонаж вернётся
+  // из свёрнутой вкладки копающим и бегущим.
+  {
+    down('KeyD');
+    win.emit('mousedown', { button: 0 });
+    win.emit('mousedown', { button: 2 });
+    win.emit('blur', {});
+    check(
+      'Ввод: потеря фокуса отпускает клавиши и обе кнопки мыши',
+      !input.moveRight && !input.mouseLeftHeld && !input.mouseRightHeld,
+    );
+    input.endStep();
+  }
+
+  // Позиция курсора приходит в координатах буфера кадра.
+  {
+    win.emit('mousemove', { clientX: 100, clientY: 60 });
+    check(
+      'Ввод: позиция курсора пересчитана из координат страницы',
+      input.mouseX === 50 && input.mouseY === 30,
+      `(${input.mouseX},${input.mouseY})`,
+    );
+  }
+
+  // Полный экономический цикл — только клавиатурой, ни одного события мыши.
+  {
+    const seen = { mode: false, tool: false, cycle: false, dump: false };
+    down('KeyR');
+    seen.mode = input.toolModePressed;
+    up('KeyR');
+    input.endStep();
+    down('Space');
+    seen.tool = input.toolHeld;
+    up('Space');
+    input.endStep();
+    down('KeyC');
+    seen.cycle = input.cycleCarriedPressed;
+    up('KeyC');
+    input.endStep();
+    down('KeyF');
+    seen.dump = input.dumpHeld;
+    up('KeyF');
+    input.endStep();
+    check(
+      'Ввод: весь цикл — режим, сбор, выбор вещества, высыпание — проходится без мыши',
+      seen.mode &&
+        seen.tool &&
+        seen.cycle &&
+        seen.dump &&
+        !input.mouseLeftHeld &&
+        !input.mouseRightHeld,
+      JSON.stringify(seen),
+    );
   }
 }
 
@@ -2289,13 +3540,13 @@ check('Стена 8 ячеек останавливает', !runIntoWall(8));
     const cursorY = 30;
     const d = aimDirection(1, 0, 1);
 
-    const byMouse = digTarget(true, cursorX, cursorY, cx, cy, d.x, d.y);
+    const byMouse = actionTarget(true, cursorX, cursorY, cx, cy, d.x, d.y);
     check(
       'Цель: при удержании ЛКМ копается под курсором',
       byMouse.x === cursorX && byMouse.y === cursorY,
     );
 
-    const byKeys = digTarget(false, cursorX, cursorY, cx, cy, d.x, d.y);
+    const byKeys = actionTarget(false, cursorX, cursorY, cx, cy, d.x, d.y);
     check(
       'Цель: без ЛКМ копается вплотную к персонажу, а не под курсором',
       Math.hypot(byKeys.x - cx, byKeys.y - cy) <= DIG.aimDistance,
@@ -2305,7 +3556,7 @@ check('Стена 8 ячеек останавливает', !runIntoWall(8));
     // Оба органа удерживаются: побеждает мышь — у неё есть крестик.
     check(
       'Цель: при обоих органах побеждает мышь',
-      digTarget(true, cursorX, cursorY, cx, cy, d.x, d.y).x === cursorX,
+      actionTarget(true, cursorX, cursorY, cx, cy, d.x, d.y).x === cursorX,
     );
 
     // Крестик не зависит от клавиш: цель мыши одна и та же при любом
@@ -2313,7 +3564,7 @@ check('Стена 8 ячеек останавливает', !runIntoWall(8));
     const other = aimDirection(-1, 1, -1);
     check(
       'Цель мыши не зависит от нажатых клавиш направления',
-      digTarget(true, cursorX, cursorY, cx, cy, other.x, other.y).x === cursorX,
+      actionTarget(true, cursorX, cursorY, cx, cy, other.x, other.y).x === cursorX,
     );
   }
 
@@ -2351,7 +3602,14 @@ check('Стена 8 ячеек останавливает', !runIntoWall(8));
     const pixels = new Uint8ClampedArray(VIEW_W * VIEW_H * 4);
     const display = {
       pixels,
-      ctx: { putImageData() {}, fillText() {}, font: '', textBaseline: '', fillStyle: '' },
+      ctx: {
+        putImageData() {},
+        fillText() {},
+        measureText: (s: string) => ({ width: s.length * 4.8 }),
+        font: '',
+        textBaseline: '',
+        fillStyle: '',
+      },
       image: {},
       present() {},
     } as unknown as Display;
@@ -2360,7 +3618,7 @@ check('Стена 8 ячеек останавливает', !runIntoWall(8));
     const camera = new Camera(first.world.width, first.world.height);
     camera.snapTo(camX + VIEW_W / 2, camY + VIEW_H / 2);
     const offscreen = new Player(camera.x + VIEW_W / 2, camera.y + VIEW_H + 40);
-    renderer.render(camera, offscreen, VIEW_W / 2, VIEW_H - 1, true, 0, 20);
+    renderer.render(camera, offscreen, VIEW_W / 2, VIEW_H - 1, true, IDLE_HUD, 0, 20);
     return pixels;
   }
 

@@ -15,6 +15,12 @@ const GAME_KEYS = new Set([
   'F3',
   // Отключение звука.
   'KeyM',
+  // Инвентарь: смена режима инструмента, высыпание, выбор вещества.
+  // Каждая новая кнопка мыши обязана иметь клавиатурный эквивалент —
+  // это записанное требование, а не удобство.
+  'KeyR',
+  'KeyF',
+  'KeyC',
   // Отладка: переключение вещества и его установка под курсором.
   'KeyQ',
   'KeyE',
@@ -36,6 +42,58 @@ const AIM_KEYS = new Set([
   'Space',
 ]);
 
+/**
+ * Что делает применение инструмента.
+ *
+ * Режим, а не «кисть решает сама по материалу»: без него нельзя прокопать ход,
+ * не набив инвентарь, и нельзя собрать реголит, не разрушив стену за ним.
+ * Игрок теряет выбор ровно там, где он содержательный.
+ */
+export const ToolMode = {
+  Dig: 0,
+  Collect: 1,
+} as const;
+
+export type ToolModeValue = (typeof ToolMode)[keyof typeof ToolMode];
+
+/** Порядок перебора по кругу и подписи для кадра. */
+const MODE_CYCLE: readonly ToolModeValue[] = [ToolMode.Dig, ToolMode.Collect];
+const MODE_NAMES: Record<ToolModeValue, string> = {
+  [ToolMode.Dig]: 'Копание',
+  [ToolMode.Collect]: 'Сбор',
+};
+
+/**
+ * Текущий режим инструмента.
+ *
+ * Перебор по кругу списком, а не переключатель на два положения: следующий
+ * шаг добавляет строительство, и «переключить» перестанет означать
+ * «инвертировать».
+ */
+export class ToolModeState {
+  private index = 0;
+
+  get mode(): ToolModeValue {
+    return MODE_CYCLE[this.index]!;
+  }
+
+  get name(): string {
+    return MODE_NAMES[this.mode];
+  }
+
+  get digging(): boolean {
+    return this.mode === ToolMode.Dig;
+  }
+
+  get collecting(): boolean {
+    return this.mode === ToolMode.Collect;
+  }
+
+  cycle(): void {
+    this.index = (this.index + 1) % MODE_CYCLE.length;
+  }
+}
+
 /** Какое устройство задаёт цель прямо сейчас. */
 export type AimSource = 'mouse' | 'keys';
 
@@ -52,12 +110,14 @@ export class AimSourceTracker {
   /**
    * Игрок воспользовался устройством.
    *
-   * Пока копание удерживается, источник заморожен: иначе дрожание мыши на столе
+   * Пока действие удерживается, источник заморожен: иначе дрожание мыши на столе
    * во время прокопки с клавиатуры уводило бы кисть на другой конец экрана,
    * а нажатие клавиши движения во время копания мышью перебивало бы курсор.
+   * Замораживает ЛЮБОЕ удерживаемое действие с прицелом, а не одно копание:
+   * высыпание целится теми же двумя способами и страдало бы тем же.
    */
-  note(device: AimSource, digHeld: boolean): void {
-    if (digHeld) return;
+  note(device: AimSource, actionHeld: boolean): void {
+    if (actionHeld) return;
     this.source = device;
   }
 }
@@ -102,14 +162,17 @@ export function aimTarget(
 }
 
 /**
- * Цель копания: её задаёт удерживаемый орган управления, а не глобальный режим.
+ * Цель действия: её задаёт удерживаемый орган управления, а не глобальный режим.
  *
  * Мышь выигрывает при удержании обоих: у неё есть видимая обратная связь —
- * крестик, — а у клавиатуры её нет, и копать не там, где показывает крестик,
- * молча нельзя.
+ * крестик, — а у клавиатуры её нет, и действовать не там, где показывает
+ * крестик, молча нельзя.
+ *
+ * Функция одна на все действия с прицелом: применение инструмента смотрит
+ * на левую кнопку, высыпание — на правую, правило выбора цели у них общее.
  */
-export function digTarget(
-  mouseLeftHeld: boolean,
+export function actionTarget(
+  mouseHeld: boolean,
   cursorX: number,
   cursorY: number,
   centerX: number,
@@ -117,7 +180,7 @@ export function digTarget(
   dirX: number,
   dirY: number,
 ): { x: number; y: number } {
-  if (mouseLeftHeld) return { x: cursorX, y: cursorY };
+  if (mouseHeld) return { x: cursorX, y: cursorY };
   return aimTarget(centerX, centerY, dirX, dirY);
 }
 
@@ -128,9 +191,11 @@ export function digTarget(
  * отпущена в этом шаге. Без «нажата в этом шаге» удержание `W` читалось бы
  * как непрерывная серия прыжков.
  *
- * Раскладка: ходьба `A`/`D` (`←`/`→`), прыжок и ранец `W` (`↑`), копание
- * `Space` или левая кнопка мыши, прицел вниз `S` (`↓`). Обе половины —
- * WASD и стрелки — равноправны, и игра полностью проходится без мыши.
+ * Раскладка: ходьба `A`/`D` (`←`/`→`), прыжок и ранец `W` (`↑`), применение
+ * инструмента `Space` или левая кнопка мыши, высыпание `F` или правая кнопка,
+ * режим инструмента `R`, выбранное вещество `C`, прицел вниз `S` (`↓`).
+ * Обе половины — WASD и стрелки — равноправны, и игра полностью проходится
+ * без мыши: у каждой кнопки мыши есть клавиша.
  */
 export class Input {
   private held = new Set<string>();
@@ -143,6 +208,8 @@ export class Input {
   /** Удерживается ли левая кнопка мыши. */
   mouseLeftHeld = false;
   private mouseLeftPressed = false;
+  /** Удерживается ли правая кнопка мыши — высыпание из инвентаря. */
+  mouseRightHeld = false;
 
   /**
    * Состоялось ли первое действие игрока — нажатие любой клавиши или кнопки
@@ -162,8 +229,8 @@ export class Input {
     window.addEventListener('mousemove', this.onMouseMove);
     window.addEventListener('mousedown', this.onMouseDown);
     window.addEventListener('mouseup', this.onMouseUp);
-    // Правая кнопка пойдёт под высыпание из инвентаря — контекстное меню
-    // над канвасом мешало бы уже сейчас.
+    // Правая кнопка занята высыпанием из инвентаря: контекстное меню над
+    // канвасом отбирало бы фокус на каждом втором действии игрока.
     window.addEventListener('contextmenu', (e) => e.preventDefault());
     // Потеря фокуса вкладкой или окном — иначе персонаж «залипает» в беге.
     window.addEventListener('blur', this.releaseAll);
@@ -178,7 +245,7 @@ export class Input {
     if (e.repeat) return; // автоповтор ОС не должен считаться новым нажатием
     // Источник переключается ДО учёта самой клавиши: нажатие пробела означает
     // «копаю с клавиатуры», и заморозить прицел оно должно уже на новом источнике.
-    if (AIM_KEYS.has(e.code)) this.aim.note('keys', this.digHeld);
+    if (AIM_KEYS.has(e.code)) this.aim.note('keys', this.aimFrozen);
     if (!this.held.has(e.code)) this.pressed.add(e.code);
     this.held.add(e.code);
   };
@@ -193,28 +260,33 @@ export class Input {
     const p = this.display.clientToBuffer(e.clientX, e.clientY);
     this.mouseX = Math.max(0, Math.min(VIEW_W - 1, p.x));
     this.mouseY = Math.max(0, Math.min(VIEW_H - 1, p.y));
-    this.aim.note('mouse', this.digHeld);
+    this.aim.note('mouse', this.aimFrozen);
   };
 
   private onMouseDown = (e: MouseEvent): void => {
     // Любая кнопка — действие игрока, даже та, которую игра не использует.
     this.hasInteracted = true;
-    if (e.button !== 0) return;
-    this.aim.note('mouse', this.digHeld);
+    if (e.button !== 0 && e.button !== 2) return;
+    this.aim.note('mouse', this.aimFrozen);
+    if (e.button === 2) {
+      this.mouseRightHeld = true;
+      return;
+    }
     if (!this.mouseLeftHeld) this.mouseLeftPressed = true;
     this.mouseLeftHeld = true;
   };
 
   private onMouseUp = (e: MouseEvent): void => {
-    if (e.button !== 0) return;
-    this.mouseLeftHeld = false;
+    if (e.button === 2) this.mouseRightHeld = false;
+    if (e.button === 0) this.mouseLeftHeld = false;
   };
 
   private releaseAll = (): void => {
     for (const code of this.held) this.released.add(code);
     this.held.clear();
-    // Кнопку мыши тоже отпускаем: иначе персонаж вернётся в копающем состоянии.
+    // Кнопки мыши тоже отпускаем: иначе персонаж вернётся в копающем состоянии.
     this.mouseLeftHeld = false;
+    this.mouseRightHeld = false;
   };
 
   isHeld(code: string): boolean {
@@ -265,9 +337,40 @@ export class Input {
     return this.isHeld('KeyW') || this.isHeld('ArrowUp');
   }
 
-  /** Копание: пробел и левая кнопка мыши равноправны, разница только в прицеле. */
-  get digHeld(): boolean {
+  /**
+   * Применение инструмента: пробел и левая кнопка мыши равноправны, разница
+   * только в прицеле. Что именно произойдёт — копание или сбор, — решает режим,
+   * а не кнопка: раскладка, в которой копание занимает свою кнопку навсегда,
+   * не оставляет места ни сбору, ни тому, что появится после него.
+   */
+  get toolHeld(): boolean {
     return this.mouseLeftHeld || this.isHeld('Space');
+  }
+
+  /** Высыпание из инвентаря. Доступно в любом режиме и своим органом управления. */
+  get dumpHeld(): boolean {
+    return this.mouseRightHeld || this.isHeld('KeyF');
+  }
+
+  /** Сменить режим инструмента. */
+  get toolModePressed(): boolean {
+    return this.wasPressed('KeyR');
+  }
+
+  /** Сменить вещество, выбранное для высыпания. */
+  get cycleCarriedPressed(): boolean {
+    return this.wasPressed('KeyC');
+  }
+
+  /**
+   * Заморожен ли выбор источника прицела.
+   *
+   * Любое удерживаемое действие с прицелом, а не одно применение инструмента:
+   * высыпание целится теми же двумя способами, и подмена источника посреди
+   * него уводила бы кисть так же.
+   */
+  private get aimFrozen(): boolean {
+    return this.toolHeld || this.dumpHeld;
   }
 
   /**
