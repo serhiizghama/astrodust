@@ -23,8 +23,11 @@ export interface DigReport {
  */
 export interface StepIntent {
   readonly input: PlayerInput;
-  readonly lookAheadX: number;
-  readonly lookAheadY: number;
+  /**
+   * Разворот персонажа, назначенный извне: `-1` влево, `1` вправо, `0` —
+   * не назначен, разворот остаётся за осью движения.
+   */
+  readonly faceX: -1 | 0 | 1;
   readonly dig: DigReport | null;
 }
 
@@ -76,23 +79,22 @@ export class Game {
    */
   advanceWorld(dt: number, intent: StepIntent): void {
     this.player.update(dt, intent.input, this.world);
+    // ПОСЛЕ `update`: тот выставляет разворот от оси движения, а назначенный
+    // извне обязан его перекрыть — иначе курсор поворачивал бы только стоящего.
+    if (intent.faceX !== 0) this.player.facing = intent.faceX;
     this.simulation.update(this.world, this.occupant);
     this.buildings.update(this.world, dt);
     this.landingModule.update(this.world);
-    this.camera.follow(
-      this.player.centerX,
-      this.player.centerY,
-      intent.lookAheadX,
-      intent.lookAheadY,
-    );
+    this.camera.follow(this.player.centerX, this.player.centerY);
     this.collectSignals(intent.dig);
   }
 
   /**
    * Счётчики шага для звука.
    *
-   * Точка отсчёта слышимости — персонаж, а не центр кадра: камера уходит
-   * за курсором, и звуковая картина качалась бы при каждом движении мыши.
+   * Точка отсчёта слышимости — персонаж, а не центр кадра: кадр отстаёт
+   * от него на сглаживание и мёртвую зону, и звуковая картина уползала бы
+   * вбок при ходьбе.
    */
   private collectSignals(dig: DigReport | null): void {
     const s = this.signals;

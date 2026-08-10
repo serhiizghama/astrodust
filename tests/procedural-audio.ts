@@ -78,14 +78,15 @@ const { world } = first;
     const before = panFor(srcX, listenerX);
     const camBefore = cam.x;
 
-    // Игрок стоит на месте и уводит курсор вправо — кадр уезжает за ним.
+    // Кадр расходится со слушателем сам: цель ушла за мёртвую зону, и камера
+    // догоняет её сглаженно. Слушатель при этом остаётся там же, где был.
     for (let i = 0; i < 120; i++) {
-      cam.follow(listenerX, 200, CAMERA.mouseLookAheadMax, 0);
+      cam.follow(listenerX + CAMERA.deadzoneHalfW * 2, 200);
     }
     const after = panFor(srcX, listenerX);
 
     check(
-      'Панорама: смещение камеры к курсору её не двигает',
+      'Панорама: расхождение кадра со слушателем её не двигает',
       before === after && cam.x !== camBefore,
       `кадр ${camBefore} → ${cam.x}, панорама ${before.toFixed(3)}`,
     );

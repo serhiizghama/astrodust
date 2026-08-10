@@ -18,6 +18,7 @@ import {
   aimDirection,
   aimTarget,
   actionTarget,
+  cursorSide,
   AimSourceTracker,
   ToolModeState,
 } from '../src/core';
@@ -44,30 +45,37 @@ const { world } = first;
   );
 
   const beforeX = cam.x;
-  for (let i = 0; i < 20; i++) cam.follow(510, 300, 0, 0);
+  for (let i = 0; i < 20; i++) cam.follow(510, 300);
   check('Камера: движение в мёртвой зоне не двигает кадр', cam.x === beforeX, `x=${cam.x}`);
 
-  for (let i = 0; i < 200; i++) cam.follow(700, 300, 0, 0);
+  for (let i = 0; i < 200; i++) cam.follow(700, 300);
   check('Камера: догоняет цель за мёртвой зоной', Math.abs(cam.x - (700 - cx)) <= 41, `x=${cam.x}`);
 
-  for (let i = 0; i < 400; i++) cam.follow(5, 5, 0, 0);
+  for (let i = 0; i < 400; i++) cam.follow(5, 5);
   check(
     'Камера: не выезжает за левый/верхний край',
     cam.x === 0 && cam.y === 0,
     `(${cam.x},${cam.y})`,
   );
 
-  for (let i = 0; i < 800; i++) cam.follow(world.width - 5, world.height - 5, 0, 0);
+  for (let i = 0; i < 800; i++) cam.follow(world.width - 5, world.height - 5);
   check(
     'Камера: не выезжает за правый/нижний край',
     cam.x === world.width - VIEW_W && cam.y === world.height - VIEW_H,
     `(${cam.x},${cam.y})`,
   );
 
+  // Цель — единственное, от чего зависит кадр: слагаемых, отвечающих на курсор,
+  // у камеры нет и заводить их нельзя.
   cam.snapTo(500, 300);
-  const noLook = cam.x;
-  for (let i = 0; i < 200; i++) cam.follow(500, 300, 30, 0);
-  check('Камера: смещается в сторону курсора', cam.x > noLook, `${noLook} → ${cam.x}`);
+  const restX = cam.x;
+  const restY = cam.y;
+  for (let i = 0; i < 600; i++) cam.follow(500, 300);
+  check(
+    'Камера: у неподвижной цели кадр не двигается',
+    cam.x === restX && cam.y === restY,
+    `(${restX},${restY}) → (${cam.x},${cam.y})`,
+  );
 
   const wp = cam.screenToWorld(10, 20);
   check('Камера: экран → мир учитывает смещение', wp.x === cam.x + 10 && wp.y === cam.y + 20);
@@ -617,6 +625,39 @@ const { world } = first;
   }
 }
 
+// --- Разворот персонажа ---
+//
+// Реакция на мышь одна — разворот; кадр на неё не отвечает. Назначенная сторона
+// обязана перекрывать ось движения, иначе мышь вертела бы только стоящего.
+{
+  const research = new Research();
+  const facingAfter = (faceX: -1 | 0 | 1, right: boolean): 1 | -1 => {
+    const w = ground(96, 96);
+    const p = new Player(40, 94 - PLAYER.hitboxH, research.tuning);
+    const zone = { x: 2, y: 2, w: 3, h: 3 };
+    const g = new Game(w, p, new Camera(w.width, w.height), new LandingModule(zone, research));
+    const input = new FakeInput();
+    input.right = right;
+    for (let i = 0; i < 30; i++) {
+      g.advanceWorld(FIXED_DT, { input: asInput(input), faceX, dig: null });
+    }
+    return p.facing;
+  };
+
+  check('Разворот: назначенная сторона перевешивает бег', facingAfter(-1, true) === -1);
+  check('Разворот: без назначения сторону задаёт ось движения', facingAfter(0, true) === 1);
+
+  check(
+    'Разворот: курсор в пределах ширины персонажа стороны не задаёт',
+    cursorSide(100, 100, PLAYER.hitboxW) === 0 &&
+      cursorSide(100 + (PLAYER.hitboxW >> 1), 100, PLAYER.hitboxW) === 0,
+  );
+  check(
+    'Разворот: сторона курсора считается от центра персонажа',
+    cursorSide(120, 100, PLAYER.hitboxW) === 1 && cursorSide(80, 100, PLAYER.hitboxW) === -1,
+  );
+}
+
 // --- Порядок обновлений внутри шага ---
 //
 // Порядок — требование спеки, а не удобство записи: каждое сочленение
@@ -645,8 +686,7 @@ const { world } = first;
     for (let i = 0; i < 900; i++) {
       g.advanceWorld(FIXED_DT, {
         input: asInput(input),
-        lookAheadX: 0,
-        lookAheadY: 0,
+        faceX: 0,
         dig: null,
       });
       if (w.rectHitsSolid(p.x, p.y, PLAYER.hitboxW, PLAYER.hitboxH)) buried++;
@@ -680,7 +720,7 @@ const { world } = first;
     // и только на этом шаге.
     w.set(zone.x + 2, zone.y - 1, MAT.PULP);
     const before = mod.credits;
-    g.advanceWorld(FIXED_DT, { input: NO_INPUT, lookAheadX: 0, lookAheadY: 0, dig: null });
+    g.advanceWorld(FIXED_DT, { input: NO_INPUT, faceX: 0, dig: null });
     check(
       'Порядок шага: скатившаяся в зону ячейка засчитывается на том же шаге',
       mod.credits > before,
@@ -706,8 +746,8 @@ const { world } = first;
     // Пульпа на две ячейки выше приёмной грани: на грань её кладёт автомат.
     w.set(bx + (SEPARATOR.width >> 1), by - 2, MAT.PULP);
     const stored = machine.stored;
-    g.advanceWorld(FIXED_DT, { input: NO_INPUT, lookAheadX: 0, lookAheadY: 0, dig: null });
-    g.advanceWorld(FIXED_DT, { input: NO_INPUT, lookAheadX: 0, lookAheadY: 0, dig: null });
+    g.advanceWorld(FIXED_DT, { input: NO_INPUT, faceX: 0, dig: null });
+    g.advanceWorld(FIXED_DT, { input: NO_INPUT, faceX: 0, dig: null });
     check(
       'Порядок шага: машина принимает сырьё на шаге его прибытия на грань',
       machine.stored > stored,
@@ -744,8 +784,7 @@ const { world } = first;
     );
     g.advanceWorld(FIXED_DT, {
       input: NO_INPUT,
-      lookAheadX: 0,
-      lookAheadY: 0,
+      faceX: 0,
       dig: { converted: 7, x: 11, y: 13 },
     });
     check(
@@ -775,7 +814,7 @@ const { world } = first;
     const mod = new LandingModule({ x: 2, y: 2, w: 3, h: 3 }, research);
     const g = new Game(w, p, new Camera(w.width, w.height), mod);
     for (let i = 0; i < 240; i++) {
-      g.advanceWorld(FIXED_DT, { input: NO_INPUT, lookAheadX: 0, lookAheadY: 0, dig });
+      g.advanceWorld(FIXED_DT, { input: NO_INPUT, faceX: 0, dig });
     }
     let sum = 0;
     for (let i = 0; i < w.cells.length; i++) sum += w.cells[i]! * ((i % 97) + 1);

@@ -15,5 +15,6 @@ export {
   aimDirection,
   aimTarget,
   actionTarget,
+  cursorSide,
 } from './input';
 export { GameLoop } from './loop';

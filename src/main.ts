@@ -1,5 +1,13 @@
-import { VIEW_W, VIEW_H, CAMERA, WORLD_SEED, BUILD_AIM_DISTANCE, PLAYER } from './config';
-import { Display, Input, ToolModeState, aimDirection, actionTarget, GameLoop } from './core';
+import { WORLD_SEED, BUILD_AIM_DISTANCE, PLAYER } from './config';
+import {
+  Display,
+  Input,
+  ToolModeState,
+  aimDirection,
+  actionTarget,
+  cursorSide,
+  GameLoop,
+} from './core';
 import { Camera, Renderer } from './render';
 import type { HudState, GhostView, OverlayView, FrameView } from './render';
 import { Research, ResearchOverlay, TECHNOLOGIES } from './progress';
@@ -69,10 +77,6 @@ let buildIssue = '';
  * быстрее.
  */
 let simTime = 0;
-
-function clamp(value: number, limit: number): number {
-  return Math.max(-limit, Math.min(limit, value));
-}
 
 /**
  * Причина отказа словами.
@@ -210,18 +214,15 @@ const playState: GameState = {
 
     if (input.muteTogglePressed) soundscape.toggleMute();
 
-    // Взгляд игрока: кадр смещается в сторону ПРИЦЕЛА, показывая больше там,
-    // куда смотрит игрок. Мышь целится курсором, клавиатура — направлением;
-    // привязка к позиции курсора без мыши держала бы кадр перекошенным.
-    const mouseAim = input.aimSource === 'mouse';
+    // Единственный ответ игры на положение мыши: кадр на неё не отзывается,
+    // отзывается персонаж. При клавиатурном источнике сторона не назначается
+    // вовсе — забытый курсор иначе держал бы персонажа развёрнутым.
+    const faceX =
+      input.aimSource === 'mouse' ? cursorSide(cursorX, player.centerX, PLAYER.hitboxW) : 0;
+
     return {
       input,
-      lookAheadX: mouseAim
-        ? clamp((input.mouseX - VIEW_W / 2) * CAMERA.mouseLookAheadFactor, CAMERA.mouseLookAheadMax)
-        : dir.x * CAMERA.keyLookAhead,
-      lookAheadY: mouseAim
-        ? clamp((input.mouseY - VIEW_H / 2) * CAMERA.mouseLookAheadFactor, CAMERA.mouseLookAheadMax)
-        : dir.y * CAMERA.keyLookAhead,
+      faceX,
       dig: { converted, x: aim.x, y: aim.y },
     };
   },
@@ -304,7 +305,7 @@ const overlayState: GameState = {
     buildIssue = '';
     // Персонаж получает пустой ввод, но физику проходит: он не зависает
     // в воздухе на время чтения дерева.
-    return { input: NO_INPUT, lookAheadX: 0, lookAheadY: 0, dig: null };
+    return { input: NO_INPUT, faceX: 0, dig: null };
   },
 };
 

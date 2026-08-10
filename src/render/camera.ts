@@ -5,6 +5,9 @@ import { VIEW_W, VIEW_H, CAMERA } from '../config';
  *
  * Пока цель внутри мёртвой зоны, камера неподвижна — мелкие шаги и дрожание
  * персонажа не дёргают кадр. При выходе за зону камера догоняет цель сглаженно.
+ *
+ * Слагаемых, кроме цели, у кадра нет и заводить их нельзя: кадр, отвечающий
+ * на курсор, полз бы вокруг стоящего персонажа — держит `tests/game-shell.ts`.
  */
 export class Camera {
   /** Левый верхний угол видимой области в координатах мира. */
@@ -26,11 +29,8 @@ export class Camera {
     this.applyClamp();
   }
 
-  /**
-   * @param targetX,targetY центр цели в координатах мира
-   * @param lookAheadX,lookAheadY смещение кадра сверх слежения (взгляд мыши)
-   */
-  follow(targetX: number, targetY: number, lookAheadX: number, lookAheadY: number): void {
+  /** @param targetX,targetY центр цели в координатах мира */
+  follow(targetX: number, targetY: number): void {
     // Мёртвая зона: сдвигаем центр ровно настолько, чтобы цель вернулась на её край.
     let desiredX = this.centerX;
     const dx = targetX - this.centerX;
@@ -41,10 +41,6 @@ export class Camera {
     const dy = targetY - this.centerY;
     if (dy > CAMERA.deadzoneHalfH) desiredY = targetY - CAMERA.deadzoneHalfH;
     else if (dy < -CAMERA.deadzoneHalfH) desiredY = targetY + CAMERA.deadzoneHalfH;
-
-    // Взгляд мыши применяется поверх мёртвой зоны, иначе она бы его поглотила.
-    desiredX += lookAheadX;
-    desiredY += lookAheadY;
 
     this.centerX += (desiredX - this.centerX) * CAMERA.smoothing;
     this.centerY += (desiredY - this.centerY) * CAMERA.smoothing;
