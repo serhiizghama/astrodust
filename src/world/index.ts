@@ -34,4 +34,4 @@ export {
 export { Simulation } from './simulation';
 export { REACTIONS, reactAround } from './reactions';
 export { hashChance, makeNoise, mulberry32 } from './rng';
-export { generateLuna } from './worlds/luna';
+export { generateLuna, LUNA } from './worlds/luna';

@@ -1,6 +1,6 @@
 import { Camera, Backdrop, Renderer } from '../src/render';
 import type { Display } from '../src/core';
-import { MATERIALS } from '../src/world';
+import { MATERIALS, LUNA } from '../src/world';
 import { Player } from '../src/entities';
 import { WORLD_SEED, VIEW_W, VIEW_H, BACKDROP } from '../src/config';
 import { check, IDLE_HUD, luna } from './harness';
@@ -293,4 +293,26 @@ const first = luna();
     }
     check('В паузе между проходами спутника в кадре нет', !found);
   }
+}
+
+// --- Цвет пещеры не спорит с заливками слоёв ---
+//
+// Пещера покрывает в кадре площадь, и слои задника тоже. Совпади их цвета,
+// подсчёт площади слоя стал бы подсчётом площади пещеры, и все замеры выше
+// потеряли бы смысл, продолжая проходить.
+{
+  const fills = LUNA.backdrop.layers.map((l) => l.fill);
+  const clash = fills.indexOf(LUNA.caveColor);
+  check(
+    'Цвет пещеры не совпадает ни с одной заливкой слоя задника',
+    clash === -1,
+    clash === -1
+      ? `пещера ${LUNA.caveColor.toString(16)}, слои ${fills.map((f) => f.toString(16)).join(', ')}`
+      : `совпал со слоем ${clash}`,
+  );
+  check(
+    'Цвет неба не совпадает ни с одной заливкой слоя задника',
+    !fills.includes(LUNA.skyColor),
+    `небо ${LUNA.skyColor.toString(16)}`,
+  );
 }
