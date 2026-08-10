@@ -1,5 +1,5 @@
 import { VACUUM } from '../config';
-import { MATERIALS, PORTABLE_MATERIALS } from '../world/materials';
+import { MATERIALS, PORTABLE_MATERIALS } from '../world';
 
 /**
  * Инвентарь персонажа — «вакуумный пылесос».

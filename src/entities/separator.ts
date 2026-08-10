@@ -1,6 +1,5 @@
 import { SEPARATOR } from '../config';
-import { World } from '../world/world';
-import { MAT } from '../world/materials';
+import { World, MAT } from '../world';
 import { Building, BuildingRegistry } from './buildings';
 import type { BuildingKind, MachineState } from './buildings';
 

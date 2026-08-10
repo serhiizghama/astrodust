@@ -52,16 +52,27 @@ npm run dev      # http://localhost:5173
 
 ## Структура
 
+Зависимости идут строго вниз. У каждой подсистемы есть `index.ts` — её
+публичная поверхность и единственный вход извне.
+
 ```
 src/
 ├─ main.ts        # бутстрап + игровой цикл
-├─ config.ts      # ВСЕ константы в одном месте
 ├─ core/          # loop (fixed timestep), input, display
-├─ render/        # renderer, camera, backdrop
-├─ world/         # мир как Uint8Array: материалы, симуляция, копание, чанки
-├─ entities/      # player
-└─ audio/         # процедурный звук: context, soundscape, voices
+├─ render/        # renderer, camera, backdrop, overlay, спрайты, цвета веществ
+├─ systems/       # копание, сбор, стройка: действие игрока, применённое к миру
+├─ entities/      # player, inventory, постройки, приёмник, каталог
+├─ progress/      # исследования, дерево технологий, профиль настроек
+├─ world/         # мир как Uint8Array: материалы, симуляция, чанки, генерация
+├─ audio/         # процедурный звук: context, soundscape, voices
+├─ config.ts      # ВСЕ константы в одном месте
+├─ palette.ts     # RAMP — все цвета игры
+└─ geometry.ts    # Rect
 ```
+
+Проверки лежат в `tests/<capability>.ts` и называются так же, как спеки
+в `openspec/specs/`. `npm test -- conveyor` гоняет один набор.
+Границы подсистем проверяет `tests/architecture.ts`.
 
 ## Документация
 

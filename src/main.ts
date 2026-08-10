@@ -1,30 +1,22 @@
-import { VIEW_W, VIEW_H, CAMERA, WORLD_SEED, BUILD_AIM_DISTANCE } from './config';
-import { Display } from './core/display';
-import { Input, ToolModeState, aimDirection, actionTarget, NO_INPUT } from './core/input';
-import { GameLoop } from './core/loop';
-import { Camera } from './render/camera';
-import { Renderer } from './render/renderer';
-import type { HudState, GhostView } from './render/renderer';
-import type { OverlayView } from './render/overlay';
-import { Research, ResearchOverlay } from './progress/research';
-import { TECHNOLOGIES } from './progress/technologies';
-import { Player } from './entities/player';
-import { Inventory } from './entities/inventory';
-import { LandingModule } from './entities/landing-module';
-import { BuildingRegistry } from './entities/buildings';
-import { BuildCatalogState, sectionKindByHull } from './entities/catalog';
-import { machineSummary } from './entities/separator';
-import { generateLuna } from './world/worlds/luna';
-import { Simulation } from './world/simulation';
-import { Digger } from './world/digging';
-import { Vacuum } from './world/vacuum';
-import { Builder } from './world/builder';
-import type { PlacementIssue } from './world/builder';
-import { DebugPainter } from './world/painter';
-import { MATERIALS, PORTABLE_MATERIALS } from './world/materials';
-import { Soundscape } from './audio/soundscape';
-import { createSignals, resetSignals } from './audio/signals';
-import { PLAYER } from './config';
+import { VIEW_W, VIEW_H, CAMERA, WORLD_SEED, BUILD_AIM_DISTANCE, PLAYER } from './config';
+import { Display, Input, ToolModeState, aimDirection, actionTarget, GameLoop } from './core';
+import { Camera, Renderer } from './render';
+import type { HudState, GhostView, OverlayView, FrameView } from './render';
+import { Research, ResearchOverlay, TECHNOLOGIES } from './progress';
+import {
+  Player,
+  NO_INPUT,
+  Inventory,
+  LandingModule,
+  BuildCatalogState,
+  machineSummary,
+} from './entities';
+import { generateLuna, MATERIALS, PORTABLE_MATERIALS } from './world';
+import { Digger, Vacuum, Builder, DebugPainter } from './systems';
+import type { BuildPreview } from './systems';
+import { Game } from './app';
+import type { GameState, StepIntent } from './app';
+import { Soundscape } from './audio';
 
 const canvas = document.getElementById('game');
 if (!(canvas instanceof HTMLCanvasElement)) throw new Error('Канвас #game не найден');
@@ -46,22 +38,21 @@ const player = new Player(spawn.x, spawn.y, research.tuning);
 const camera = new Camera(world.width, world.height);
 camera.snapTo(player.centerX, player.centerY);
 
+const landingModule = new LandingModule(receiver, research);
+const game = new Game(world, player, camera, landingModule);
+const buildings = game.buildings;
+
 const renderer = new Renderer(display, world, surface, WORLD_SEED);
-const simulation = new Simulation();
 const digger = new Digger();
 const vacuum = new Vacuum(research.tuning);
 const painter = new DebugPainter();
 const tool = new ToolModeState();
 const catalog = new BuildCatalogState(research);
 const inventory = new Inventory();
-const landingModule = new LandingModule(receiver, research);
-const buildings = new BuildingRegistry();
 
 // Звук — читатель, а не участник: он получает счётчики уже отработавшего шага
-// и ничего в мире не трогает. Снапшот сигналов переиспользуется, как и снапшот
-// ввода: аллокаций на шаге нет.
+// и ничего в мире не трогает.
 const soundscape = new Soundscape();
-const signals = createSignals();
 
 let showDebug = true;
 let targetInReach = false;
@@ -89,8 +80,10 @@ function clamp(value: number, limit: number): number {
  * Нехватка кредитов называет НЕДОСТАЮЩУЮ сумму, а не цену: цена и так стоит
  * рядом с видом постройки, а игроку нужно знать, сколько ещё донести.
  */
-function placementIssueText(issue: PlacementIssue | null, cost: number): string {
-  switch (issue) {
+function placementIssueText(preview: BuildPreview, cost: number): string {
+  switch (preview.issue) {
+    case 'far':
+      return 'слишком далеко';
     case 'funds':
       return `не хватает ${cost - landingModule.credits} ₡`;
     case 'occupied':
@@ -109,45 +102,221 @@ function placementIssueText(issue: PlacementIssue | null, cost: number): string 
 }
 
 /**
- * Шаг при открытом оверлее: ввод достаётся меню целиком, мир идёт дальше.
+ * Мир: ввод принадлежит игроку целиком.
+ *
+ * Всё, что здесь происходит, — это ПОДГОТОВКА намерения и применение
+ * инструментов, меняющих мир. Сам шаг мира идёт после, в `Game.advanceWorld`,
+ * и он один на все состояния.
+ */
+const playState: GameState = {
+  handleInput(dt: number): StepIntent {
+    if (input.debugTogglePressed) showDebug = !showDebug;
+    if (showDebug && input.debugCycleMaterialPressed) painter.cycle();
+
+    // Переключатели читаются ДО применения инструмента: нажатие режима должно
+    // менять то, что произойдёт на этом же шаге, а не на следующем.
+    if (input.toolModePressed) tool.cycle();
+    if (input.cycleCarriedPressed) inventory.cycleSelected();
+    // Вид постройки перебирается своей клавишей и в любом режиме: `C` остаётся
+    // за веществом инвентаря, потому что высыпание доступно всегда.
+    if (input.buildKindPressed) catalog.cycle();
+
+    // Цель под курсором. Крестик всегда здесь и никуда не переезжает: он
+    // указатель мыши, а не индикатор режима.
+    const cursor = camera.screenToWorld(input.mouseX, input.mouseY);
+    const cursorX = Math.round(cursor.x);
+    const cursorY = Math.round(cursor.y);
+    targetInReach = Digger.inReach(player.centerX, player.centerY, cursor.x, cursor.y);
+
+    // `player.facing` читается с ПРЕДЫДУЩЕГО шага — инструменты идут до
+    // `player.update`, и порядок менять нельзя. Отставание ненаблюдаемо: facing
+    // меняется только при нажатой клавише движения, а тогда направление берётся
+    // из неё же напрямую.
+    const dir = aimDirection(input.moveAxis, input.aimAxisY, player.facing);
+
+    // Цель инструмента и цель высыпания разведены по своим кнопкам, но правило
+    // выбора у них одно: мышь целится курсором, клавиатура — направлением.
+    const aim = actionTarget(
+      input.mouseLeftHeld,
+      cursorX,
+      cursorY,
+      player.centerX,
+      player.centerY,
+      dir.x,
+      dir.y,
+    );
+    const dumpAim = actionTarget(
+      input.mouseRightHeld,
+      cursorX,
+      cursorY,
+      player.centerX,
+      player.centerY,
+      dir.x,
+      dir.y,
+    );
+
+    // Отладочная установка вещества: доступна только при включённой диагностике
+    // и подчиняется той же дальности, что и копание.
+    painter.update(
+      dt,
+      world,
+      showDebug,
+      input.debugPlaceHeld,
+      player.centerX,
+      player.centerY,
+      cursorX,
+      cursorY,
+      game.occupant,
+    );
+
+    // Кнопка одна, а действие выбирает режим: в режиме сбора кисть копания
+    // не применяется ВОВСЕ, иначе стена за кучей рушилась бы вместе с уборкой.
+    const converted = digger.update(
+      dt,
+      world,
+      input.toolHeld && tool.digging,
+      player.centerX,
+      player.centerY,
+      aim.x,
+      aim.y,
+    );
+
+    vacuum.updateSuck(
+      dt,
+      world,
+      inventory,
+      input.toolHeld && tool.collecting,
+      player.centerX,
+      player.centerY,
+      aim.x,
+      aim.y,
+    );
+
+    applyBuilding(dir, cursorX, cursorY);
+
+    // Высыпание от режима не зависит: оно доступно всегда и своим органом
+    // управления.
+    vacuum.updateDump(
+      dt,
+      world,
+      inventory,
+      input.dumpHeld,
+      player.centerX,
+      player.centerY,
+      dumpAim.x,
+      dumpAim.y,
+      game.occupant,
+    );
+
+    if (input.muteTogglePressed) soundscape.toggleMute();
+
+    // Взгляд игрока: кадр смещается в сторону ПРИЦЕЛА, показывая больше там,
+    // куда смотрит игрок. Мышь целится курсором, клавиатура — направлением;
+    // привязка к позиции курсора без мыши держала бы кадр перекошенным.
+    const mouseAim = input.aimSource === 'mouse';
+    return {
+      input,
+      lookAheadX: mouseAim
+        ? clamp((input.mouseX - VIEW_W / 2) * CAMERA.mouseLookAheadFactor, CAMERA.mouseLookAheadMax)
+        : dir.x * CAMERA.keyLookAhead,
+      lookAheadY: mouseAim
+        ? clamp((input.mouseY - VIEW_H / 2) * CAMERA.mouseLookAheadFactor, CAMERA.mouseLookAheadMax)
+        : dir.y * CAMERA.keyLookAhead,
+      dig: { converted, x: aim.x, y: aim.y },
+    };
+  },
+};
+
+/**
+ * Строительство: контур и постановка.
+ *
+ * Разовое действие на НАЖАТИЕ, а не на удержание: иначе одно и то же здание
+ * ставилось бы и сносилось по тридцать раз в секунду.
+ *
+ * Клавиатурная цель здесь СВОЯ и дальше копательной: здание центрируется
+ * на цели, а место негодно, если область накрывает персонажа. При общей
+ * дистанции шесть любое клавиатурное направление давало пересечение,
+ * то есть построить без мыши было бы нельзя вовсе.
+ */
+function applyBuilding(dir: { x: number; y: number }, cursorX: number, cursorY: number): void {
+  if (!tool.building) {
+    ghost = null;
+    buildIssue = '';
+    return;
+  }
+
+  // Цель постройки следует за АКТИВНЫМ ИСТОЧНИКОМ прицела, а не за удержанием
+  // кнопки, как у кистей. У кистей правило «решает удерживаемый орган» защищает
+  // от прыжка цели посреди штриха; у постройки штриха нет, зато есть контур,
+  // который показывается ДО нажатия. Показывать одно, а делать другое нельзя.
+  const buildAim = actionTarget(
+    input.aimSource === 'mouse',
+    cursorX,
+    cursorY,
+    player.centerX,
+    player.centerY,
+    dir.x,
+    dir.y,
+    BUILD_AIM_DISTANCE,
+  );
+  // Клавиатурный прицел ВБОК ставит постройку на уровень ступней, а не пояса.
+  // Поправка касается только бокового прицела: вверх и вниз игрок целится
+  // намеренно. Мышь не трогается — у неё есть курсор.
+  if (input.aimSource !== 'mouse' && dir.y === 0) {
+    buildAim.y = Builder.groundedTargetY(catalog.kind, player.y, PLAYER.hitboxH);
+  }
+
+  const kind = catalog.kind;
+  const preview = Builder.preview(
+    world,
+    buildings,
+    kind,
+    player.centerX,
+    player.centerY,
+    buildAim.x,
+    buildAim.y,
+    landingModule.credits,
+    research,
+  );
+  ghost = preview;
+  buildIssue = placementIssueText(preview, kind.cost);
+
+  if (input.toolPressed) {
+    Builder.apply(
+      world,
+      buildings,
+      landingModule,
+      kind,
+      player.centerX,
+      player.centerY,
+      buildAim.x,
+      buildAim.y,
+      research,
+    );
+  }
+}
+
+/**
+ * Оверлей исследований: ввод достаётся меню целиком, мир идёт дальше.
  *
  * Модальность здесь не украшение, а условие того, чтобы меню было безопасно
  * открыть: без неё игрок бежит с обрыва, пока читает дерево, а нажатие
  * «купить» одновременно копает дыру под ногами.
  *
  * Симуляция при этом НЕ останавливается. Паузы в модели нет: мир — автомат
- * с фиксированным шагом, машины работают без игрока, и состояние «игра не идёт»
- * пришлось бы завести специально ради меню. Наблюдаемое следствие честное:
- * сепаратор выдаёт порции, пока игрок выбирает технологию.
+ * с фиксированным шагом, машины работают без игрока. Наблюдаемое следствие
+ * честное: сепаратор выдаёт порции, пока игрок выбирает технологию.
  */
-function stepOverlay(dt: number): void {
-  overlay.handle(input, research);
-
-  // Персонаж получает пустой ввод, но физику проходит: он не зависает
-  // в воздухе на время чтения дерева.
-  player.update(dt, NO_INPUT, world);
-  simulation.update(world, { x: player.x, y: player.y, w: PLAYER.hitboxW, h: PLAYER.hitboxH });
-  buildings.update(world, dt);
-  landingModule.update(world);
-  camera.follow(player.centerX, player.centerY, 0, 0);
-
-  // Мир идёт — значит и звучит. Сигналы собираются те же, просто без действий
-  // игрока: копания нет, осыпание есть.
-  resetSignals(signals);
-  signals.listenerX = player.centerX;
-  signals.listenerY = player.centerY;
-  const moves = simulation.lastPowderMoves;
-  signals.powderMoves = moves;
-  if (moves > 0) {
-    signals.powderX = simulation.lastPowderSumX / moves;
-    signals.powderY = simulation.lastPowderSumY / moves;
-  }
-  soundscape.update(dt, signals, input.hasInteracted);
-
-  ghost = null;
-  buildIssue = '';
-  input.endStep();
-}
+const overlayState: GameState = {
+  handleInput(): StepIntent {
+    overlay.handle(input, research);
+    ghost = null;
+    buildIssue = '';
+    // Персонаж получает пустой ввод, но физику проходит: он не зависает
+    // в воздухе на время чтения дерева.
+    return { input: NO_INPUT, lookAheadX: 0, lookAheadY: 0, dig: null };
+  },
+};
 
 function step(dt: number): void {
   simTime += dt;
@@ -157,267 +326,20 @@ function step(dt: number): void {
   if (input.researchTogglePressed) {
     // Сброс удерживаемого — ТЕМ ЖЕ способом, что и при потере фокуса окном.
     // Клавиша, зажатая в момент открытия, иначе оставляла бы персонажа бегущим
-    // всё время, пока игрок читает дерево. На закрытии сбрасываем по той же
-    // причине: `T`, нажатая с зажатым бегом, не должна выпустить игрока
-    // в мир уже на ходу.
+    // всё время, пока игрок читает дерево.
     input.releaseAll();
     overlay.toggle();
   }
-  if (overlay.open) {
-    stepOverlay(dt);
-    return;
-  }
 
-  if (input.debugTogglePressed) showDebug = !showDebug;
-  if (showDebug && input.debugCycleMaterialPressed) painter.cycle();
+  const intent = (overlay.open ? overlayState : playState).handleInput(dt);
+  game.advanceWorld(dt, intent);
 
-  // Переключатели читаются ДО применения инструмента: нажатие режима должно
-  // менять то, что произойдёт на этом же шаге, а не на следующем.
-  if (input.toolModePressed) tool.cycle();
-  if (input.cycleCarriedPressed) inventory.cycleSelected();
-  // Вид постройки перебирается своей клавишей и в любом режиме: `C` остаётся
-  // за веществом инвентаря, потому что высыпание доступно всегда.
-  if (input.buildKindPressed) catalog.cycle();
-
-  // Цель под курсором. Крестик всегда здесь и никуда не переезжает: он
-  // указатель мыши, а не индикатор режима. Цвет крестика относится к нему же,
-  // поэтому достижимость считается по курсорной цели.
-  const cursor = camera.screenToWorld(input.mouseX, input.mouseY);
-  const cursorX = Math.round(cursor.x);
-  const cursorY = Math.round(cursor.y);
-  targetInReach = Digger.inReach(player.centerX, player.centerY, cursor.x, cursor.y);
-
-  // Направление прицела с клавиатуры. `player.facing` читается с ПРЕДЫДУЩЕГО
-  // шага — копание идёт до player.update, и порядок менять нельзя (см. ниже).
-  // Отставание ненаблюдаемо: facing меняется только при нажатой клавише
-  // движения, а тогда направление берётся из неё же напрямую, а не из facing.
-  const dir = aimDirection(input.moveAxis, input.aimAxisY, player.facing);
-
-  // Цель инструмента и цель высыпания разведены по своим кнопкам, но правило
-  // выбора у них одно: мышь целится курсором, клавиатура — направлением.
-  const aim = actionTarget(
-    input.mouseLeftHeld,
-    cursorX,
-    cursorY,
-    player.centerX,
-    player.centerY,
-    dir.x,
-    dir.y,
-  );
-  const dumpAim = actionTarget(
-    input.mouseRightHeld,
-    cursorX,
-    cursorY,
-    player.centerX,
-    player.centerY,
-    dir.x,
-    dir.y,
-  );
-
-  // Отладочная установка вещества: доступна только при включённой диагностике
-  // и подчиняется той же дальности, что и копание. Инструмент мышиный —
-  // ставит там, где крестик.
-  painter.update(
-    dt,
-    world,
-    showDebug,
-    input.debugPlaceHeld,
-    player.centerX,
-    player.centerY,
-    cursorX,
-    cursorY,
-    { x: player.x, y: player.y, w: PLAYER.hitboxW, h: PLAYER.hitboxH },
-  );
-
-  // Порядок важен: инструмент меняет мир, игрок разрешает коллизии, и только
-  // потом симуляция двигает материал — зная СВЕЖИЙ хитбокс персонажа.
-  // При обратном порядке материал успевал бы занять ячейку, куда персонаж
-  // как раз переместился, и засыпал бы его изнутри.
-  //
-  // Кнопка одна, а действие выбирает режим: в режиме сбора кисть копания
-  // не применяется ВОВСЕ, иначе стена за кучей рушилась бы вместе с уборкой.
-  const converted = digger.update(
-    dt,
-    world,
-    input.toolHeld && tool.digging,
-    player.centerX,
-    player.centerY,
-    aim.x,
-    aim.y,
-  );
-
-  vacuum.updateSuck(
-    dt,
-    world,
-    inventory,
-    input.toolHeld && tool.collecting,
-    player.centerX,
-    player.centerY,
-    aim.x,
-    aim.y,
-  );
-
-  // Строительство — разовое действие на НАЖАТИЕ, а не на удержание: иначе
-  // одно и то же здание ставилось бы и сносилось по тридцать раз в секунду.
-  //
-  // Клавиатурная цель здесь СВОЯ и дальше копательной: здание центрируется
-  // на цели, а место негодно, если область накрывает персонажа. При общей
-  // дистанции шесть любое клавиатурное направление давало пересечение,
-  // то есть построить без мыши было бы нельзя вовсе.
-  const occupant = { x: player.x, y: player.y, w: PLAYER.hitboxW, h: PLAYER.hitboxH };
-  if (tool.building) {
-    // Цель постройки следует за АКТИВНЫМ ИСТОЧНИКОМ прицела, а не за удержанием
-    // кнопки, как у кистей. У кистей правило «решает удерживаемый орган»
-    // защищает от прыжка цели посреди штриха; у постройки штриха нет, зато есть
-    // контур, который показывается ДО нажатия. Пока кнопка не нажата,
-    // «удерживаемого органа» не существует вовсе — и контур вставал бы
-    // у клавиатурной цели, а нажатие ставило бы здание под курсором.
-    // Показывать одно, а делать другое нельзя.
-    const buildAim = actionTarget(
-      input.aimSource === 'mouse',
-      cursorX,
-      cursorY,
-      player.centerX,
-      player.centerY,
-      dir.x,
-      dir.y,
-      BUILD_AIM_DISTANCE,
-    );
-    // Клавиатурный прицел ВБОК ставит постройку на уровень ступней, а не пояса
-    // (см. `Builder.groundedTargetY`). Поправка касается только бокового
-    // прицела: вверх и вниз игрок целится намеренно, и подменять там его выбор
-    // нечем оправдать. Мышь не трогается — у неё есть курсор, и она уже
-    // целится куда надо.
-    if (input.aimSource !== 'mouse' && dir.y === 0) {
-      buildAim.y = Builder.groundedTargetY(catalog.kind, player.y, PLAYER.hitboxH);
-    }
-    // Контур размером ВЫБРАННОГО вида и в том месте, куда постройка встанет:
-    // у машины это её прямоугольник вокруг цели, у секционной постройки —
-    // клетка сетки, к которой цель притянулась.
-    const kind = catalog.kind;
-    const at = Builder.originFor(kind, buildAim.x, buildAim.y);
-    const standing = buildings.findAt(buildAim.x, buildAim.y);
-    // Ячейка секционной постройки под целью означает снос — так же, как запись
-    // реестра под целью. Вид, выбранный в каталоге, на снос не влияет.
-    const section = sectionKindByHull(world.get(buildAim.x, buildAim.y));
-    // Контур показывает то, что СЛУЧИТСЯ, а не то, что выбрано: над стоящей
-    // постройкой это её снос, и обводить её прямоугольником выбранной машины
-    // значило бы обещать одно, а сделать другое.
-    if (standing) {
-      ghost = {
-        x: standing.x,
-        y: standing.y,
-        w: standing.kind.width,
-        h: standing.kind.height,
-        ok: true,
-      };
-    } else if (section) {
-      // Границы сносимой секции — те же, что у постановки: обе выводятся
-      // из сетки, поэтому контур сноса совпадает с тем, что исчезнет.
-      const hit = Builder.originFor(section, buildAim.x, buildAim.y);
-      ghost = { x: hit.x, y: hit.y, w: section.width, h: section.height, ok: true };
-    } else {
-      // Дальность считается по цели ПОСТРОЙКИ, а не по курсору: с клавиатуры
-      // цель берётся от персонажа, и курсор к ней отношения не имеет.
-      const far = !Digger.inReach(player.centerX, player.centerY, buildAim.x, buildAim.y);
-      const issue = Builder.issueAt(world, kind, at.x, at.y, landingModule.credits, research);
-      buildIssue = far ? 'слишком далеко' : placementIssueText(issue, kind.cost);
-      ghost = { x: at.x, y: at.y, w: kind.width, h: kind.height, ok: !far && issue === null };
-    }
-    if (input.toolPressed) {
-      Builder.apply(
-        world,
-        buildings,
-        landingModule,
-        kind,
-        player.centerX,
-        player.centerY,
-        buildAim.x,
-        buildAim.y,
-        research,
-      );
-    }
-  } else {
-    ghost = null;
-    buildIssue = '';
-  }
-
-  // Высыпание от режима не зависит: оно доступно всегда и своим органом
-  // управления.
-  vacuum.updateDump(
-    dt,
-    world,
-    inventory,
-    input.dumpHeld,
-    player.centerX,
-    player.centerY,
-    dumpAim.x,
-    dumpAim.y,
-    occupant,
-  );
-
-  player.update(dt, input, world);
-
-  simulation.update(world, {
-    x: player.x,
-    y: player.y,
-    w: PLAYER.hitboxW,
-    h: PLAYER.hitboxH,
-  });
-
-  // Машины и приёмник — ПОСЛЕ симуляции и в этом порядке. Ячейка, скатившаяся
-  // на приёмную грань или в зону на этом шаге, обрабатывается на нём же,
-  // а не через кадр: игроку задержка читалась бы как «иногда не засчитывает».
-  // Здания раньше модуля, потому что выданный ими продукт до зоны приёмника
-  // всё равно доедет не раньше следующего шага — падать ему несколько ячеек.
-  buildings.update(world, dt);
-  landingModule.update(world);
-
-  // Взгляд игрока: кадр смещается в сторону ПРИЦЕЛА, показывая больше там,
-  // куда смотрит игрок. Мышь целится курсором, клавиатура — направлением;
-  // привязка к позиции курсора без мыши держала бы кадр перекошенным.
-  const mouseAim = input.aimSource === 'mouse';
-  const lookAheadX = mouseAim
-    ? clamp((input.mouseX - VIEW_W / 2) * CAMERA.mouseLookAheadFactor, CAMERA.mouseLookAheadMax)
-    : dir.x * CAMERA.keyLookAhead;
-  const lookAheadY = mouseAim
-    ? clamp((input.mouseY - VIEW_H / 2) * CAMERA.mouseLookAheadFactor, CAMERA.mouseLookAheadMax)
-    : dir.y * CAMERA.keyLookAhead;
-  camera.follow(player.centerX, player.centerY, lookAheadX, lookAheadY);
-
-  // Сигналы за шаг — ПОСЛЕ того, как копание и симуляция отработали: это отчёт
-  // о случившемся, а не заявка на будущее. И до `input.endStep()`, иначе
-  // нажатие отключения звука было бы уже стёрто.
-  //
-  // Точка отсчёта слышимости — персонаж, а не центр кадра: камера уходит
-  // за курсором, и звуковая картина качалась бы при каждом движении мыши.
-  resetSignals(signals);
-  signals.listenerX = player.centerX;
-  signals.listenerY = player.centerY;
-  signals.digConverted = converted;
-  signals.digX = aim.x;
-  signals.digY = aim.y;
-  const moves = simulation.lastPowderMoves;
-  signals.powderMoves = moves;
-  if (moves > 0) {
-    signals.powderX = simulation.lastPowderSumX / moves;
-    signals.powderY = simulation.lastPowderSumY / moves;
-  }
-
-  if (input.muteTogglePressed) soundscape.toggleMute();
-  soundscape.update(dt, signals, input.hasInteracted);
+  soundscape.update(dt, game.signals, input.hasInteracted);
 
   // Одноразовые состояния ввода живут ровно один шаг симуляции.
   input.endStep();
 }
 
-/**
- * Снапшот состояния для строки статуса.
- *
- * Собирается на кадр, а не хранится: значения живут в инвентаре и модуле,
- * и дублировать их ради отрисовки означало бы завести второй источник правды,
- * который однажды разойдётся с первым.
- */
 /**
  * Список технологий для оверлея.
  *
@@ -445,6 +367,13 @@ function overlayView(): OverlayView | null {
   };
 }
 
+/**
+ * Снапшот состояния для строки статуса.
+ *
+ * Собирается на кадр, а не хранится: значения живут в инвентаре и модуле,
+ * и дублировать их ради отрисовки означало бы завести второй источник правды,
+ * который однажды разойдётся с первым.
+ */
 function hudState(): HudState {
   return {
     mode: tool.name,
@@ -478,17 +407,18 @@ function hudState(): HudState {
 function render(): void {
   // Крестик берётся живым из позиции курсора, а не из шага симуляции: иначе
   // на 144 Гц он отставал бы от мыши на кадр.
-  renderer.render(
+  const view: FrameView = {
     camera,
     player,
-    input.mouseX,
-    input.mouseY,
-    targetInReach,
-    hudState(),
-    showDebug ? loop.fps : 0,
-    simTime,
-    showDebug ? painter.materialName : '',
-  );
+    crosshairX: input.mouseX,
+    crosshairY: input.mouseY,
+    crosshairInReach: targetInReach,
+    hud: hudState(),
+    fps: showDebug ? loop.fps : 0,
+    time: simTime,
+    debugMaterial: showDebug ? painter.materialName : '',
+  };
+  renderer.render(view);
 }
 
 const loop = new GameLoop(step, render);

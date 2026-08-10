@@ -1,15 +1,8 @@
-import { World } from '../world/world';
-import { MAT, MAT_CREDIT_RATE, MAT_RESEARCH_RATE } from '../world/materials';
-import { Research } from '../progress/research';
+import { World, MAT, MAT_CREDIT_RATE, MAT_RESEARCH_RATE } from '../world';
+import type { Rect } from '../geometry';
+import { Research } from '../progress';
 
 /** Прямоугольник в координатах сетки. */
-export interface Rect {
-  readonly x: number;
-  readonly y: number;
-  readonly w: number;
-  readonly h: number;
-}
-
 /** Что начислено за один шаг зоны приёмника. */
 export interface Payout {
   readonly credits: number;

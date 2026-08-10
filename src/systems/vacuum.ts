@@ -1,10 +1,9 @@
 import { VACUUM } from '../config';
-import { World } from './world';
-import { MAT, MAT_PORTABLE } from './materials';
+import { World, MAT, MAT_PORTABLE } from '../world';
 import { Digger } from './digging';
-import { Tuning, TUNING_BASE } from '../progress/tuning';
-import type { Occupant } from './simulation';
-import type { Inventory } from '../entities/inventory';
+import { Tuning, TUNING_BASE } from '../progress';
+import type { Rect } from '../geometry';
+import type { Inventory } from '../entities';
 
 /**
  * Перенос вещества между миром и персонажем.
@@ -69,7 +68,7 @@ export class Vacuum {
     playerCY: number,
     targetX: number,
     targetY: number,
-    occupant: Occupant | null = null,
+    occupant: Rect | null = null,
   ): number {
     this.dumpCooldown = Math.max(0, this.dumpCooldown - dt);
     if (!held) return 0;
@@ -151,7 +150,7 @@ export class Vacuum {
     inventory: Inventory,
     centerX: number,
     centerY: number,
-    occupant: Occupant | null = null,
+    occupant: Rect | null = null,
     radius: number = TUNING_BASE.collectRadius,
   ): number {
     const r = radius;

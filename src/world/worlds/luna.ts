@@ -2,9 +2,9 @@ import { World } from '../world';
 import type { WorldProfile } from '../world';
 import { MAT, MAT_STATE, MatterState } from '../materials';
 import { mulberry32, makeNoise } from '../rng';
-import { RAMP } from '../../render/palette';
+import { RAMP } from '../../palette';
 import { WORLD_W, WORLD_H, PLAYER, MODULE } from '../../config';
-import type { Rect } from '../../entities/landing-module';
+import type { Rect } from '../../geometry';
 
 /**
  * Луна — первый мир.

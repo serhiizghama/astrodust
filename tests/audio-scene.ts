@@ -13,11 +13,15 @@
  * рядом друг с другом и в одном месте.
  */
 import { AUDIO, FIXED_DT, WORLD_SEED } from '../src/config';
-import { createBus } from '../src/audio/context';
-import { createVoices } from '../src/audio/soundscape';
-import { AudioClock, VoiceSlots } from '../src/audio/model';
-import { createSignals, resetSignals } from '../src/audio/signals';
-import type { AudioSignals } from '../src/audio/signals';
+import {
+  createBus,
+  createVoices,
+  AudioClock,
+  VoiceSlots,
+  createSignals,
+  resetSignals,
+} from '../src/audio';
+import type { AudioSignals } from '../src/audio';
 
 /** Разрешение огибающей. 5 мс — вчетверо мельче спада акцента (90 мс). */
 const ENV_MS = 5;

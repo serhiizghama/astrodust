@@ -1,5 +1,6 @@
 import { CHUNK_SIZE, CONVEYOR } from '../config';
 import { World } from './world';
+import type { Rect } from '../geometry';
 import { hashChance } from './rng';
 import {
   MatterState,
@@ -15,14 +16,6 @@ import {
   MAT,
 } from './materials';
 import { reactAround, MAT_REACTIVE } from './reactions';
-
-/** Прямоугольник, который симуляция обязана считать занятым. */
-export interface Occupant {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
 
 /**
  * «Уровня нет»: свободной поверхности у ячейки не видно.
@@ -48,7 +41,7 @@ const NO_LEVEL = 0xffff;
  */
 export class Simulation {
   private step = 0;
-  private prevOccupant: Occupant | null = null;
+  private prevOccupant: Rect | null = null;
   /** Сколько ячеек обошёл последний шаг. Улёгшийся мир должен давать ноль. */
   lastCellsVisited = 0;
 
@@ -102,7 +95,7 @@ export class Simulation {
    *   и так проваливается, а хитбокс шириной шесть ячеек перекрывал бы поток
    *   целиком и работал плотиной.
    */
-  update(world: World, occupant: Occupant | null): void {
+  update(world: World, occupant: Rect | null): void {
     const { chunks } = world;
 
     this.lastPowderMoves = 0;
@@ -140,7 +133,7 @@ export class Simulation {
   }
 
   /** Проход снизу вверх: сыпучее и жидкости. */
-  private sweepDown(world: World, occupant: Occupant | null): number {
+  private sweepDown(world: World, occupant: Rect | null): number {
     const { chunks, width, height, cells } = world;
     let visited = 0;
     // Направление обхода строки чередуется по шагам.
@@ -211,7 +204,7 @@ export class Simulation {
   }
 
   /** Проход сверху вниз: газы. */
-  private sweepUp(world: World, occupant: Occupant | null): number {
+  private sweepUp(world: World, occupant: Rect | null): number {
     const { chunks, width, height, cells } = world;
     let visited = 0;
     // См. sweepDown: газ растекается вбок по тем же правилам и требует того же
@@ -267,7 +260,7 @@ export class Simulation {
    * и у газов: строка выше уже пройдена, поэтому за шаг ячейка поднимается
    * не более чем на одну строку.
    */
-  private pressurePass(world: World, occupant: Occupant | null): number {
+  private pressurePass(world: World, occupant: Rect | null): number {
     const { chunks, width, height, cells } = world;
     if (!this.level || this.level.length !== cells.length) {
       this.level = new Uint16Array(cells.length);
@@ -436,7 +429,7 @@ export class Simulation {
    */
   private riseUnderHead(
     world: World,
-    occupant: Occupant | null,
+    occupant: Rect | null,
     x: number,
     y: number,
     material: number,
@@ -500,7 +493,7 @@ export class Simulation {
    */
   private canRiseInto(
     world: World,
-    occupant: Occupant | null,
+    occupant: Rect | null,
     x: number,
     y: number,
     dir: number,
@@ -550,7 +543,7 @@ export class Simulation {
    */
   private movePowder(
     world: World,
-    occupant: Occupant | null,
+    occupant: Rect | null,
     x: number,
     y: number,
     material: number,
@@ -593,7 +586,7 @@ export class Simulation {
   /** Жидкость: вниз, диагонали вниз-вбок, затем вбок на дальность растекаемости. */
   private moveLiquid(
     world: World,
-    occupant: Occupant | null,
+    occupant: Rect | null,
     x: number,
     y: number,
     material: number,
@@ -690,7 +683,7 @@ export class Simulation {
    */
   private canFlow(
     world: World,
-    occupant: Occupant | null,
+    occupant: Rect | null,
     x: number,
     y: number,
     material: number,
@@ -715,7 +708,7 @@ export class Simulation {
   /** Газ: зеркало жидкости — вверх, верхние диагонали, вбок. Плюс рассеивание. */
   private moveGas(
     world: World,
-    occupant: Occupant | null,
+    occupant: Rect | null,
     x: number,
     y: number,
     material: number,
@@ -766,7 +759,7 @@ export class Simulation {
 
   private tryMove(
     world: World,
-    occupant: Occupant | null,
+    occupant: Rect | null,
     fromX: number,
     fromY: number,
     toX: number,
@@ -815,7 +808,7 @@ export class Simulation {
    */
   private canEnter(
     world: World,
-    occupant: Occupant | null,
+    occupant: Rect | null,
     material: number,
     x: number,
     y: number,
@@ -862,7 +855,7 @@ export class Simulation {
    * держать свои чанки активными вечно, иначе улёгшийся мир перестанет быть
    * бесплатным.
    */
-  private wakeAroundMovedOccupant(world: World, occupant: Occupant | null): void {
+  private wakeAroundMovedOccupant(world: World, occupant: Rect | null): void {
     const prev = this.prevOccupant;
     const same =
       prev !== null &&
@@ -884,7 +877,7 @@ export class Simulation {
   }
 
   /** Хитбокс мельче чанка, поэтому углов достаточно — touch расширяет на ±1. */
-  private touchRect(world: World, r: Occupant): void {
+  private touchRect(world: World, r: Rect): void {
     world.chunks.touch(r.x, r.y);
     world.chunks.touch(r.x + r.w - 1, r.y);
     world.chunks.touch(r.x, r.y + r.h - 1);

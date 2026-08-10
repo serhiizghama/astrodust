@@ -1,5 +1,4 @@
-import { World } from '../world/world';
-import { MAT } from '../world/materials';
+import { World, MAT } from '../world';
 
 /**
  * Здание — это ДВЕ вещи сразу, и ни одной из них по отдельности не хватает.

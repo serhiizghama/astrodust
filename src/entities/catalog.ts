@@ -1,7 +1,7 @@
 import { SEPARATOR_KIND } from './separator';
 import { CONVEYOR_LEFT_KIND, CONVEYOR_RIGHT_KIND } from './conveyor';
-import { NO_UNLOCKS } from '../progress/research';
-import type { ContentUnlocks } from '../progress/research';
+import { NO_UNLOCKS } from '../progress';
+import type { ContentUnlocks } from '../progress';
 import type { BuildingKind } from './buildings';
 
 /**

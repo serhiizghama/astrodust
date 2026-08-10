@@ -1,12 +1,9 @@
-import { World } from './world';
-import { MAT, MAT_STATE, MatterState } from './materials';
+import { World, MAT, MAT_STATE, MatterState } from '../world';
 import { Digger } from './digging';
-import { stampKind } from '../entities/buildings';
-import type { Building, BuildingKind, BuildingRegistry } from '../entities/buildings';
-import { sectionKindByHull, isKindOpen } from '../entities/catalog';
-import { NO_UNLOCKS } from '../progress/research';
-import type { ContentUnlocks } from '../progress/research';
-import type { LandingModule } from '../entities/landing-module';
+import { stampKind, sectionKindByHull, isKindOpen } from '../entities';
+import type { Building, BuildingKind, BuildingRegistry, LandingModule } from '../entities';
+import { NO_UNLOCKS } from '../progress';
+import type { ContentUnlocks } from '../progress';
 
 /**
  * Почему постановка невозможна. Ноль причин — годно.
@@ -33,6 +30,26 @@ export type PlacementIssue = 'occupied' | 'unsupported' | 'funds' | 'locked';
  * в одно, а здание встало бы в другое. Тот же довод, по которому недостижимая
  * цель копания не смещается к достижимой.
  */
+/**
+ * Что случится под целью: контур будущей постройки и причина отказа.
+ *
+ * Здесь, а не в шаге игры: контур и постановка обязаны говорить об одном и том
+ * же — иначе рамка обещает одно, а нажатие делает другое. Пока правило было
+ * разорвано между строителем и циклом, разойтись они могли на любой правке.
+ *
+ * Контур показывает ДЕЙСТВИЕ, а не выбор: над стоящей постройкой это её снос,
+ * и обводить её прямоугольником выбранной машины значило бы соврать.
+ */
+export interface BuildPreview {
+  readonly x: number;
+  readonly y: number;
+  readonly w: number;
+  readonly h: number;
+  readonly ok: boolean;
+  /** Почему негодно. `null` — годно, `'far'` — вне досягаемости. */
+  readonly issue: PlacementIssue | 'far' | null;
+}
+
 export class Builder {
   /**
    * Левый верхний угол области под целью.
@@ -72,6 +89,54 @@ export class Builder {
   /**
    * @returns причина отказа или `null`, если место годно
    */
+  /** Контур и годность под целью. Снос читается тем же вызовом, что постановка. */
+  static preview(
+    world: World,
+    buildings: BuildingRegistry,
+    kind: BuildingKind,
+    playerCenterX: number,
+    playerCenterY: number,
+    targetX: number,
+    targetY: number,
+    credits: number,
+    unlocks: ContentUnlocks = NO_UNLOCKS,
+  ): BuildPreview {
+    const standing = buildings.findAt(targetX, targetY);
+    if (standing) {
+      return {
+        x: standing.x,
+        y: standing.y,
+        w: standing.kind.width,
+        h: standing.kind.height,
+        ok: true,
+        issue: null,
+      };
+    }
+
+    // Ячейка секционной постройки под целью означает снос — так же, как запись
+    // реестра. Границы выводятся из сетки, поэтому контур сноса совпадает
+    // с тем, что исчезнет.
+    const section = sectionKindByHull(world.get(targetX, targetY));
+    if (section) {
+      const hit = Builder.originFor(section, targetX, targetY);
+      return { x: hit.x, y: hit.y, w: section.width, h: section.height, ok: true, issue: null };
+    }
+
+    // Дальность считается по цели ПОСТРОЙКИ, а не по курсору: с клавиатуры цель
+    // берётся от персонажа, и курсор к ней отношения не имеет.
+    const at = Builder.originFor(kind, targetX, targetY);
+    const far = !Digger.inReach(playerCenterX, playerCenterY, targetX, targetY);
+    const issue = Builder.issueAt(world, kind, at.x, at.y, credits, unlocks);
+    return {
+      x: at.x,
+      y: at.y,
+      w: kind.width,
+      h: kind.height,
+      ok: !far && issue === null,
+      issue: far ? 'far' : issue,
+    };
+  }
+
   static issueAt(
     world: World,
     kind: BuildingKind,

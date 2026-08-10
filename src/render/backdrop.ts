@@ -1,7 +1,7 @@
 import { VIEW_W, VIEW_H, BACKDROP, WORLD_W } from '../config';
-import type { BackdropSpec, WorldProfile } from '../world/world';
-import { mulberry32, makeNoise } from '../world/rng';
-import { RAMP } from './palette';
+import type { BackdropSpec, WorldProfile } from '../world';
+import { mulberry32, makeNoise } from '../world';
+import { RAMP } from '../palette';
 
 /**
  * Задник неба: звёзды, полоса галактики, соседнее тело и слои силуэтов.

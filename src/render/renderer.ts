@@ -1,21 +1,21 @@
 import { VIEW_W, VIEW_H, DIG, VACUUM, CONVEYOR, SIM_HZ } from '../config';
-import { Display } from '../core/display';
+import { Display } from '../core';
 import { Camera } from './camera';
-import { World } from '../world/world';
-import { MAT, MAT_R, MAT_G, MAT_B, MAT_CARRY, CONVEYOR_STRIPE_COLOR } from '../world/materials';
+import { World, MAT, MAT_CARRY } from '../world';
+import { MAT_R, MAT_G, MAT_B, CONVEYOR_STRIPE_COLOR } from './material-colors';
 import { Backdrop } from './backdrop';
-import { RAMP, css } from './palette';
+import { RAMP, css } from '../palette';
 import { drawResearchOverlay } from './overlay';
 import type { OverlayView } from './overlay';
+import { Player } from '../entities';
 import {
-  Player,
   SPRITE_PIXELS,
   SPRITE_PALETTE,
   SPRITE_W,
   SPRITE_H,
   SPRITE_OFFSET_X,
   SPRITE_OFFSET_Y,
-} from '../entities/player';
+} from './sprites/player';
 
 /**
  * Граница круглой кисти: пары смещений (dx, dy) относительно цели.
@@ -221,6 +221,27 @@ export interface MachineView {
  * Оба делят площадь кадра по профилю поверхности и не заходят на чужую
  * территорию, поэтому ни один пиксель не записывается дважды.
  */
+/**
+ * Всё, что нужно кадру, одним снапшотом.
+ *
+ * Один параметр вместо девяти позиционных: у позиционного списка, доросшего
+ * до девяти, соседние `number` различаются только порядком, и перепутать
+ * крестик с частотой кадров ничто не мешает.
+ */
+export interface FrameView {
+  readonly camera: Camera;
+  readonly player: Player;
+  readonly crosshairX: number;
+  readonly crosshairY: number;
+  readonly crosshairInReach: boolean;
+  readonly hud: HudState;
+  readonly fps: number;
+  /** Накопленное время симуляции: движет анимации задника. */
+  readonly time?: number;
+  /** Подпись выбранного отладочного вещества. Пусто — диагностика выключена. */
+  readonly debugMaterial?: string;
+}
+
 export class Renderer {
   private readonly backdrop: Backdrop;
   private readonly caveR: number;
@@ -240,17 +261,12 @@ export class Renderer {
     this.backdrop = new Backdrop(p, seed, surface);
   }
 
-  render(
-    camera: Camera,
-    player: Player,
-    crosshairX: number,
-    crosshairY: number,
-    crosshairInReach: boolean,
-    hud: HudState,
-    fps: number,
-    time = 0,
-    debugMaterial = '',
-  ): void {
+  render(view: FrameView): void {
+    const { camera, player, crosshairX, crosshairY, crosshairInReach, hud } = view;
+    const fps = view.fps;
+    const time = view.time ?? 0;
+    const debugMaterial = view.debugMaterial ?? '';
+
     // Считается один раз на кадр и служит обоим проходам: заднику — признаком
     // «неба в кадре нет», миру — границей, ниже которой проверять небо незачем.
     const maxSurface = this.backdrop.maxSurfaceInView(camera.x);

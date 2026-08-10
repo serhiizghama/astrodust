@@ -1,5 +1,5 @@
 import { VIEW_W, VIEW_H } from '../config';
-import { RAMP, css } from './palette';
+import { RAMP, css } from '../palette';
 
 /**
  * Оверлей исследований поверх кадра.

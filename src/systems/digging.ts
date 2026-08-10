@@ -1,7 +1,14 @@
 import { DIG } from '../config';
-import { World } from './world';
-import { MAT, MAT_STATE, MAT_YIELDS, MAT_YIELD_RATE, MAT_DIGGABLE, MatterState } from './materials';
-import { hashChance } from './rng';
+import {
+  World,
+  MAT,
+  MAT_STATE,
+  MAT_YIELDS,
+  MAT_YIELD_RATE,
+  MAT_DIGGABLE,
+  MatterState,
+  hashChance,
+} from '../world';
 
 /**
  * Копание: выемка твёрдого вещества, часть которой возвращается выработкой.

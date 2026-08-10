@@ -60,20 +60,32 @@ astrodust/
 └─ src/
    ├─ main.ts              # бутстрап + игровой цикл
    ├─ config.ts            # ВСЕ константы в одном месте (тюним отсюда)
+   ├─ palette.ts           # RAMP — все цвета игры
+   ├─ geometry.ts          # Rect
    ├─ core/
    │  ├─ loop.ts           # fixed timestep
-   │  └─ input.ts          # клавиатура + мышь → снапшот состояния
+   │  ├─ input.ts          # клавиатура + мышь → снапшот состояния
+   │  └─ index.ts          # публичная поверхность подсистемы
    ├─ world/
    │  ├─ materials.ts      # таблица материалов: id, цвет, solid, density
    │  ├─ world.ts          # Uint8Array сетка: get / set / isSolid
+   │  ├─ simulation.ts     # клеточный автомат веществ
    │  └─ worlds/
    │     └─ luna.ts        # генерация первого мира + его гравитация и палитра
+   ├─ systems/             # копание, сбор, стройка, отладочная установка
    ├─ entities/
-   │  └─ player.ts         # состояние, контроллер, спрайт
+   │  └─ player.ts         # состояние и контроллер (спрайт — в render/sprites)
+   ├─ progress/            # исследования, технологии, профиль настроек
    └─ render/
       ├─ camera.ts         # follow + deadzone + кламп к границам
-      └─ renderer.ts       # world → ImageData → канвас → апскейл
+      ├─ renderer.ts       # world → ImageData → канвас → апскейл
+      └─ sprites/          # как выглядят сущности
 ```
+
+Зависимости идут строго вниз: `main → core/render → systems →
+entities/progress → world → листы`. У каждой подсистемы есть `index.ts` —
+её публичная поверхность и единственный вход извне; глубокий импорт снаружи
+запрещён и проверяется `tests/architecture.ts`.
 
 ## Поток данных
 

@@ -1,6 +1,6 @@
 import { CONVEYOR } from '../config';
-import { MAT } from '../world/materials';
-import { CONTENT } from '../progress/technologies';
+import { MAT } from '../world';
+import { CONTENT } from '../progress';
 import { sectionKind } from './buildings';
 import type { BuildingKind } from './buildings';
 

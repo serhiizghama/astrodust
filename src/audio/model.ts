@@ -6,7 +6,7 @@
  * а граф остаётся тонким применением уже посчитанных значений».
  */
 import { AUDIO, FIXED_DT } from '../config';
-import { mulberry32 } from '../world/rng';
+import { mulberry32 } from '../world';
 
 /**
  * Слышимость на расстоянии `distance` мировых пикселей от персонажа.

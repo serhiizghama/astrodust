@@ -1,0 +1,810 @@
+import { World, MAT } from '../src/world';
+import { Camera } from '../src/render';
+import { Digger, Builder } from '../src/systems';
+import {
+  LandingModule,
+  BuildingRegistry,
+  CONVEYOR_RIGHT_KIND,
+  BUILD_CATALOG,
+  BuildCatalogState,
+  Player,
+  NO_INPUT,
+  SEPARATOR_KIND,
+  Separator,
+} from '../src/entities';
+import { PLAYER, VIEW_W, VIEW_H, DIG, CONVEYOR, FIXED_DT, SEPARATOR } from '../src/config';
+import {
+  Input,
+  aimDirection,
+  aimTarget,
+  actionTarget,
+  AimSourceTracker,
+  ToolModeState,
+} from '../src/core';
+import { check, UNLOCKED, luna, FakeInput, asInput } from './harness';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { Game } from '../src/app';
+import { Research } from '../src/progress';
+import { box, ground } from './fixtures/world';
+
+const first = luna();
+const { world } = first;
+
+// --- Камера ---
+{
+  const cam = new Camera(world.width, world.height);
+  cam.snapTo(500, 300);
+  const cx = VIEW_W / 2;
+  const cy = VIEW_H / 2;
+  check(
+    'Камера: snapTo центрирует цель',
+    cam.x === 500 - cx && cam.y === 300 - cy,
+    `(${cam.x},${cam.y})`,
+  );
+
+  const beforeX = cam.x;
+  for (let i = 0; i < 20; i++) cam.follow(510, 300, 0, 0);
+  check('Камера: движение в мёртвой зоне не двигает кадр', cam.x === beforeX, `x=${cam.x}`);
+
+  for (let i = 0; i < 200; i++) cam.follow(700, 300, 0, 0);
+  check('Камера: догоняет цель за мёртвой зоной', Math.abs(cam.x - (700 - cx)) <= 41, `x=${cam.x}`);
+
+  for (let i = 0; i < 400; i++) cam.follow(5, 5, 0, 0);
+  check(
+    'Камера: не выезжает за левый/верхний край',
+    cam.x === 0 && cam.y === 0,
+    `(${cam.x},${cam.y})`,
+  );
+
+  for (let i = 0; i < 800; i++) cam.follow(world.width - 5, world.height - 5, 0, 0);
+  check(
+    'Камера: не выезжает за правый/нижний край',
+    cam.x === world.width - VIEW_W && cam.y === world.height - VIEW_H,
+    `(${cam.x},${cam.y})`,
+  );
+
+  cam.snapTo(500, 300);
+  const noLook = cam.x;
+  for (let i = 0; i < 200; i++) cam.follow(500, 300, 30, 0);
+  check('Камера: смещается в сторону курсора', cam.x > noLook, `${noLook} → ${cam.x}`);
+
+  const wp = cam.screenToWorld(10, 20);
+  check('Камера: экран → мир учитывает смещение', wp.x === cam.x + 10 && wp.y === cam.y + 20);
+}
+
+// --- Снапшот ввода ---
+//
+// `Input` вешает слушатели на `window` и `document`, и до сих пор это означало,
+// что раскладка не проверяется вовсе: без DOM класс нельзя было даже создать.
+// Заглушка нужна ровно на две функции — «запомни обработчик» и «позови его», —
+// после чего проверяется настоящий класс, а не его пересказ.
+{
+  type Listener = (event: never) => void;
+  class FakeTarget {
+    private readonly listeners = new Map<string, Listener[]>();
+    addEventListener(type: string, fn: Listener): void {
+      const list = this.listeners.get(type) ?? [];
+      list.push(fn);
+      this.listeners.set(type, list);
+    }
+    emit(type: string, event: Record<string, unknown>): void {
+      for (const fn of this.listeners.get(type) ?? []) fn(event as never);
+    }
+  }
+
+  /** Событие клавиши с учётом того, отменил ли его обработчик. */
+  function keyEvent(code: string): {
+    code: string;
+    repeat: boolean;
+    prevented: boolean;
+    preventDefault(): void;
+  } {
+    return {
+      code,
+      repeat: false,
+      prevented: false,
+      preventDefault(): void {
+        this.prevented = true;
+      },
+    };
+  }
+
+  const win = new FakeTarget();
+  const doc = new FakeTarget();
+  const globals = globalThis as unknown as Record<string, unknown>;
+  const savedWindow = globals.window;
+  const savedDocument = globals.document;
+  globals.window = win;
+  globals.document = Object.assign(doc, { hidden: false });
+
+  const display = {
+    clientToBuffer: (x: number, y: number) => ({ x: x / 2, y: y / 2 }),
+  } as unknown as import('../src/core').Display;
+  const input = new Input(display);
+
+  globals.window = savedWindow;
+  globals.document = savedDocument;
+
+  const down = (code: string) => {
+    const e = keyEvent(code);
+    win.emit('keydown', e);
+    return e;
+  };
+  const up = (code: string) => {
+    const e = keyEvent(code);
+    win.emit('keyup', e);
+    return e;
+  };
+
+  // Первое действие игрока: до него признак ложен.
+  check('Ввод: до первого нажатия признак взаимодействия ложен', !input.hasInteracted);
+
+  // Одиночное нажатие читается один раз, удержание — на всех шагах.
+  {
+    down('KeyW');
+    let pressedSteps = 0;
+    let heldSteps = 0;
+    for (let i = 0; i < 10; i++) {
+      if (input.jumpPressed) pressedSteps++;
+      if (input.jumpHeld) heldSteps++;
+      input.endStep();
+    }
+    up('KeyW');
+    check(
+      'Ввод: одиночное нажатие истинно ровно на одном шаге, удержание — на всех десяти',
+      pressedSteps === 1 && heldSteps === 10,
+      `нажата ${pressedSteps}, удерживается ${heldSteps}`,
+    );
+    check('Ввод: первое нажатие включило признак взаимодействия', input.hasInteracted);
+  }
+
+  // Прыжок с обеих половин раскладки, и `Space` к нему отношения не имеет.
+  {
+    down('ArrowUp');
+    const byArrow = input.jumpPressed;
+    up('ArrowUp');
+    input.endStep();
+    const space = down('Space');
+    const jumpedBySpace = input.jumpPressed;
+    const toolBySpace = input.toolHeld;
+    up('Space');
+    input.endStep();
+    check('Ввод: прыжок работает и со стрелки', byArrow);
+    check(
+      'Ввод: пробел применяет инструмент, а не прыгает',
+      !jumpedBySpace && toolBySpace,
+      `прыжок ${jumpedBySpace}, инструмент ${toolBySpace}`,
+    );
+    check('Ввод: пробел подавляет прокрутку страницы', space.prevented);
+  }
+
+  // Каждая новая кнопка мыши имеет клавишу, и все три подавляют прокрутку.
+  {
+    const r = down('KeyR');
+    const modeByKey = input.toolModePressed;
+    up('KeyR');
+    input.endStep();
+
+    const f = down('KeyF');
+    const dumpByKey = input.dumpHeld;
+    up('KeyF');
+    input.endStep();
+
+    const c = down('KeyC');
+    const cycleByKey = input.cycleCarriedPressed;
+    up('KeyC');
+    input.endStep();
+
+    check(
+      'Ввод: режим, высыпание и выбор вещества доступны с клавиатуры',
+      modeByKey && dumpByKey && cycleByKey,
+      `R ${modeByKey}, F ${dumpByKey}, C ${cycleByKey}`,
+    );
+    check('Ввод: новые клавиши подавляют прокрутку', r.prevented && f.prevented && c.prevented);
+  }
+
+  // Вид постройки живёт на СВОЕЙ клавише. Отбирать `C` на время строительства
+  // нечем оправдать: высыпание доступно в любом режиме, и клавиша, означающая
+  // в одном режиме одно, а в другом другое, — это ошибка на каждом переключении.
+  {
+    const x = down('KeyX');
+    const kindByKey = input.buildKindPressed;
+    const carriedUntouched = !input.cycleCarriedPressed;
+    up('KeyX');
+    input.endStep();
+
+    down('KeyC');
+    const carriedByKey = input.cycleCarriedPressed;
+    const kindUntouched = !input.buildKindPressed;
+    up('KeyC');
+    input.endStep();
+
+    check(
+      'Ввод: вид постройки перебирается своей клавишей, а `C` остаётся за веществом',
+      kindByKey && carriedUntouched && carriedByKey && kindUntouched && x.prevented,
+      `X ${kindByKey}, C ${carriedByKey}`,
+    );
+  }
+
+  // Оверлей исследований: одна клавиша на открыть и закрыть, и та же клавиша
+  // забрана у браузера наравне с остальными игровыми.
+  {
+    const t = down('KeyT');
+    const byKey = input.researchTogglePressed;
+    const nothingElse =
+      !input.buildKindPressed && !input.toolModePressed && !input.cycleCarriedPressed;
+    up('KeyT');
+    input.endStep();
+    check(
+      'Ввод: оверлей исследований живёт на своей клавише и подавляет прокрутку',
+      byKey && nothingElse && t.prevented,
+    );
+
+    // Одноразовое состояние: удержание не переключает оверлей каждый шаг.
+    down('KeyT');
+    const firstStep = input.researchTogglePressed;
+    input.endStep();
+    const secondStep = input.researchTogglePressed;
+    up('KeyT');
+    input.endStep();
+    check(
+      'Ввод: клавиша оверлея читается ровно один шаг, а не каждый кадр удержания',
+      firstStep && !secondStep,
+    );
+  }
+
+  // Открытие оверлея сбрасывает удерживаемое ТЕМ ЖЕ механизмом, что и потеря
+  // фокуса окном: клавиша, зажатая в момент открытия, иначе оставляет
+  // персонажа бегущим всё время, пока игрок читает дерево.
+  {
+    down('KeyD');
+    down('Space');
+    const runningBefore = input.moveAxis === 1 && input.toolHeld;
+    input.endStep();
+
+    input.releaseAll();
+    const stopped = input.moveAxis === 0 && !input.toolHeld && !input.mouseLeftHeld;
+    input.endStep();
+
+    check(
+      'Ввод: сброс удерживаемого снимает и клавиши, и кнопки мыши',
+      runningBefore && stopped,
+      `до сброса бег ${runningBefore}, после ${input.moveAxis}`,
+    );
+    up('KeyD');
+    up('Space');
+    input.endStep();
+  }
+
+  // Не игровая клавиша остаётся браузеру.
+  {
+    const e = down('KeyZ');
+    up('KeyZ');
+    input.endStep();
+    check('Ввод: посторонняя клавиша странице не мешает', !e.prevented);
+  }
+
+  // Отключение звука — одноразовое состояние.
+  {
+    down('KeyM');
+    const first1 = input.muteTogglePressed;
+    input.endStep();
+    const second = input.muteTogglePressed;
+    up('KeyM');
+    input.endStep();
+    check('Ввод: переключение звука истинно ровно на одном шаге', first1 && !second);
+  }
+
+  // Правая кнопка: удерживаемое состояние и никакого контекстного меню.
+  {
+    let prevented = false;
+    win.emit('contextmenu', {
+      preventDefault: () => {
+        prevented = true;
+      },
+    });
+    win.emit('mousedown', { button: 2 });
+    const heldRight = input.mouseRightHeld;
+    const heldLeft = input.mouseLeftHeld;
+    const dumpByMouse = input.dumpHeld;
+    win.emit('mouseup', { button: 2 });
+    check(
+      'Ввод: правая кнопка удерживается и не открывает меню браузера',
+      prevented && heldRight && !heldLeft && dumpByMouse && !input.mouseRightHeld,
+      `меню отменено ${prevented}, удержание ${heldRight}, высыпание ${dumpByMouse}`,
+    );
+  }
+
+  // Потеря фокуса отпускает обе кнопки и все клавиши: иначе персонаж вернётся
+  // из свёрнутой вкладки копающим и бегущим.
+  {
+    down('KeyD');
+    win.emit('mousedown', { button: 0 });
+    win.emit('mousedown', { button: 2 });
+    win.emit('blur', {});
+    check(
+      'Ввод: потеря фокуса отпускает клавиши и обе кнопки мыши',
+      !input.moveRight && !input.mouseLeftHeld && !input.mouseRightHeld,
+    );
+    input.endStep();
+  }
+
+  // Позиция курсора приходит в координатах буфера кадра.
+  {
+    win.emit('mousemove', { clientX: 100, clientY: 60 });
+    check(
+      'Ввод: позиция курсора пересчитана из координат страницы',
+      input.mouseX === 50 && input.mouseY === 30,
+      `(${input.mouseX},${input.mouseY})`,
+    );
+  }
+
+  // Полный экономический цикл — только клавиатурой, ни одного события мыши.
+  {
+    const seen = { mode: false, tool: false, cycle: false, dump: false };
+    down('KeyR');
+    seen.mode = input.toolModePressed;
+    up('KeyR');
+    input.endStep();
+    down('Space');
+    seen.tool = input.toolHeld;
+    up('Space');
+    input.endStep();
+    down('KeyC');
+    seen.cycle = input.cycleCarriedPressed;
+    up('KeyC');
+    input.endStep();
+    down('KeyF');
+    seen.dump = input.dumpHeld;
+    up('KeyF');
+    input.endStep();
+    check(
+      'Ввод: весь цикл — режим, сбор, выбор вещества, высыпание — проходится без мыши',
+      seen.mode &&
+        seen.tool &&
+        seen.cycle &&
+        seen.dump &&
+        !input.mouseLeftHeld &&
+        !input.mouseRightHeld,
+      JSON.stringify(seen),
+    );
+  }
+
+  // Прокладка ленты — тоже только клавиатурой: выбрать режим, выбрать вид,
+  // применить несколько раз подряд, снести. Ни одного события мыши.
+  {
+    const tool = new ToolModeState();
+    // Технология ленты уже открыта: проверяется прокладка с клавиатуры,
+    // а не путь, которым лента стала доступна.
+    const catalog = new BuildCatalogState(UNLOCKED);
+
+    down('KeyR');
+    if (input.toolModePressed) tool.cycle();
+    up('KeyR');
+    input.endStep();
+    down('KeyR');
+    if (input.toolModePressed) tool.cycle();
+    up('KeyR');
+    input.endStep();
+
+    let picked = false;
+    for (let i = 0; i < BUILD_CATALOG.length; i++) {
+      down('KeyX');
+      if (input.buildKindPressed) catalog.cycle();
+      up('KeyX');
+      input.endStep();
+      if (catalog.kind === CONVEYOR_RIGHT_KIND) {
+        picked = true;
+        break;
+      }
+    }
+
+    const size = CONVEYOR.size;
+    const w = new World(64, 64, first.world.profile);
+    const module = new LandingModule({ x: 0, y: 0, w: 1, h: 1 });
+    module.credits = CONVEYOR.sectionCost * 4;
+    const registry = new BuildingRegistry();
+    let laid = 0;
+    for (let i = 0; i < 3; i++) {
+      down('Space');
+      if (input.toolPressed && tool.building) {
+        const at = 20 + i * size;
+        if (
+          Builder.apply(w, registry, module, catalog.kind, at, 32, at, 32, UNLOCKED) === 'placed'
+        ) {
+          laid++;
+        }
+      }
+      up('Space');
+      input.endStep();
+    }
+
+    const mid = 20 + size;
+    down('Space');
+    const removed =
+      input.toolPressed &&
+      Builder.apply(w, registry, module, catalog.kind, mid + 1, 33, mid + 1, 33, UNLOCKED) ===
+        'demolished';
+    up('Space');
+    input.endStep();
+
+    check(
+      'Ввод: лента выбирается, прокладывается и сносится одной клавиатурой',
+      tool.building &&
+        picked &&
+        laid === 3 &&
+        removed &&
+        w.get(20, 32) === MAT.CONVEYOR_RIGHT &&
+        w.get(mid, 32) === MAT.VACUUM &&
+        w.get(mid + size, 32) === MAT.CONVEYOR_RIGHT &&
+        !input.mouseLeftHeld,
+      `вид ${catalog.name}, положено ${laid}, снято ${removed}`,
+    );
+  }
+}
+
+// --- Прицел с клавиатуры ---
+{
+  // Восемь направлений: пары (moveAxis, aimAxisY).
+  const DIRS: Array<[number, number]> = [
+    [1, 0],
+    [-1, 0],
+    [0, 1],
+    [0, -1],
+    [1, 1],
+    [1, -1],
+    [-1, 1],
+    [-1, -1],
+  ];
+
+  // Инвариант расстояния: кисть обязана дотягиваться до тела.
+  check(
+    'Прицел: расстояние не превышает полуширину хитбокса плюс радиус кисти',
+    DIG.aimDistance <= PLAYER.hitboxW / 2 + DIG.radius,
+    `aimDistance=${DIG.aimDistance}, предел=${PLAYER.hitboxW / 2 + DIG.radius}`,
+  );
+
+  // Сборка направления.
+  {
+    const seen = new Set<string>();
+    for (const [ax, ay] of DIRS) {
+      const d = aimDirection(ax, ay, 1);
+      seen.add(`${d.x.toFixed(3)},${d.y.toFixed(3)}`);
+    }
+    check('Прицел: восемь комбинаций дают восемь разных направлений', seen.size === 8);
+
+    const right = aimDirection(0, 0, 1);
+    const left = aimDirection(0, 0, -1);
+    check(
+      'Прицел: без клавиш направление берётся из facing',
+      right.x === 1 && right.y === 0 && left.x === -1 && left.y === 0,
+    );
+
+    // Диагональ нормируется: иначе она била бы в 1.41 раза дальше прямой.
+    const diag = aimDirection(1, 1, 1);
+    const len = Math.hypot(diag.x, diag.y);
+    check('Прицел: диагональ нормирована', Math.abs(len - 1) < 1e-9, `длина=${len}`);
+
+    const t = aimTarget(60, 60, diag.x, diag.y);
+    check(
+      'Прицел: диагональная цель не дальше aimDistance',
+      Math.hypot(t.x - 60, t.y - 60) <= DIG.aimDistance + 1,
+      `(${t.x - 60}, ${t.y - 60})`,
+    );
+  }
+
+  // Взаимное гашение осей.
+  {
+    // Та же формула, что в геттерах moveAxis и aimAxisY.
+    const axis = (neg: boolean, pos: boolean): number => (pos ? 1 : 0) - (neg ? 1 : 0);
+    const bothX = axis(true, true); // A и D вместе
+    const bothY = axis(true, true); // W и S вместе
+    const d = aimDirection(bothX, bothY, -1);
+    check(
+      'Прицел: обе клавиши оси гасят друг друга и остаётся facing',
+      bothX === 0 && bothY === 0 && d.x === -1 && d.y === 0,
+    );
+  }
+
+  // Достижимость и отсутствие зазора между телом и выемкой.
+  {
+    const hw = PLAYER.hitboxW;
+    const hh = PLAYER.hitboxH;
+    const px = 60;
+    const py = 60;
+    const cx = px + hw / 2;
+    const cy = py + hh / 2;
+
+    let allInReach = true;
+    let allTouching = true;
+    let allConverted = true;
+    const gaps: string[] = [];
+
+    for (const [ax, ay] of DIRS) {
+      const w = new World(128, 128, first.world.profile);
+      for (let x = 0; x < 128; x++) for (let y = 0; y < 128; y++) w.set(x, y, MAT.ROCK);
+
+      const d = aimDirection(ax, ay, 1);
+      const t = aimTarget(cx, cy, d.x, d.y);
+      if (!Digger.inReach(cx, cy, t.x, t.y)) allInReach = false;
+
+      const converted = Digger.applyBrush(w, t.x, t.y);
+      if (converted === 0) allConverted = false;
+
+      // Кольцо шириной в ячейку вокруг хитбокса: хотя бы одна его ячейка
+      // обязана быть выкопана, иначе между телом и выемкой останется порода
+      // и в собственный прокоп не шагнуть. Кисть — сплошной круг, поэтому
+      // касания кольца достаточно для связности. Разрушена ячейка или отдала
+      // материал — неважно: связность даёт сам факт выемки.
+      let touches = false;
+      for (let y = py - 1; y <= py + hh; y++) {
+        for (let x = px - 1; x <= px + hw; x++) {
+          const inside = x >= px && x < px + hw && y >= py && y < py + hh;
+          if (inside) continue;
+          if (w.get(x, y) !== MAT.ROCK) touches = true;
+        }
+      }
+      if (!touches) {
+        allTouching = false;
+        gaps.push(`(${ax},${ay})`);
+      }
+    }
+
+    check('Прицел: клавиатурная цель всегда в пределах досягаемости', allInReach);
+    check('Прицел: кисть в каждом направлении что-то выкапывает', allConverted);
+    check(
+      'Прицел: между телом и выемкой нет зазора ни в одном направлении',
+      allTouching,
+      gaps.length ? `зазор: ${gaps.join(' ')}` : '',
+    );
+  }
+
+  // Выбор цели: её задаёт удерживаемый орган, а не режим.
+  {
+    const cx = 60;
+    const cy = 60;
+    const cursorX = 200;
+    const cursorY = 30;
+    const d = aimDirection(1, 0, 1);
+
+    const byMouse = actionTarget(true, cursorX, cursorY, cx, cy, d.x, d.y);
+    check(
+      'Цель: при удержании ЛКМ копается под курсором',
+      byMouse.x === cursorX && byMouse.y === cursorY,
+    );
+
+    const byKeys = actionTarget(false, cursorX, cursorY, cx, cy, d.x, d.y);
+    check(
+      'Цель: без ЛКМ копается вплотную к персонажу, а не под курсором',
+      Math.hypot(byKeys.x - cx, byKeys.y - cy) <= DIG.aimDistance,
+      `(${byKeys.x - cx}, ${byKeys.y - cy})`,
+    );
+
+    // Оба органа удерживаются: побеждает мышь — у неё есть крестик.
+    check(
+      'Цель: при обоих органах побеждает мышь',
+      actionTarget(true, cursorX, cursorY, cx, cy, d.x, d.y).x === cursorX,
+    );
+
+    // Крестик не зависит от клавиш: цель мыши одна и та же при любом
+    // направлении клавиатуры.
+    const other = aimDirection(-1, 1, -1);
+    check(
+      'Цель мыши не зависит от нажатых клавиш направления',
+      actionTarget(true, cursorX, cursorY, cx, cy, other.x, other.y).x === cursorX,
+    );
+  }
+
+  // Арбитраж источника — влияет только на смещение кадра.
+  {
+    const t = new AimSourceTracker();
+    check('Источник прицела: до первого ввода — клавиатура', t.source === 'keys');
+
+    t.note('mouse', false);
+    check('Источник прицела: движение мыши переключает на мышь', t.source === 'mouse');
+
+    t.note('keys', false);
+    check('Источник прицела: клавиша направления переключает обратно', t.source === 'keys');
+
+    t.note('mouse', true);
+    check('Источник прицела: во время копания не переключается', t.source === 'keys');
+
+    t.note('mouse', false);
+    check('Источник прицела: после отпускания копания переключается снова', t.source === 'mouse');
+    t.note('keys', true);
+    check('Источник прицела: заморозка работает в обе стороны', t.source === 'mouse');
+  }
+}
+
+// --- Порядок обновлений внутри шага ---
+//
+// Порядок — требование спеки, а не удобство записи: каждое сочленение
+// наблюдаемо, и перестановка любого из них видна игроку как дефект.
+{
+  const research = new Research();
+  const spawnWorld = () => luna();
+
+  // Инструменты до персонажа, персонаж до автомата: автомат обязан видеть
+  // СВЕЖИЙ хитбокс. При обратном порядке вещество занимает ячейку, в которую
+  // персонаж на этом же шаге переместился, и засыпает его изнутри.
+  {
+    const w = box(160, 96);
+    for (let x = 0; x < 160; x++) w.set(x, 94, MAT.ROCK);
+    // Потолок из сыпучего прямо над маршрутом: оно сыплется каждый шаг.
+    for (let x = 20; x < 140; x++) {
+      for (let y = 70; y < 78; y++) w.set(x, y, MAT.REGOLITH_LOOSE);
+    }
+    const p = new Player(24, 94 - PLAYER.hitboxH, research.tuning);
+    const cam = new Camera(w.width, w.height);
+    const g = new Game(w, p, cam, new LandingModule({ x: 2, y: 2, w: 3, h: 3 }, research));
+
+    const input = new FakeInput();
+    input.right = true;
+    let buried = 0;
+    for (let i = 0; i < 900; i++) {
+      g.advanceWorld(FIXED_DT, {
+        input: asInput(input),
+        lookAheadX: 0,
+        lookAheadY: 0,
+        dig: null,
+      });
+      if (w.rectHitsSolid(p.x, p.y, PLAYER.hitboxW, PLAYER.hitboxH)) buried++;
+    }
+    check(
+      'Порядок шага: персонажа не засыпает изнутри под осыпающимся сводом',
+      buried === 0,
+      `шагов внутри твёрдого ${buried}, дошёл до x=${Math.round(p.x)}`,
+    );
+  }
+
+  // Приёмник — ПОСЛЕ автомата: ячейка, скатившаяся в зону на этом шаге,
+  // засчитывается на нём же, а не через кадр.
+  {
+    const w = box(96, 96);
+    const zone = { x: 40, y: 60, w: 6, h: 5 };
+    for (let y = zone.y; y < zone.y + zone.h + 2; y++) {
+      for (let d = 0; d < 2; d++) {
+        w.set(zone.x - 1 - d, y, MAT.MODULE_HULL);
+        w.set(zone.x + zone.w + d, y, MAT.MODULE_HULL);
+      }
+    }
+    for (let y = zone.y + zone.h; y < zone.y + zone.h + 2; y++) {
+      for (let x = zone.x - 2; x < zone.x + zone.w + 2; x++) w.set(x, y, MAT.MODULE_HULL);
+    }
+    const mod = new LandingModule(zone, research);
+    const p = new Player(4, 94 - PLAYER.hitboxH, research.tuning);
+    const g = new Game(w, p, new Camera(w.width, w.height), mod);
+
+    // Ячейка стоит РОВНО НАД зоной: попасть внутрь она может только автоматом,
+    // и только на этом шаге.
+    w.set(zone.x + 2, zone.y - 1, MAT.PULP);
+    const before = mod.credits;
+    g.advanceWorld(FIXED_DT, { input: NO_INPUT, lookAheadX: 0, lookAheadY: 0, dig: null });
+    check(
+      'Порядок шага: скатившаяся в зону ячейка засчитывается на том же шаге',
+      mod.credits > before,
+      `кредиты ${before} → ${mod.credits}`,
+    );
+  }
+
+  // Машины — тоже после автомата и РАНЬШЕ приёмника.
+  {
+    const w = ground(96, 96);
+    const mod = new LandingModule({ x: 2, y: 2, w: 4, h: 4 }, research);
+    mod.credits = 10_000;
+    const p = new Player(4, 94 - PLAYER.hitboxH, research.tuning);
+    const g = new Game(w, p, new Camera(w.width, w.height), mod);
+
+    const bx = 40;
+    const by = 96 - 2 - SEPARATOR.height;
+    const cx = bx + (SEPARATOR_KIND.width >> 1);
+    const cy = by + (SEPARATOR_KIND.height >> 1);
+    Builder.apply(w, g.buildings, mod, SEPARATOR_KIND, cx, cy, cx, cy, UNLOCKED);
+    const machine = g.buildings.all[0] as Separator;
+
+    // Пульпа на две ячейки выше приёмной грани: на грань её кладёт автомат.
+    w.set(bx + (SEPARATOR.width >> 1), by - 2, MAT.PULP);
+    const stored = machine.stored;
+    g.advanceWorld(FIXED_DT, { input: NO_INPUT, lookAheadX: 0, lookAheadY: 0, dig: null });
+    g.advanceWorld(FIXED_DT, { input: NO_INPUT, lookAheadX: 0, lookAheadY: 0, dig: null });
+    check(
+      'Порядок шага: машина принимает сырьё на шаге его прибытия на грань',
+      machine.stored > stored,
+      `накопитель ${stored} → ${machine.stored}`,
+    );
+  }
+
+  // Смена режима действует на ЭТОМ же шаге: переключатель читается до
+  // применения инструмента.
+  {
+    const tool = new ToolModeState();
+    const wasDigging = tool.digging;
+    tool.cycle();
+    check(
+      'Порядок шага: смена режима видна немедленно, а не со следующего шага',
+      wasDigging && !tool.digging && tool.collecting,
+      `был «${wasDigging ? 'копание' : '?'}», стал «${tool.name}»`,
+    );
+  }
+
+  // Отчёт для звука описывает ЗАВЕРШИВШИЙСЯ шаг: счётчики собраны после
+  // автомата, а точка отсчёта — персонаж после его движения.
+  {
+    const w = box(96, 96);
+    for (let x = 30; x < 60; x++) {
+      for (let y = 20; y < 30; y++) w.set(x, y, MAT.REGOLITH_LOOSE);
+    }
+    const p = new Player(4, 94 - PLAYER.hitboxH, research.tuning);
+    const g = new Game(
+      w,
+      p,
+      new Camera(w.width, w.height),
+      new LandingModule({ x: 2, y: 2, w: 3, h: 3 }, research),
+    );
+    g.advanceWorld(FIXED_DT, {
+      input: NO_INPUT,
+      lookAheadX: 0,
+      lookAheadY: 0,
+      dig: { converted: 7, x: 11, y: 13 },
+    });
+    check(
+      'Порядок шага: отчёт для звука описывает этот шаг, а не предыдущий',
+      g.signals.powderMoves === g.simulation.lastPowderMoves &&
+        g.signals.powderMoves > 0 &&
+        g.signals.listenerX === p.centerX &&
+        g.signals.listenerY === p.centerY &&
+        g.signals.digConverted === 7,
+      `сдвигов ${g.signals.powderMoves}, слушатель (${g.signals.listenerX}, ${g.signals.listenerY})`,
+    );
+  }
+  void spawnWorld;
+}
+
+// --- Единый порядок обновления мира во всех состояниях игры ---
+{
+  // Состояния различаются ТОЛЬКО намерением. Мир после них идёт одинаково —
+  // проверяется на паре прогонов из одного начального состояния.
+  function run(dig: { converted: number; x: number; y: number } | null): string {
+    const research = new Research();
+    const w = box(96, 96);
+    for (let x = 20; x < 70; x++) {
+      for (let y = 30; y < 40; y++) w.set(x, y, MAT.REGOLITH_LOOSE);
+    }
+    const p = new Player(10, 94 - PLAYER.hitboxH, research.tuning);
+    const mod = new LandingModule({ x: 2, y: 2, w: 3, h: 3 }, research);
+    const g = new Game(w, p, new Camera(w.width, w.height), mod);
+    for (let i = 0; i < 240; i++) {
+      g.advanceWorld(FIXED_DT, { input: NO_INPUT, lookAheadX: 0, lookAheadY: 0, dig });
+    }
+    let sum = 0;
+    for (let i = 0; i < w.cells.length; i++) sum += w.cells[i]! * ((i % 97) + 1);
+    return `${sum}|${p.x},${p.y}|${g.camera.x},${g.camera.y}|${mod.credits}`;
+  }
+  check(
+    'Мир идёт одинаково при открытом и закрытом оверлее',
+    run(null) === run({ converted: 0, x: 0, y: 0 }),
+    run(null),
+  );
+}
+
+// --- Порядок существует в единственном экземпляре ---
+{
+  // Пока копий последовательности было две (мир и оверлей), они уже успели
+  // разойтись. Проверка держит то, ради чего дублирование убирали: добавить
+  // третье состояние копией шага мира больше нельзя.
+  const src = readdirSync(resolve(process.cwd(), 'src'), { recursive: true }) as string[];
+  const files = src
+    .filter((f) => f.endsWith('.ts'))
+    .map((f) => join(resolve(process.cwd(), 'src'), f));
+  let callers = 0;
+  for (const f of files) {
+    const text = readFileSync(f, 'utf8');
+    if (/\bsimulation\.update\(/.test(text) || /this\.simulation\.update\(/.test(text)) callers++;
+  }
+  check(
+    'Шаг мира записан в одном месте: автомат вызывается из единственного модуля',
+    callers === 1,
+    `модулей с вызовом автомата ${callers}`,
+  );
+}

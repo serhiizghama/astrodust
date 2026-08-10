@@ -1,8 +1,7 @@
 import { DIG } from '../config';
-import { World } from './world';
-import { MAT, MATERIALS } from './materials';
+import { World, MAT, MATERIALS } from '../world';
 import { Digger } from './digging';
-import type { Occupant } from './simulation';
+import type { Rect } from '../geometry';
 
 /**
  * Отладочная установка вещества под курсором.
@@ -44,7 +43,7 @@ export class DebugPainter {
     playerCY: number,
     targetX: number,
     targetY: number,
-    occupant: Occupant | null = null,
+    occupant: Rect | null = null,
   ): number {
     this.cooldown = Math.max(0, this.cooldown - dt);
     if (!enabled || !held) return 0;
@@ -56,7 +55,7 @@ export class DebugPainter {
   }
 
   /** Кисть меньше копательной: вещество ставится точечно, а не заливкой экрана. */
-  paint(world: World, centerX: number, centerY: number, occupant: Occupant | null = null): number {
+  paint(world: World, centerX: number, centerY: number, occupant: Rect | null = null): number {
     const r = Math.max(1, DIG.radius - 1);
     const rSq = r * r;
     const material = this.material;

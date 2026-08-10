@@ -18,7 +18,7 @@
  * но песок в ней тонет, а не проходит насквозь.
  */
 
-import { RAMP } from '../render/palette';
+import { RAMP } from '../palette';
 
 /** Агрегатное состояние: определяет, какой набор правил применяет симуляция. */
 export const MatterState = {
@@ -177,26 +177,6 @@ export const MAT = {
   CONVEYOR_LEFT: 14,
   CONVEYOR_RIGHT: 15,
 } as const;
-
-/**
- * Цвет бегущей полосы конвейера — ступень той же серой лестницы, что и корпус
- * ленты, но заметно выше него.
- *
- * Не поле таблицы: полосу рисует рендер, и в мире её нет — ячейка хранит
- * идентификатор ленты, а не идентификатор полосы. Живёт здесь, а не в конфиге,
- * чтобы обе ступени лестницы стояли рядом и проверялись на различимость вместе.
- *
- * Взята `gray[7]`, а не соседняя с корпусом `gray[6]`: `gray[6]` занял пар,
- * а полоса — единственный признак направления ленты, и делить её цвет
- * с веществом нельзя (проверка прямо это запрещает). Отношение яркостей
- * при этом сохранено: корпус 106.4, полоса 176.8 — те же полторы с лишним
- * ступени, что были у прежней пары.
- *
- * Ступень занята полосой ИСКЛЮЧИТЕЛЬНО: по ней считают пиксели, чтобы увидеть,
- * что лента идёт, и любой сосед по цвету подмешивался бы в этот счёт молча.
- * Ранец скафандра пришлось увести с неё именно поэтому.
- */
-export const CONVEYOR_STRIPE_COLOR = RAMP.gray[7];
 
 /**
  * Значения по умолчанию: у большинства материалов задействована часть полей.
@@ -612,9 +592,6 @@ export const MATERIALS: readonly Material[] = [
  * читают их на каждую ячейку, и разыменование объекта там заметно дороже.
  */
 const size = MATERIALS.length;
-export const MAT_R = new Uint8Array(size);
-export const MAT_G = new Uint8Array(size);
-export const MAT_B = new Uint8Array(size);
 /** Останавливает ли персонажа. Симуляция это поле НЕ читает. */
 export const MAT_SOLID = new Uint8Array(size);
 export const MAT_STATE = new Uint8Array(size);
@@ -652,9 +629,6 @@ export const MAT_RESEARCH_RATE = new Uint16Array(size);
 export const MAT_CARRY = new Int8Array(size);
 
 for (const m of MATERIALS) {
-  MAT_R[m.id] = (m.color >> 16) & 0xff;
-  MAT_G[m.id] = (m.color >> 8) & 0xff;
-  MAT_B[m.id] = m.color & 0xff;
   MAT_SOLID[m.id] = m.blocksPlayer ? 1 : 0;
   MAT_STATE[m.id] = m.state;
   MAT_DENSITY[m.id] = m.density;

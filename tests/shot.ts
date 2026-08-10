@@ -12,17 +12,11 @@
  */
 import { deflateSync } from 'node:zlib';
 import { writeFileSync, mkdirSync } from 'node:fs';
-import { generateLuna } from '../src/world/worlds/luna';
-import { Camera } from '../src/render/camera';
-import { Renderer } from '../src/render/renderer';
-import { Player } from '../src/entities/player';
-import { LandingModule } from '../src/entities/landing-module';
-import { BuildingRegistry } from '../src/entities/buildings';
-import { SEPARATOR_KIND } from '../src/entities/separator';
-import { Builder } from '../src/world/builder';
-import { Simulation } from '../src/world/simulation';
-import { MAT, MATERIALS, CONVEYOR_STRIPE_COLOR } from '../src/world/materials';
-import type { HudState } from '../src/render/renderer';
+import { generateLuna, Simulation, MAT, MATERIALS } from '../src/world';
+import { Camera, Renderer, CONVEYOR_STRIPE_COLOR } from '../src/render';
+import { Player, LandingModule, BuildingRegistry, SEPARATOR_KIND } from '../src/entities';
+import { Builder } from '../src/systems';
+import type { HudState } from '../src/render';
 import {
   WORLD_SEED,
   VIEW_W,
@@ -35,7 +29,7 @@ import {
   CONVEYOR,
   SIM_HZ,
 } from '../src/config';
-import type { Display } from '../src/core/display';
+import type { Display } from '../src/core';
 
 const CRC_TABLE = new Int32Array(256);
 for (let n = 0; n < 256; n++) {
@@ -211,7 +205,16 @@ for (const shot of SHOTS) {
   camera.snapTo(shot.camX, shot.camY);
   // Персонаж — в центре кадра, на видимой опоре под ним, если она есть.
   const player = new Player(camera.x + VIEW_W / 2, camera.y + VIEW_H / 2);
-  renderer.render(camera, player, VIEW_W / 2 + 20, VIEW_H / 2, true, hud, 0, 3);
+  renderer.render({
+    camera: camera,
+    player: player,
+    crosshairX: VIEW_W / 2 + 20,
+    crosshairY: VIEW_H / 2,
+    crosshairInReach: true,
+    hud: hud,
+    fps: 0,
+    time: 3,
+  });
 
   const path = `shots/${shot.name}${suffix}.png`;
   writeFileSync(path, encodePng(pixels, shot.scale ?? 3, shot.crop ?? FULL));
@@ -265,13 +268,13 @@ for (const shot of SHOTS) {
   camera.snapTo(cx, by);
   const player = new Player(bx - 14, by + SEPARATOR.height - PLAYER.hitboxH);
   const machine = registry.all[0];
-  renderer.render(
-    camera,
-    player,
-    VIEW_W / 2,
-    VIEW_H / 2,
-    true,
-    {
+  renderer.render({
+    camera: camera,
+    player: player,
+    crosshairX: VIEW_W / 2,
+    crosshairY: VIEW_H / 2,
+    crosshairInReach: true,
+    hud: {
       ...hud,
       mode: 'Строительство',
       machineSummary: machine ? `Сепараторы 1 · ${machine.state}` : '',
@@ -288,8 +291,8 @@ for (const shot of SHOTS) {
           ]
         : [],
     },
-    0,
-  );
+    fps: 0,
+  });
 
   writeFileSync(`shots/separator${suffix}.png`, encodePng(pixels, 3, FULL));
   // Вырезка вокруг самой машины: камера у левого края мира упирается в кламп,
@@ -368,7 +371,16 @@ for (const shot of SHOTS) {
 
   // Два кадра подряд: время различается ровно на один шаг переноса, поэтому
   // на верхней ленте полоса сдвинута вправо, на средней — влево.
-  renderer.render(camera, player, VIEW_W / 2, VIEW_H / 2, true, hudBelt, 0, 3);
+  renderer.render({
+    camera: camera,
+    player: player,
+    crosshairX: VIEW_W / 2,
+    crosshairY: VIEW_H / 2,
+    crosshairInReach: true,
+    hud: hudBelt,
+    fps: 0,
+    time: 3,
+  });
   writeFileSync(`shots/conveyor${suffix}.png`, encodePng(pixels, 3, FULL));
   const stripes = countColor(CONVEYOR_STRIPE_COLOR);
   writeFileSync(
@@ -376,16 +388,16 @@ for (const shot of SHOTS) {
     encodePng(pixels, 6, { x: 168 - camera.x, y: 176 - camera.y, w: 64, h: 34 }),
   );
 
-  renderer.render(
-    camera,
-    player,
-    VIEW_W / 2,
-    VIEW_H / 2,
-    true,
-    hudBelt,
-    0,
-    3 + CONVEYOR.stepsPerCell / SIM_HZ,
-  );
+  renderer.render({
+    camera: camera,
+    player: player,
+    crosshairX: VIEW_W / 2,
+    crosshairY: VIEW_H / 2,
+    crosshairInReach: true,
+    hud: hudBelt,
+    fps: 0,
+    time: 3 + CONVEYOR.stepsPerCell / SIM_HZ,
+  });
   writeFileSync(
     `shots/zoom-conveyor-next${suffix}.png`,
     encodePng(pixels, 6, { x: 168 - camera.x, y: 176 - camera.y, w: 64, h: 34 }),
