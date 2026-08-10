@@ -1,4 +1,4 @@
-import { VIEW_W, VIEW_H, CAMERA } from '../config';
+import { BASE_VIEW_W, BASE_VIEW_H, CAMERA } from '../config';
 
 /**
  * Камера со слежением через мёртвую зону.
@@ -17,10 +17,24 @@ export class Camera {
   private centerX = 0;
   private centerY = 0;
 
+  /**
+   * Размер кадра. Опорный до первого `setViewport` — камера обязана быть
+   * работоспособной до того, как окно сообщит свой размер.
+   */
+  private viewW = BASE_VIEW_W;
+  private viewH = BASE_VIEW_H;
+
   constructor(
     private readonly worldW: number,
     private readonly worldH: number,
   ) {}
+
+  /** Размер кадра меняется вместе с окном; камера узнаёт о нём отсюда. */
+  setViewport(w: number, h: number): void {
+    this.viewW = w;
+    this.viewH = h;
+    this.applyClamp();
+  }
 
   /** Мгновенно ставит камеру на цель — для инициализации, без сглаживания. */
   snapTo(targetX: number, targetY: number): void {
@@ -50,10 +64,10 @@ export class Camera {
 
   /** Не выпускаем кадр за границы мира — пустота за краем в кадр не попадает. */
   private applyClamp(): void {
-    const maxX = Math.max(0, this.worldW - VIEW_W);
-    const maxY = Math.max(0, this.worldH - VIEW_H);
-    this.x = Math.min(maxX, Math.max(0, Math.round(this.centerX - VIEW_W / 2)));
-    this.y = Math.min(maxY, Math.max(0, Math.round(this.centerY - VIEW_H / 2)));
+    const maxX = Math.max(0, this.worldW - this.viewW);
+    const maxY = Math.max(0, this.worldH - this.viewH);
+    this.x = Math.min(maxX, Math.max(0, Math.round(this.centerX - this.viewW / 2)));
+    this.y = Math.min(maxY, Math.max(0, Math.round(this.centerY - this.viewH / 2)));
   }
 
   /** Экранная точка буфера кадра → координаты мира. */

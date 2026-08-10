@@ -1,4 +1,3 @@
-import { VIEW_W, VIEW_H } from '../config';
 import { RAMP, css } from '../palette';
 
 /**
@@ -53,33 +52,47 @@ const ROW_COLORS: Record<OverlayRowStatus, number> = {
   blocked: RAMP.gray[5],
 };
 
-const PANEL = {
-  x: 24,
-  y: 20,
-  w: VIEW_W - 48,
-  h: VIEW_H - 44,
-  /** Высота строки списка. Кегль 8, поэтому 10 оставляет просвет в две. */
-  lineH: 10,
-} as const;
+/**
+ * Отступы панели от краёв кадра. Длины, а не доли: список читается с одного
+ * расстояния независимо от того, насколько широк кадр.
+ */
+const MARGIN_X = 48;
+const MARGIN_Y = 40;
+const MARGIN_BOTTOM = 88;
+/** Высота строки списка. Кегль 16, поэтому 20 оставляет просвет в четыре. */
+const LINE_H = 20;
 
 /**
  * @param ctx контекст кадра — тот же, которым рисуется строка состояния
+ * @param viewW,viewH размер кадра: панель растянута по нему, а не по константе
  */
-export function drawResearchOverlay(ctx: CanvasRenderingContext2D, view: OverlayView): void {
+export function drawResearchOverlay(
+  ctx: CanvasRenderingContext2D,
+  view: OverlayView,
+  viewW: number,
+  viewH: number,
+): void {
+  const PANEL = {
+    x: MARGIN_X,
+    y: MARGIN_Y,
+    w: viewW - 2 * MARGIN_X,
+    h: viewH - MARGIN_BOTTOM,
+    lineH: LINE_H,
+  };
   ctx.fillStyle = css(RAMP.gray[1]);
   ctx.fillRect(PANEL.x, PANEL.y, PANEL.w, PANEL.h);
   ctx.strokeStyle = css(RAMP.gray[4]);
   // Полупиксельное смещение: без него рамка ложится между пикселями буфера
-  // и размазывается на два — на кадре 320×180 это видно.
+  // и размазывается на два — на пиксельном кадре это видно.
   ctx.lineWidth = 1;
   ctx.strokeRect(PANEL.x + 0.5, PANEL.y + 0.5, PANEL.w - 1, PANEL.h - 1);
 
-  ctx.font = '8px monospace';
+  ctx.font = '16px monospace';
   ctx.textBaseline = 'top';
 
-  const left = PANEL.x + 5;
-  const right = PANEL.x + PANEL.w - 5;
-  let y = PANEL.y + 4;
+  const left = PANEL.x + 10;
+  const right = PANEL.x + PANEL.w - 10;
+  let y = PANEL.y + 8;
 
   ctx.fillStyle = css(RAMP.gray[9]);
   ctx.fillText('ИССЛЕДОВАНИЯ', left, y);
@@ -91,7 +104,7 @@ export function drawResearchOverlay(ctx: CanvasRenderingContext2D, view: Overlay
   ctx.fillStyle = css(RAMP.blue[5]);
   ctx.fillText(points, right - ctx.measureText(points).width, y);
 
-  y += PANEL.lineH + 2;
+  y += PANEL.lineH + 4;
 
   view.rows.forEach((row, i) => {
     const color = ROW_COLORS[row.status];
@@ -101,7 +114,7 @@ export function drawResearchOverlay(ctx: CanvasRenderingContext2D, view: Overlay
     // при беглом взгляде.
     if (i === view.selected) {
       ctx.fillStyle = css(RAMP.gray[3]);
-      ctx.fillRect(PANEL.x + 1, y - 1, PANEL.w - 2, PANEL.lineH);
+      ctx.fillRect(PANEL.x + 2, y - 2, PANEL.w - 4, PANEL.lineH);
     }
 
     ctx.fillStyle = css(color);
@@ -120,5 +133,5 @@ export function drawResearchOverlay(ctx: CanvasRenderingContext2D, view: Overlay
   });
 
   ctx.fillStyle = css(RAMP.gray[6]);
-  ctx.fillText('W/S — выбор   Space — купить   T — закрыть', left, PANEL.y + PANEL.h - 11);
+  ctx.fillText('W/S — выбор   Space — купить   T — закрыть', left, PANEL.y + PANEL.h - 22);
 }

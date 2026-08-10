@@ -23,7 +23,7 @@ import {
   CONTENT,
   maxTuned,
 } from '../src/progress';
-import { PLAYER, FIXED_DT, VIEW_W, DIG, VACUUM, SEPARATOR, SIM_HZ } from '../src/config';
+import { PLAYER, FIXED_DT, BASE_VIEW_W, DIG, VACUUM, SEPARATOR, SIM_HZ } from '../src/config';
 import { check, luna } from './harness';
 
 const first = luna();
@@ -248,9 +248,11 @@ const first = luna();
     const w = ground();
     // Сплошная куча переносимого вокруг цели: сколько накрыла кисть, столько
     // и ушло в инвентарь, поэтому число собранного и есть площадь кисти.
+    // Куча с запасом от предельного радиуса сбора (10): кисть обязана лечь
+    // в неё целиком, иначе мерился бы край кучи, а не радиус.
     function heap(): World {
-      const h = ground();
-      for (let y = 30; y < 50; y++) for (let x = 30; x < 50; x++) h.set(x, y, MAT.REGOLITH_LOOSE);
+      const h = ground(96, 96);
+      for (let y = 26; y < 54; y++) for (let x = 26; x < 54; x++) h.set(x, y, MAT.REGOLITH_LOOSE);
       return h;
     }
     const vac = new Vacuum(r.tuning);
@@ -268,7 +270,7 @@ const first = luna();
 
     check(
       'Купленная технология параметра меняет поведение инструмента со следующего применения',
-      afterCells > beforeCells && r.tuning.collectRadius === 4,
+      afterCells > beforeCells && r.tuning.collectRadius === 8,
       `было ${beforeCells} ячеек за нажатие, стало ${afterCells}`,
     );
 
@@ -279,14 +281,14 @@ const first = luna();
     const topCells = topVac.updateSuck(FIXED_DT, topWorld, topInv, true, 40, 40, 40, 40);
     check(
       'Вторая ступень расширяет кисть дальше первой',
-      topCells > afterCells && r.tuning.collectRadius === 5,
+      topCells > afterCells && r.tuning.collectRadius === 10,
       `${beforeCells} → ${afterCells} → ${topCells} ячеек за нажатие`,
     );
 
     // Пылесос про исследования ничего не знает: тот же профиль, поданный
     // напрямую, даёт то же поведение.
     const plain = new Tuning();
-    plain.set('collectRadius', 5);
+    plain.set('collectRadius', 10);
     const plainWorld = heap();
     const plainCells = new Vacuum(plain).updateSuck(
       FIXED_DT,
@@ -324,8 +326,8 @@ const first = luna();
     );
     check(
       'При всех открытых технологиях радиус кисти сбора много меньше полуширины кадра',
-      topRadius * 8 <= VIEW_W / 2,
-      `радиус ${topRadius}, полукадра ${VIEW_W / 2}`,
+      topRadius * 8 <= BASE_VIEW_W / 2,
+      `радиус ${topRadius}, полукадра ${BASE_VIEW_W / 2}`,
     );
     check(
       'Базовый радиус кисти сбора не превышает радиуса кисти копания',
@@ -352,9 +354,9 @@ const first = luna();
     // упираются в него оба, разница схлопывается в ноль, и проверка проходила
     // бы или падала по не относящейся к делу причине.
     function riseIn(steps: number, tuning: Tuning): number {
-      const w = new World(64, 400, first.world.profile);
-      for (let x = 0; x < 64; x++) w.set(x, 380, MAT.ROCK);
-      const p = new Player(30, 368, tuning);
+      const w = new World(64, 800, first.world.profile);
+      for (let x = 0; x < 64; x++) w.set(x, 780, MAT.ROCK);
+      const p = new Player(30, 768, tuning);
       const held = { moveAxis: 0, jumpPressed: true, jumpHeld: true };
       const startY = p.y;
       for (let i = 0; i < steps; i++) p.update(FIXED_DT, held, w);
@@ -628,8 +630,8 @@ const first = luna();
       built === 'placed' &&
         ov.open &&
         count(w, MAT.PULP) === 0 &&
-        count(w, MAT.IRIDIUM) === 1 &&
-        count(w, MAT.SLAG) === SEPARATOR.batch - 1,
+        count(w, MAT.IRIDIUM) === SEPARATOR.iridium &&
+        count(w, MAT.SLAG) === SEPARATOR.batch - SEPARATOR.iridium,
       `пульпы ${count(w, MAT.PULP)}, иридия ${count(w, MAT.IRIDIUM)}, шлака ${count(w, MAT.SLAG)}`,
     );
   }

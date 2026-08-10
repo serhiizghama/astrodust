@@ -1,6 +1,6 @@
 import { World, MAT, Simulation } from '../src/world';
 import { Camera } from '../src/render';
-import { FIXED_DT, WORLD_SEED, VIEW_W, DIG, CAMERA, AUDIO } from '../src/config';
+import { FIXED_DT, WORLD_SEED, BASE_VIEW_W, DIG, CAMERA, AUDIO } from '../src/config';
 import {
   attenuation,
   attenuationAt,
@@ -58,8 +58,8 @@ const { world } = first;
     // не недосмотр, а само правило вакуума.
     check(
       'Слышимость: радиус меньше полукадра и вдвое больше дальности копания',
-      AUDIO.contactRadius < VIEW_W / 2 && AUDIO.contactRadius === DIG.reach * 2,
-      `${AUDIO.contactRadius} < ${VIEW_W / 2}, копание ${DIG.reach}`,
+      AUDIO.contactRadius < BASE_VIEW_W / 2 && AUDIO.contactRadius === DIG.reach * 2,
+      `${AUDIO.contactRadius} < ${BASE_VIEW_W / 2}, копание ${DIG.reach}`,
     );
 
     check(

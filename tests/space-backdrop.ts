@@ -2,7 +2,7 @@ import { Camera, Backdrop, Renderer } from '../src/render';
 import type { Display } from '../src/core';
 import { MATERIALS, LUNA } from '../src/world';
 import { Player } from '../src/entities';
-import { WORLD_SEED, VIEW_W, VIEW_H, BACKDROP } from '../src/config';
+import { WORLD_SEED, BASE_VIEW_W, BASE_VIEW_H, BACKDROP } from '../src/config';
 import { check, IDLE_HUD, luna } from './harness';
 
 const first = luna();
@@ -17,7 +17,7 @@ const first = luna();
    * иначе они попали бы в область неба и посчитались акцентами задника.
    */
   function renderSky(camX: number, camY: number): Uint8ClampedArray {
-    const pixels = new Uint8ClampedArray(VIEW_W * VIEW_H * 4);
+    const pixels = new Uint8ClampedArray(BASE_VIEW_W * BASE_VIEW_H * 4);
     const display = {
       pixels,
       ctx: {
@@ -28,25 +28,79 @@ const first = luna();
         textBaseline: '',
         fillStyle: '',
       },
+      width: BASE_VIEW_W,
+      height: BASE_VIEW_H,
       image: {},
       present() {},
     } as unknown as Display;
 
     const renderer = new Renderer(display, first.world, first.surface, WORLD_SEED);
     const camera = new Camera(first.world.width, first.world.height);
-    camera.snapTo(camX + VIEW_W / 2, camY + VIEW_H / 2);
-    const offscreen = new Player(camera.x + VIEW_W / 2, camera.y + VIEW_H + 40);
+    camera.snapTo(camX + BASE_VIEW_W / 2, camY + BASE_VIEW_H / 2);
+    const offscreen = new Player(camera.x + BASE_VIEW_W / 2, camera.y + BASE_VIEW_H + 40);
     renderer.render({
       camera: camera,
       player: offscreen,
-      crosshairX: VIEW_W / 2,
-      crosshairY: VIEW_H - 1,
+      crosshairX: BASE_VIEW_W / 2,
+      crosshairY: BASE_VIEW_H - 1,
       crosshairInReach: true,
       hud: IDLE_HUD,
       fps: 0,
       time: 20,
     });
     return pixels;
+  }
+
+  // Небо покрыто задником целиком: поле звёзд выведено из окна неба этого мира,
+  // а не назначено числом строк, и у верхней границы мира не обрывается.
+  {
+    const starColors = new Set(spec.starColors);
+    /** Верхняя строка кадра, в которой есть звезда. -1 — звёзд нет вовсе. */
+    function topStarRow(camX: number): number {
+      const px = renderSky(camX, 0);
+      for (let sy = 0; sy < BASE_VIEW_H; sy++) {
+        for (let sx = 0; sx < BASE_VIEW_W; sx++) {
+          const i = (sy * BASE_VIEW_W + sx) * 4;
+          const c = (px[i]! << 16) | (px[i + 1]! << 8) | px[i + 2]!;
+          if (starColors.has(c)) return sy;
+        }
+      }
+      return -1;
+    }
+
+    let worst = -1;
+    for (const camX of [0, 400, 900, 1408]) {
+      const row = topStarRow(camX);
+      if (row < 0) {
+        worst = BASE_VIEW_H;
+        break;
+      }
+      if (row > worst) worst = row;
+    }
+    check(
+      'Звёзды доходят до верха кадра при камере у верхней границы мира',
+      worst >= 0 && worst <= 4,
+      `самая верхняя звезда на строке ${worst}`,
+    );
+  }
+
+  // Полоса млечного пути целиком внутри поля: заданная долями, она не уезжает
+  // ни за верх неба, ни под линию поверхности.
+  {
+    const mw = spec.milkyWay!;
+    check(
+      'Полоса млечного пути лежит внутри окна неба',
+      mw.centerY - mw.halfWidth >= 0 && mw.centerY + mw.halfWidth <= 1,
+      `центр ${mw.centerY}, полуширина ${mw.halfWidth}`,
+    );
+
+    let glow = 0;
+    const px = renderSky(500, 0);
+    for (let i = 0; i < px.length; i += 4) {
+      const c = (px[i]! << 16) | (px[i + 1]! << 8) | px[i + 2]!;
+      if (c === mw.glowColor) glow++;
+    }
+    check('Свечение полосы попадает в кадр', glow > 0, `пикселей свечения ${glow}`);
   }
 
   // Детерминированность. Проверяется по итоговому кадру, а не по внутренним
@@ -78,7 +132,7 @@ const first = luna();
     let expected = 0;
     for (let i = 0; i < bd.pointX.length; i++) {
       const x = bd.pointX[i]!;
-      if (x >= from && x < from + VIEW_W) expected++;
+      if (x >= from && x < from + BASE_VIEW_W) expected++;
     }
     check('Видимый срез непуст и находится поиском', expected > 100, `в срезе ${expected}`);
   }
@@ -122,11 +176,11 @@ const first = luna();
 
     let skyPixels = 0;
     let accents = 0;
-    for (let sy = 0; sy < VIEW_H; sy++) {
-      for (let sx = 0; sx < VIEW_W; sx++) {
+    for (let sy = 0; sy < BASE_VIEW_H; sy++) {
+      for (let sx = 0; sx < BASE_VIEW_W; sx++) {
         if (camY + sy >= first.surface[camX + sx]!) continue;
         skyPixels++;
-        const i = (sy * VIEW_W + sx) * 4;
+        const i = (sy * BASE_VIEW_W + sx) * 4;
         const color = (px[i]! << 16) | (px[i + 1]! << 8) | px[i + 2]!;
         if (!background.has(color)) accents++;
       }
@@ -178,8 +232,8 @@ const first = luna();
   if (spec.companion) {
     const bd = new Backdrop(profile, WORLD_SEED, first.surface);
     const size = BACKDROP.companionSize;
-    const maxCamX = first.world.width - VIEW_W;
-    const maxCamY = first.world.height - VIEW_H;
+    const maxCamX = first.world.width - BASE_VIEW_W;
+    const maxCamY = first.world.height - BASE_VIEW_H;
     let worstLeft = Infinity;
     let worstRight = Infinity;
     let worstTop = Infinity;
@@ -187,7 +241,7 @@ const first = luna();
       const off = bd.layerOffset(-1, camX, 0);
       const sx = spec.companion.x - off.x;
       if (sx < worstLeft) worstLeft = sx;
-      if (VIEW_W - (sx + size) < worstRight) worstRight = VIEW_W - (sx + size);
+      if (BASE_VIEW_W - (sx + size) < worstRight) worstRight = BASE_VIEW_W - (sx + size);
     }
     for (let camY = 0; camY <= maxCamY; camY++) {
       const sy = spec.companion.y - bd.layerOffset(-1, 0, camY).y;
@@ -214,7 +268,7 @@ const first = luna();
     for (let x = 0; x < first.world.width; x += 37) {
       // Камера, центрированная на персонаже, который стоит на поверхности.
       const surf = first.surface[x]!;
-      const camY = Math.max(0, Math.min(first.world.height - VIEW_H, surf - VIEW_H / 2));
+      const camY = Math.max(0, Math.min(first.world.height - BASE_VIEW_H, surf - BASE_VIEW_H / 2));
       const horizon = surf - camY;
       const crest = spec.layers[0]!.crestY - bd.layerOffset(0, 0, camY).y;
       if (horizon - crest < worstTop) worstTop = horizon - crest;
@@ -240,7 +294,7 @@ const first = luna();
     check(
       'Под землёй проход задника не выполняется',
       bd.draw(
-        new Uint8ClampedArray(VIEW_W * VIEW_H * 4),
+        new Uint8ClampedArray(BASE_VIEW_W * BASE_VIEW_H * 4),
         camX,
         deep,
         0,
@@ -252,7 +306,7 @@ const first = luna();
   // Неподвижная камера — неподвижный кадр. Правило вакуума: мерцать нечему.
   {
     const bd = new Backdrop(profile, WORLD_SEED, first.surface);
-    const size = VIEW_W * VIEW_H * 4;
+    const size = BASE_VIEW_W * BASE_VIEW_H * 4;
     const a = new Uint8ClampedArray(size);
     const b = new Uint8ClampedArray(size);
     const max = bd.maxSurfaceInView(260);
@@ -271,11 +325,11 @@ const first = luna();
     const max = bd.maxSurfaceInView(260);
     const positions: number[] = [];
     for (let k = 1; k <= 5; k++) {
-      const px = new Uint8ClampedArray(VIEW_W * VIEW_H * 4);
+      const px = new Uint8ClampedArray(BASE_VIEW_W * BASE_VIEW_H * 4);
       bd.draw(px, 260, 0, (o.crossSec * k) / 6, max);
       for (let i = 0; i < px.length; i += 4) {
         const color = (px[i]! << 16) | (px[i + 1]! << 8) | px[i + 2]!;
-        if (color === o.color) positions.push((i / 4) % VIEW_W);
+        if (color === o.color) positions.push((i / 4) % BASE_VIEW_W);
       }
     }
     check(
@@ -285,7 +339,7 @@ const first = luna();
     );
 
     // В паузе объекта в кадре нет.
-    const idle = new Uint8ClampedArray(VIEW_W * VIEW_H * 4);
+    const idle = new Uint8ClampedArray(BASE_VIEW_W * BASE_VIEW_H * 4);
     bd.draw(idle, 260, 0, o.crossSec + (o.periodSec - o.crossSec) / 2, max);
     let found = false;
     for (let i = 0; i < idle.length; i += 4) {

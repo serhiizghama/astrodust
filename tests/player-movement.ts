@@ -56,7 +56,7 @@ function measureJump(holdSteps: number): number {
 }
 
 const hop = measureJump(0);
-check('Минимальный хоп при тапе ≈ один рост', hop >= 6 && hop <= 14, `${hop} px`);
+check('Минимальный хоп при тапе ≈ два роста', hop >= 12 && hop <= 28, `${hop} ячеек`);
 
 const heights = [0, 3, 8, 20, 60].map(measureJump);
 const monotone = heights.every((h, i) => i === 0 || h > heights[i - 1]);
@@ -65,12 +65,14 @@ check('Высота растёт монотонно с длительность�
 // --- Реактивный ранец ---
 {
   /** Ровная площадка с большим запасом высоты над ней. */
+  // Потолок мира-стенда выше хода ранца за отведённые шаги: упёршись в него,
+  // персонаж встал бы, и проверка предела скорости мерила бы потолок.
   function flatWorld(): World {
-    const w = new World(200, 400, world.profile);
-    for (let x = 0; x < 200; x++) for (let y = 300; y < 400; y++) w.set(x, y, MAT.ROCK);
+    const w = new World(200, 800, world.profile);
+    for (let x = 0; x < 200; x++) for (let y = 700; y < 800; y++) w.set(x, y, MAT.ROCK);
     return w;
   }
-  const groundY = 300 - PLAYER.hitboxH;
+  const groundY = 700 - PLAYER.hitboxH;
   const thrustAccel = world.profile.gravity * PLAYER.thrustGravityMultiplier;
   check(
     'Тяга считается от гравитации мира, а не константой',

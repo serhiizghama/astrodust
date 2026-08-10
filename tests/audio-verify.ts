@@ -265,7 +265,7 @@ async function render(scene: string): Promise<Measures> {
 {
   const m = await render('dustFar');
   check(
-    'Вакуум: осыпание дальше 96 пикселей не слышно вообще',
+    'Вакуум: осыпание дальше радиуса слышимости (192) не слышно вообще',
     m.peak < SILENT,
     `пик ${m.peak.toExponential(2)}`,
   );

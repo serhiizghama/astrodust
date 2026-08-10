@@ -20,7 +20,7 @@ import {
 import { Player } from '../src/entities';
 import type { Display } from '../src/core';
 import { RAMP } from '../src/palette';
-import { SHADING, VIEW_W, VIEW_H } from '../src/config';
+import { SHADING, BASE_VIEW_W, BASE_VIEW_H } from '../src/config';
 
 /** Воспринимаемая яркость. Та же формула, что у любого редактора палитр. */
 function luma(color: number): number {
@@ -237,7 +237,7 @@ check(
 //
 // Отсюда и ниже проверяется не палитра, а то, что рендер из неё делает.
 {
-  const pixels = new Uint8ClampedArray(VIEW_W * VIEW_H * 4);
+  const pixels = new Uint8ClampedArray(BASE_VIEW_W * BASE_VIEW_H * 4);
   const display = {
     pixels,
     ctx: {
@@ -248,12 +248,16 @@ check(
       textBaseline: '',
       fillStyle: '',
     },
+    width: BASE_VIEW_W,
+    height: BASE_VIEW_H,
     image: {},
     present() {},
   } as unknown as Display;
 
-  const W = 400;
-  const H = 400;
+  // Мир заметно шире опорного кадра: иначе камера упирается в кламп с обоих
+  // краёв, сдвинуть её нечем, и проверка «текстура не плывёт» мерила бы кламп.
+  const W = 1024;
+  const H = 800;
   /** Поверхность на y=40, ниже — сплошная толща. Пустоты вырезаются точечно. */
   const SURFACE_Y = 40;
 
@@ -300,7 +304,7 @@ check(
 
   /** Цвет пикселя кадра по экранным координатам. */
   const at = (buf: Uint8ClampedArray, sx: number, sy: number): number => {
-    const i = (sy * VIEW_W + sx) * 4;
+    const i = (sy * BASE_VIEW_W + sx) * 4;
     return (buf[i]! << 16) | (buf[i + 1]! << 8) | buf[i + 2]!;
   };
 
@@ -338,16 +342,16 @@ check(
     }
     check('Текстура не плывёт: возврат камеры возвращает тот же кадр', same);
 
-    // 200 и 201, а не 120 и 121: при мире 400 и кадре 320 угол камеры ходит
-    // лишь в [0, 80], и у края обе наводки упёрлись бы в кламп в одну точку.
-    const still = frameOf(world, surface, 200, 200);
-    const moved = frameOf(world, surface, 201, 200);
+    // Наводка в середине хода камеры: у края обе упёрлись бы в кламп
+    // и оказались бы одной и той же точкой.
+    const still = frameOf(world, surface, 500, 200);
+    const moved = frameOf(world, surface, 501, 200);
     const dx = moved.camX - still.camX;
     let shifted = 0;
     let checked = 0;
     // Полоса заведомо в породе: от поверхности вниз, без края кадра.
     for (let wy = SURFACE_Y + 20; wy < SURFACE_Y + 80; wy++) {
-      for (let wx = still.camX + 10; wx < still.camX + VIEW_W - 10 - dx; wx++) {
+      for (let wx = still.camX + 10; wx < still.camX + BASE_VIEW_W - 10 - dx; wx++) {
         checked++;
         if (atWorld(moved, wx, wy) === atWorld(still, wx, wy)) shifted++;
       }
@@ -404,8 +408,8 @@ check(
     const base = MATERIALS[MAT.ROCK]!.color;
     let baseN = 0;
     let total = 0;
-    for (let sy = 20; sy < VIEW_H - 20; sy++) {
-      for (let sx = 20; sx < VIEW_W - 20; sx++) {
+    for (let sy = 20; sy < BASE_VIEW_H - 20; sy++) {
+      for (let sx = 20; sx < BASE_VIEW_W - 20; sx++) {
         total++;
         if (at(s.px, sx, sy) === base) baseN++;
       }
@@ -447,7 +451,7 @@ check(
 
 // --- Карта освещённости ---
 {
-  const pixels = new Uint8ClampedArray(VIEW_W * VIEW_H * 4);
+  const pixels = new Uint8ClampedArray(BASE_VIEW_W * BASE_VIEW_H * 4);
   const display = {
     pixels,
     ctx: {
@@ -458,6 +462,8 @@ check(
       textBaseline: '',
       fillStyle: '',
     },
+    width: BASE_VIEW_W,
+    height: BASE_VIEW_H,
     image: {},
     present() {},
   } as unknown as Display;
@@ -501,9 +507,14 @@ check(
     const at = (wx: number, wy: number): number =>
       level[((wy / SHADING.lightScale) | 0) * cols + ((wx / SHADING.lightScale) | 0)]!;
 
-    const near = at(128, 116);
-    const mid = at(128, 108);
-    const far = at(128, 60);
+    // Точки взяты долями окна карты (радиус 3 ячейки карты, то есть
+    // `lightRadius * lightScale` ячеек мира): у самого кармана, у края окна
+    // и заведомо за ним. В ячейках мира их держать нельзя — сторона ячейки
+    // карты соразмерна кадру и меняется вместе с ним.
+    const halo = SHADING.lightRadius * SHADING.lightScale;
+    const near = at(128, 120 - halo / 3);
+    const mid = at(128, 120 - halo);
+    const far = at(128, 120 - 5 * halo);
     check(
       'Свет выходит за границу источника',
       near > LIGHT_NEUTRAL,
@@ -597,7 +608,7 @@ check(
       let n = 0;
       for (let wy = wy0; wy < wy1; wy++) {
         for (let wx = wx0; wx < wx1; wx++) {
-          const i = ((wy - camera.y) * VIEW_W + (wx - camera.x)) * 4;
+          const i = ((wy - camera.y) * BASE_VIEW_W + (wx - camera.x)) * 4;
           const c = (pixels[i]! << 16) | (pixels[i + 1]! << 8) | pixels[i + 2]!;
           if (c === light) n++;
         }
@@ -620,7 +631,7 @@ check(
 // Расплав, освещающий породу вокруг, но не воздух над собой, читается
 // подсветкой камня, а не источником.
 {
-  const pixels = new Uint8ClampedArray(VIEW_W * VIEW_H * 4);
+  const pixels = new Uint8ClampedArray(BASE_VIEW_W * BASE_VIEW_H * 4);
   const display = {
     pixels,
     ctx: {
@@ -631,6 +642,8 @@ check(
       textBaseline: '',
       fillStyle: '',
     },
+    width: BASE_VIEW_W,
+    height: BASE_VIEW_H,
     image: {},
     present() {},
   } as unknown as Display;
@@ -670,7 +683,7 @@ check(
     let n = 0;
     for (let wy = 150; wy < 158; wy++) {
       for (let wx = x0; wx < x1; wx++) {
-        const i = ((wy - camera.y) * VIEW_W + (wx - camera.x)) * 4;
+        const i = ((wy - camera.y) * BASE_VIEW_W + (wx - camera.x)) * 4;
         const c = (pixels[i]! << 16) | (pixels[i + 1]! << 8) | pixels[i + 2]!;
         if (c === LUNA.caveDeepColor) n++;
       }

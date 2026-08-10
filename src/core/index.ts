@@ -6,7 +6,8 @@
  * Это ЕДИНСТВЕННЫЙ вход в подсистему извне: снаружи импортируют отсюда,
  * внутри — напрямую друг у друга. Что не перечислено здесь — не публично.
  */
-export { Display } from './display';
+export { Display, fitFrame } from './display';
+export type { FrameFit } from './display';
 export {
   Input,
   ToolMode,

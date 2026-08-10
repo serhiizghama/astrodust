@@ -11,16 +11,23 @@ import { Builder } from '../../src/systems';
 import { SEPARATOR } from '../../src/config';
 import { ground } from './world';
 
-/** Верхний левый угол здания, стоящего на полу мира высотой 96. */
+/**
+ * Сцена под машину: сепаратор 25 ячеек в стороне, лента под ним — секциями
+ * по 8, и в песочнице 96×96 им уже негде развернуться.
+ */
+const SCENE_W = 192;
+const SCENE_H = 192;
+
+/** Верхний левый угол здания, стоящего на полу сцены. */
 export const BX = 40;
-export const BY = 96 - 2 - SEPARATOR.height;
+export const BY = SCENE_H - 2 - SEPARATOR.height;
 
 export function scene(credits: number = SEPARATOR.cost): {
   world: World;
   module: LandingModule;
   registry: BuildingRegistry;
 } {
-  const w = ground();
+  const w = ground(SCENE_W, SCENE_H);
   const module = new LandingModule({ x: 2, y: 2, w: 4, h: 4 });
   module.credits = credits;
   return { world: w, module, registry: new BuildingRegistry() };

@@ -16,8 +16,8 @@ import {
   PLAYER,
   FIXED_DT,
   WORLD_SEED,
-  VIEW_W,
-  VIEW_H,
+  BASE_VIEW_W,
+  BASE_VIEW_H,
   DIG,
   SEPARATOR,
   BUILD_AIM_DISTANCE,
@@ -323,7 +323,9 @@ const { spawn } = first;
     const separator = registry.all[0] as Separator;
 
     const inv = new Inventory();
-    inv.add(MAT.PULP, 10);
+    // Больше, чем кисть кладёт над приёмной гранью: кисть заполняется сверху
+    // вниз, и малой порции до самой грани не хватает.
+    inv.add(MAT.PULP, 40);
     while (inv.selected !== MAT.PULP) inv.cycleSelected();
     Vacuum.dump(w, inv, BX + 2, BY - 1);
     const onFace = (() => {
@@ -368,7 +370,7 @@ const { spawn } = first;
     // Персонаж стоит на полу мира: пол ровный, поэтому годность зависит только
     // от направления прицела.
     const px = 48;
-    const py = 96 - 2 - Math.ceil(PLAYER.hitboxH / 2);
+    const py = w.height - 2 - Math.ceil(PLAYER.hitboxH / 2);
 
     const dirs: Array<[number, number]> = [
       [1, 0],
@@ -479,7 +481,7 @@ const { spawn } = first;
 
   // Контур будущего здания и состояние машины действительно попадают в кадр.
   {
-    const pixels = new Uint8ClampedArray(VIEW_W * VIEW_H * 4);
+    const pixels = new Uint8ClampedArray(BASE_VIEW_W * BASE_VIEW_H * 4);
     const display = {
       pixels,
       ctx: {
@@ -490,6 +492,8 @@ const { spawn } = first;
         textBaseline: '',
         fillStyle: '',
       },
+      width: BASE_VIEW_W,
+      height: BASE_VIEW_H,
       image: {},
       present() {},
     } as unknown as Display;

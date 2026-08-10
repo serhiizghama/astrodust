@@ -2,7 +2,7 @@ import { World, MAT, MAT_CREDIT_RATE, Simulation, reactAround } from '../src/wor
 import { Camera } from '../src/render';
 import { Digger, Vacuum } from '../src/systems';
 import { Player, Inventory, LandingModule } from '../src/entities';
-import { PLAYER, FIXED_DT, VIEW_W, VIEW_H, MODULE } from '../src/config';
+import { PLAYER, FIXED_DT, BASE_VIEW_W, BASE_VIEW_H, MODULE } from '../src/config';
 import { check, luna } from './harness';
 import { box, count } from './fixtures/world';
 
@@ -16,15 +16,15 @@ const { spawn } = first;
     /** Мир с приёмником: дно и две стенки из корпуса, открытый верх. */
     function withReceiver(): { world: World; module: LandingModule } {
       const w = box();
-      const zone = { x: 40, y: 40, w: 6, h: 5 };
-      for (let y = zone.y; y < zone.y + zone.h + 2; y++) {
-        for (let d = 0; d < 2; d++) {
+      const zone = { x: 40, y: 40, w: 12, h: 10 };
+      for (let y = zone.y; y < zone.y + zone.h + 4; y++) {
+        for (let d = 0; d < 4; d++) {
           w.set(zone.x - 1 - d, y, MAT.MODULE_HULL);
           w.set(zone.x + zone.w + d, y, MAT.MODULE_HULL);
         }
       }
-      for (let y = zone.y + zone.h; y < zone.y + zone.h + 2; y++) {
-        for (let x = zone.x - 2; x < zone.x + zone.w + 2; x++) w.set(x, y, MAT.MODULE_HULL);
+      for (let y = zone.y + zone.h; y < zone.y + zone.h + 4; y++) {
+        for (let x = zone.x - 4; x < zone.x + zone.w + 4; x++) w.set(x, y, MAT.MODULE_HULL);
       }
       return { world: w, module: new LandingModule(zone) };
     }
@@ -35,7 +35,10 @@ const { spawn } = first;
       const inv = new Inventory();
       inv.add(MAT.PULP, 20);
       while (inv.selected !== MAT.PULP) inv.cycleSelected();
-      const placed = Vacuum.dump(w, inv, 42, 42);
+      // Точка высыпания с запасом от стенок: кисть радиуса 4 обязана лечь
+      // ЦЕЛИКОМ внутрь зоны, иначе часть ячеек падает на корпус и в приёмник
+      // не попадает — проверка мерила бы промах, а не ставку.
+      const placed = Vacuum.dump(w, inv, 45, 45);
       const earned = module.update(w);
       check(
         'Высыпанная в приёмник пульпа исчезает и даёт кредиты по ставке',
@@ -54,7 +57,7 @@ const { spawn } = first;
     // Самотёком — так же. Персонажа рядом нет вовсе.
     {
       const { world: w, module } = withReceiver();
-      for (let x = 40; x < 46; x++) w.set(x, 30, MAT.REGOLITH_LOOSE);
+      for (let x = 40; x < 52; x++) w.set(x, 30, MAT.REGOLITH_LOOSE);
       const dropped = count(w, MAT.REGOLITH_LOOSE);
       const sim = new Simulation();
       for (let i = 0; i < 400; i++) {
@@ -205,8 +208,8 @@ const { spawn } = first;
       const cam = new Camera(w.width, w.height);
       cam.snapTo(spawn.x, spawn.y);
       let visible = 0;
-      for (let sy = 0; sy < VIEW_H; sy++) {
-        for (let sx = 0; sx < VIEW_W; sx++) {
+      for (let sy = 0; sy < BASE_VIEW_H; sy++) {
+        for (let sx = 0; sx < BASE_VIEW_W; sx++) {
           if (w.get(cam.x + sx, cam.y + sy) === MAT.MODULE_HULL) visible++;
         }
       }

@@ -144,7 +144,7 @@ export const SCENES: Record<string, Scene> = {
    */
   digFar: {
     seconds: 2,
-    drive: (s, step) => digging(s, step, 120),
+    drive: (s, step) => digging(s, step, 240),
   },
 
   /** Обвал: осыпание нарастает, выходит на предел и обрывается. */
@@ -161,7 +161,7 @@ export const SCENES: Record<string, Scene> = {
   /** Осыпание на другом конце мира. Расстояние абсолютное — см. `digFar`. */
   dustFar: {
     seconds: 2,
-    drive: (s) => powder(s, 400, 150),
+    drive: (s) => powder(s, 400, 300),
   },
 
   /** Источник справа от персонажа. */

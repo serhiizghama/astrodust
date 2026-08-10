@@ -129,14 +129,18 @@ import { BX, BY, scene, build, feed } from './fixtures/separator';
       steps++;
     }
     const expected = Math.round(SEPARATOR.delaySec / FIXED_DT);
+    // Допуск в два шага, а не в один: задержка отмеряется игровым временем,
+    // и последнее вычитание оставляет от неё дробный остаток — обнулиться
+    // ровно на N-м шаге двоичная дробь не обязана.
     check(
       'Порция выдаётся не в том же шаге, а по истечении задержки',
-      sameStep === 0 && Math.abs(steps + 1 - expected) <= 1,
+      sameStep === 0 && Math.abs(steps + 1 - expected) <= 2,
       `в тот же шаг ${sameStep}, шагов до выдачи ${steps + 1} при ожидаемых ${expected}`,
     );
     check(
-      'Порция даёт ровно одну ячейку иридия и N−1 ячеек шлака',
-      count(w, MAT.IRIDIUM) === 1 && count(w, MAT.SLAG) === SEPARATOR.batch - 1,
+      'Порция даёт ровно `iridium` ячеек иридия и остальное шлаком',
+      count(w, MAT.IRIDIUM) === SEPARATOR.iridium &&
+        count(w, MAT.SLAG) === SEPARATOR.batch - SEPARATOR.iridium,
       `иридий ${count(w, MAT.IRIDIUM)}, шлак ${count(w, MAT.SLAG)}`,
     );
 
@@ -172,7 +176,7 @@ import { BX, BY, scene, build, feed } from './fixtures/separator';
         separator.update(w, dt);
         // Убираем выданное, чтобы выход не забился и замер мерил темп,
         // а не длину просвета под окном.
-        for (let y = BY; y < 96; y++) {
+        for (let y = BY; y < BY + SEPARATOR.height + 4; y++) {
           for (let x = BX; x < BX + SEPARATOR.width; x++) {
             const m = w.get(x, y);
             if (m === MAT.IRIDIUM) {
@@ -209,7 +213,7 @@ import { BX, BY, scene, build, feed } from './fixtures/separator';
     }
     check(
       'Машина принимает и выдаёт без игрока рядом',
-      count(w, MAT.IRIDIUM) === 1 && separator.stored === 0,
+      count(w, MAT.IRIDIUM) === SEPARATOR.iridium && separator.stored === 0,
       `иридия ${count(w, MAT.IRIDIUM)}, в накопителе ${separator.stored}`,
     );
   }
@@ -238,8 +242,9 @@ import { BX, BY, scene, build, feed } from './fixtures/separator';
       `поглощено ${absorbed}, выдано ${out}, внутри ${inside}, на грани ${count(w, MAT.PULP)}`,
     );
     check(
-      'Иридия ровно по одной ячейке на выданную порцию',
-      count(w, MAT.IRIDIUM) === count(w, MAT.SLAG) / (SEPARATOR.batch - 1),
+      'Иридия ровно по `iridium` ячеек на выданную порцию',
+      count(w, MAT.IRIDIUM) / SEPARATOR.iridium ===
+        count(w, MAT.SLAG) / (SEPARATOR.batch - SEPARATOR.iridium),
       `иридий ${count(w, MAT.IRIDIUM)}, шлак ${count(w, MAT.SLAG)}`,
     );
   }
@@ -288,7 +293,8 @@ import { BX, BY, scene, build, feed } from './fixtures/separator';
     separator.update(w, FIXED_DT);
     check(
       'Освобождение выхода выдаёт задержанную порцию',
-      count(w, MAT.IRIDIUM) === 1 && count(w, MAT.SLAG) === SEPARATOR.batch - 1,
+      count(w, MAT.IRIDIUM) === SEPARATOR.iridium &&
+        count(w, MAT.SLAG) === SEPARATOR.batch - SEPARATOR.iridium,
       `иридий ${count(w, MAT.IRIDIUM)}, шлак ${count(w, MAT.SLAG)}`,
     );
   }
@@ -329,24 +335,29 @@ import { BX, BY, scene, build, feed } from './fixtures/separator';
     // всегда в убытке — иридий не приносит ни одного, — и в этом её роль:
     // сепаратор превращает сырьё в то, чего за деньги не купить.
     const directCredits = SEPARATOR.batch * MAT_CREDIT_RATE[MAT.PULP]!;
+    const slagPerBatch = SEPARATOR.batch - SEPARATOR.iridium;
     const processedCredits =
-      MAT_CREDIT_RATE[MAT.IRIDIUM]! + (SEPARATOR.batch - 1) * MAT_CREDIT_RATE[MAT.SLAG]!;
+      SEPARATOR.iridium * MAT_CREDIT_RATE[MAT.IRIDIUM]! + slagPerBatch * MAT_CREDIT_RATE[MAT.SLAG]!;
     const processedPoints =
-      MAT_RESEARCH_RATE[MAT.IRIDIUM]! + (SEPARATOR.batch - 1) * MAT_RESEARCH_RATE[MAT.SLAG]!;
+      SEPARATOR.iridium * MAT_RESEARCH_RATE[MAT.IRIDIUM]! +
+      slagPerBatch * MAT_RESEARCH_RATE[MAT.SLAG]!;
     check(
       'Переработка даёт то, чего прямая сдача не даёт ни в каком количестве',
       processedPoints > 0 && directCredits > 0 && processedCredits === 0,
       `напрямую ${directCredits} ₡ и 0 ✦, через сепаратор ${processedCredits} ₡ и ${processedPoints} ✦`,
     );
     // Цена машины в кредитах и цена первой технологии в очках согласованы так,
-    // чтобы первое открытие наступало за обозримое число порций: иначе игрок,
-    // потративший 250 ₡, читает машину как тупик, а не как ступень.
+    // чтобы первое открытие наступало за обозримое ВРЕМЯ работы машины: иначе
+    // игрок, потративший на неё все кредиты, читает её как тупик, а не как
+    // ступень. Мерка временем, а не порциями: порция — величина настраиваемая,
+    // и вдвое более частые порции вдвое меньшего веса ничего не меняют.
     {
       const firstCost = Math.min(...TECHNOLOGIES.map((t) => t.cost));
+      const seconds = (firstCost / processedPoints) * SEPARATOR.delaySec;
       check(
-        'Первая технология достижима за обозримое число порций',
-        processedPoints > 0 && firstCost / processedPoints <= 10,
-        `${(firstCost / processedPoints).toFixed(1)} порций до первой технологии`,
+        'Первая технология достижима за обозримое время работы машины',
+        processedPoints > 0 && seconds <= 10,
+        `${seconds.toFixed(1)} с работы машины до первой технологии`,
       );
     }
 

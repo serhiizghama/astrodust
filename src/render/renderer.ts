@@ -1,4 +1,4 @@
-import { VIEW_W, VIEW_H, DIG, VACUUM, CONVEYOR, SIM_HZ, SHADING } from '../config';
+import { DIG, VACUUM, CONVEYOR, SIM_HZ, SHADING } from '../config';
 import { Display } from '../core';
 import { Camera } from './camera';
 import { World, MAT, MAT_CARRY } from '../world';
@@ -52,6 +52,13 @@ function brushOutline(radius: number): Int8Array {
 
 /** Сколько ступеней у интерьера пещеры: у выхода и в глубине. */
 const CAVE_SHADES = 2;
+
+/**
+ * Кегль интерфейса в ячейках кадра. Длина, соразмерная кадру: строка состояния
+ * читается с одного и того же расстояния независимо от того, сколько мира
+ * влезло в окно. Отступы интерфейса выведены от него — четверть кегля.
+ */
+const UI_FONT = '16px monospace';
 
 // Настройки тонирования — в локальные константы модуля. Внутренний цикл
 // касается их на каждый пиксель кадра, а `SHADING.x` там — загрузка свойства.
@@ -345,6 +352,10 @@ export class Renderer {
     const time = view.time ?? 0;
     const debugMaterial = view.debugMaterial ?? '';
 
+    // Размер кадра — до первого обращения к заднику: обе его точки входа
+    // читают его, а не получают параметром.
+    this.backdrop.setViewport(this.display.width, this.display.height);
+
     // Считается один раз на кадр и служит обоим проходам: заднику — признаком
     // «неба в кадре нет», миру — границей, ниже которой проверять небо незачем.
     const maxSurface = this.backdrop.maxSurfaceInView(camera.x);
@@ -364,7 +375,9 @@ export class Renderer {
     // Оверлей — последним: он перекрывает и мир, и строку состояния, и это
     // правильный порядок. Пока он открыт, строка состояния всё равно
     // не описывает того, чем игрок сейчас занят.
-    if (hud.overlay) drawResearchOverlay(this.display.ctx, hud.overlay);
+    if (hud.overlay) {
+      drawResearchOverlay(this.display.ctx, hud.overlay, this.display.width, this.display.height);
+    }
   }
 
   /**
@@ -385,6 +398,8 @@ export class Renderer {
    */
   private drawWorld(camera: Camera, maxSurface: number, offset: number): void {
     const px = this.display.pixels;
+    const viewW = this.display.width;
+    const viewH = this.display.height;
     const cells = this.world.cells;
     const worldW = this.world.width;
     const worldBottom = this.world.height - 1;
@@ -401,7 +416,7 @@ export class Renderer {
 
     let splitRow = maxSurface - camY;
     if (splitRow < 0) splitRow = 0;
-    else if (splitRow > VIEW_H) splitRow = VIEW_H;
+    else if (splitRow > viewH) splitRow = viewH;
 
     let idx = 0;
 
@@ -423,7 +438,7 @@ export class Renderer {
       let prev = cells[rowStart - 1];
       let cur = cells[rowStart];
 
-      for (let sx = 0; sx < VIEW_W; sx++, idx += 4) {
+      for (let sx = 0; sx < viewW; sx++, idx += 4) {
         const wx = camX + sx;
         const c = rowStart + sx;
         const m = cur!;
@@ -471,7 +486,7 @@ export class Renderer {
     }
 
     // Нижняя часть: неба здесь быть не может, пустота — всегда пещера.
-    for (let sy = splitRow; sy < VIEW_H; sy++) {
+    for (let sy = splitRow; sy < viewH; sy++) {
       const wy = camY + sy;
       const rowBase = wy * worldW;
       const upOff = wy > 0 ? -worldW : 0;
@@ -484,7 +499,7 @@ export class Renderer {
       let prev = cells[rowStart - 1];
       let cur = cells[rowStart];
 
-      for (let sx = 0; sx < VIEW_W; sx++, idx += 4) {
+      for (let sx = 0; sx < viewW; sx++, idx += 4) {
         const wx = camX + sx;
         const c = rowStart + sx;
         const m = cur!;
@@ -541,10 +556,12 @@ export class Renderer {
    * остановки читается тем же взглядом, что и сам факт остановки.
    */
   private drawMachines(camera: Camera, machines: readonly MachineView[]): void {
+    const viewW = this.display.width;
+    const viewH = this.display.height;
     for (const m of machines) {
       const sx = m.x - camera.x;
       const sy = m.y - camera.y;
-      if (sx + m.w < 0 || sy + m.h < 0 || sx >= VIEW_W || sy >= VIEW_H) continue;
+      if (sx + m.w < 0 || sy + m.h < 0 || sx >= viewW || sy >= viewH) continue;
 
       const color = MACHINE_STATE_COLORS[m.state];
 
@@ -664,8 +681,9 @@ export class Renderer {
   }
 
   private setPixel(x: number, y: number, color: number): void {
-    if (x < 0 || y < 0 || x >= VIEW_W || y >= VIEW_H) return;
-    const i = (y * VIEW_W + x) * 4;
+    const viewW = this.display.width;
+    if (x < 0 || y < 0 || x >= viewW || y >= this.display.height) return;
+    const i = (y * viewW + x) * 4;
     const px = this.display.pixels;
     px[i] = (color >> 16) & 0xff;
     px[i + 1] = (color >> 8) & 0xff;
@@ -680,7 +698,9 @@ export class Renderer {
    */
   private drawStatus(hud: HudState): void {
     const ctx = this.display.ctx;
-    ctx.font = '8px monospace';
+    const viewW = this.display.width;
+    const viewH = this.display.height;
+    ctx.font = UI_FONT;
     ctx.textBaseline = 'alphabetic';
 
     const carried =
@@ -689,17 +709,17 @@ export class Renderer {
     // Выбранный вид постройки стоит рядом с подписью режима, а не в отдельной
     // строке: он относится к режиму и без него бессмыслен.
     const mode = hud.buildKind ? `${hud.mode}: ${hud.buildKind}` : hud.mode;
-    this.text(`${mode}   ${hud.used}/${hud.capacity}   ${carried}`, 4, VIEW_H - 14, RAMP.gray[9]);
+    this.text(`${mode}   ${hud.used}/${hud.capacity}   ${carried}`, 8, viewH - 28, RAMP.gray[9]);
     // Причина отказа — тем же цветом, что и негодный контур: связь между
     // красной рамкой и надписью не должна требовать догадки.
     if (hud.buildIssue) {
-      const at = 4 + ctx.measureText(`${mode}   `).width;
-      this.text(hud.buildIssue, at, VIEW_H - 24, MACHINE_STATE_COLORS.blocked);
+      const at = 8 + ctx.measureText(`${mode}   `).width;
+      this.text(hud.buildIssue, at, viewH - 48, MACHINE_STATE_COLORS.blocked);
     }
     const second = hud.machineSummary
       ? `Высыпать: ${hud.selected}   ${hud.machineSummary}`
       : `Высыпать: ${hud.selected}`;
-    this.text(second, 4, VIEW_H - 4, RAMP.gray[9]);
+    this.text(second, 8, viewH - 8, RAMP.gray[9]);
 
     // Счёт — справа и цветом корпуса модуля: единственное место, куда кредиты
     // приходят, и единственное золотое пятно в кадре. Связь читается без подписи.
@@ -710,27 +730,27 @@ export class Renderer {
     // против золота кредитов: валюты разводятся тоном, а не яркостью, и тот же
     // `blue[5]` показывает очки внутри оверлея.
     const credits = `${hud.credits} ₡`;
-    this.text(credits, VIEW_W - 4 - ctx.measureText(credits).width, VIEW_H - 4, RAMP.warm[4]);
+    this.text(credits, viewW - 8 - ctx.measureText(credits).width, viewH - 8, RAMP.warm[4]);
     const research = `${hud.research} ✦`;
-    this.text(research, VIEW_W - 4 - ctx.measureText(research).width, VIEW_H - 14, RAMP.blue[5]);
+    this.text(research, viewW - 8 - ctx.measureText(research).width, viewH - 28, RAMP.blue[5]);
   }
 
   /** Диагностика поверх кадра. Включается F3 — иначе мешает оценивать картинку. */
   private drawDebug(fps: number, material: string): void {
     if (fps <= 0) return;
     const ctx = this.display.ctx;
-    ctx.font = '8px monospace';
+    ctx.font = UI_FONT;
     ctx.textBaseline = 'top';
 
     const lines = [`${fps.toFixed(0)} FPS`];
     // Установка вслепую бесполезна: игрок обязан видеть, что именно поставит.
     if (material) lines.push(`Q/E: ${material}`);
 
-    lines.forEach((line, i) => this.text(line, 4, 4 + i * 10, RAMP.green[4]));
+    lines.forEach((line, i) => this.text(line, 8, 8 + i * 20, RAMP.green[4]));
   }
 
   /**
-   * Надпись с подложкой в один пиксель: без неё текст тонет в кадре.
+   * Надпись с подложкой: без неё текст тонет в кадре.
    *
    * Подложка — цвет неба, а не чистый чёрный: чёрного в гамме нет вовсе,
    * и единственное место на экране с цветом вне набора не должно заводиться
@@ -739,7 +759,7 @@ export class Renderer {
   private text(line: string, x: number, y: number, color: number): void {
     const ctx = this.display.ctx;
     ctx.fillStyle = css(RAMP.gray[0]);
-    ctx.fillText(line, x + 1, y + 1);
+    ctx.fillText(line, x + 2, y + 2);
     ctx.fillStyle = css(color);
     ctx.fillText(line, x, y);
   }

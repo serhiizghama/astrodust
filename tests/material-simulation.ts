@@ -1034,7 +1034,7 @@ const first = luna();
       const w = box();
       // Сплошная порода на всю область кисти: свободна ровно одна ячейка,
       // поэтому высыпание попадает именно в карман, а не куда придётся.
-      for (let y = 37; y <= 43; y++) for (let x = 36; x <= 45; x++) w.set(x, y, MAT.ROCK);
+      for (let y = 35; y <= 45; y++) for (let x = 34; x <= 47; x++) w.set(x, y, MAT.ROCK);
       w.set(40, 40, MAT.VACUUM);
       w.set(41, 40, MAT.WATER);
 

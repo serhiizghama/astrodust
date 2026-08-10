@@ -9,8 +9,10 @@ import type { Rect } from '../../geometry';
 /**
  * Луна — первый мир.
  *
- * Гравитация 320 px/с² — опорная точка, откалиброванная на ощущение:
- * прыжок ~3.5 роста, заметное зависание в верхней точке, медленное падение.
+ * Гравитация 640 ячеек/с² — опорная точка, откалиброванная на ощущение:
+ * заметное зависание в верхней точке, медленное падение. Величина соразмерна
+ * кадру: при вдвое более широком кадре вдвое большее ускорение даёт ту же
+ * экранную дугу прыжка.
  * Остальные тела считаются от неё по реальному отношению ускорений
  * (Марс ×2.30, Европа ×0.81).
  *
@@ -19,7 +21,7 @@ import type { Rect } from '../../geometry';
 export const LUNA: WorldProfile = {
   id: 'luna',
   name: 'Луна',
-  gravity: 320,
+  gravity: 640,
   skyColor: RAMP.gray[0],
   // НЕ `violet[0]`, хотя гамма просилась: та ступень — заливка среднего слоя
   // задника, а пещера покрывает площадь, и подсчёт площади слоя стал бы
@@ -42,13 +44,13 @@ export const LUNA: WorldProfile = {
     // Не ноль: при строгом нуле поле выглядит приклеенным к экрану. И не больше,
     // чем у самого дальнего слоя силуэтов — звёзды обязаны быть дальше всего.
     skyParallax: 0.05,
-    // Полоса позиционируется долей окна неба (от края кадра до кромки дальнего
-    // слоя), а не строкой кадра: при кадре 320×180 окно сжалось со 122 строк
-    // до 77, и полоса прежней полуширины 44 оказалась бы шире самого неба —
-    // осталась бы ровная засветка вместо узнаваемой наклонной полосы.
+    // Полоса позиционируется ДОЛЕЙ поля звёзд, а не строкой: поле выведено
+    // из окна неба этого мира, и строка, верная для одного окна, для другого
+    // вывела бы полосу за пределы неба — осталась бы ровная засветка вместо
+    // узнаваемой наклонной полосы.
     milkyWay: {
-      centerY: 48,
-      halfWidth: 28,
+      centerY: 0.34,
+      halfWidth: 0.2,
       tilt: 0.06,
       densityBoost: 3.4,
       glowColor: RAMP.rust[0],
@@ -59,16 +61,21 @@ export const LUNA: WorldProfile = {
     // на ТОНЕ: слои фиолетовые, порода коричневая.
     //
     // Инвариант crestY: привязан к линии горизонта, а не к строке кадра.
-    // При смене высоты кадра на ΔH пересчитывать по
+    // При смене высоты кадра на ΔH — и только её — пересчитывать по
     //
     //     crestY_new = crestY_old − (ΔH / 2) · (1 − parallax)
     //
-    // иначе все три гребня тонут под рельефом и задник исчезает. amplitude
-    // и detail не трогать: они в пикселях буфера и масштабируются сами.
+    // иначе все три гребня тонут под рельефом и задник исчезает. Когда кадр
+    // и мир меняются вместе (кадр ×k, поверхность ×k), слагаемые параллакса
+    // сокращаются и остаётся crestY ×k — как у любой другой длины.
+    //
+    // amplitude — длина, растёт вместе с ними. detail не трогать: это число
+    // опорных точек шума на слой, и при ширине слоя, растущей вместе с кадром,
+    // размер гребня в долях кадра сохраняется сам.
     layers: [
-      { parallax: 0.15, fill: RAMP.violet[1], crestY: 88, amplitude: 16, detail: 40 },
-      { parallax: 0.32, fill: RAMP.violet[0], crestY: 108, amplitude: 22, detail: 19 },
-      { parallax: 0.55, fill: RAMP.gray[1], crestY: 134, amplitude: 28, detail: 9 },
+      { parallax: 0.15, fill: RAMP.violet[1], crestY: 176, amplitude: 32, detail: 40 },
+      { parallax: 0.32, fill: RAMP.violet[0], crestY: 216, amplitude: 44, detail: 19 },
+      { parallax: 0.55, fill: RAMP.gray[1], crestY: 268, amplitude: 56, detail: 9 },
     ],
     sunDirX: -1,
     // Тёплая от Солнца, холодная от отражённого света Земли. Пунктиром:
@@ -76,19 +83,19 @@ export const LUNA: WorldProfile = {
     rimWarm: RAMP.warm[2],
     rimCold: RAMP.blue[2],
     // Инвариант: x считается от ширины кадра — иначе диск уезжает за правый
-    // край на всём ходе камеры (0…704 при skyParallax 0.05 даёт смещение 0…35).
-    companion: { x: 253, y: 32 },
+    // край на всём ходе камеры (0…1408 при skyParallax 0.05 даёт смещение 0…70).
+    companion: { x: 506, y: 64 },
     // Цвет уникален среди всего, что выводит задник: на нём держится проверка
     // прохода спутника, ищущая пиксели ровно этого значения. Со скафандром он
     // общий, и это безопасно — проверка рисует ТОЛЬКО задник.
     // crossSec задаёт проход через весь кадр независимо от его ширины.
-    orbiter: { color: RAMP.gray[9], y: 25, periodSec: 41, crossSec: 9 },
+    orbiter: { color: RAMP.gray[9], y: 50, periodSec: 41, crossSec: 9 },
   },
 };
 
-const SURFACE_BASE = 168;
-const DEEP_ROCK_Y = 360;
-const DUST_DEPTH = 5;
+const SURFACE_BASE = 336;
+const DEEP_ROCK_Y = 720;
+const DUST_DEPTH = 10;
 
 /**
  * Лавовая трубка. Вынесено в константы, потому что залежи льда выкладываются
@@ -96,13 +103,13 @@ const DUST_DEPTH = 5;
  * местах — гарантированный разъезд, при котором якорная залежь однажды
  * промахнётся мимо стены и требование «залежь выходит в пещеру» тихо отвалится.
  */
-const TUBE_FROM_X = 470;
-const TUBE_TO_X = 930;
-const TUBE_BASE_Y = 310;
+const TUBE_FROM_X = 940;
+const TUBE_TO_X = 1860;
+const TUBE_BASE_Y = 620;
 /** Размах извива средней линии вокруг `TUBE_BASE_Y`. */
-const TUBE_WOBBLE_Y = 22;
+const TUBE_WOBBLE_Y = 44;
 /** Колонка якорной залежи льда — внутри трубки, поодаль от стыка со спуском. */
-const ICE_ANCHOR_X = 620;
+const ICE_ANCHOR_X = 1240;
 
 /** Описание кратера: то, что о нём известно генератору поверхности. */
 export interface Crater {
@@ -128,7 +135,7 @@ function buildSurface(rand: () => number): { surface: Int16Array; craters: Crate
   const surface = new Int16Array(WORLD_W);
   for (let x = 0; x < WORLD_W; x++) {
     const t = x / WORLD_W;
-    const h = SURFACE_BASE + wide(t) * 20 + medium(t) * 7 + fine(t) * 2;
+    const h = SURFACE_BASE + wide(t) * 40 + medium(t) * 14 + fine(t) * 2;
     surface[x] = Math.round(h);
   }
 
@@ -136,12 +143,12 @@ function buildSurface(rand: () => number): { surface: Int16Array; craters: Crate
   // Радиус всегда заметно больше глубины, поэтому максимальный уклон стенки
   // (2*depth/radius) остаётся ниже 3 ячеек — автоподъём справляется, и кратер
   // проходим пешком.
-  const craterCount = 6;
+  const craterCount = 12;
   const craters: Crater[] = [];
   for (let c = 0; c < craterCount; c++) {
-    const cx = Math.floor(80 + rand() * (WORLD_W - 160));
-    const depth = Math.floor(14 + rand() * 13);
-    const radius = Math.floor(depth * 2.2 + rand() * 26);
+    const cx = Math.floor(160 + rand() * (WORLD_W - 320));
+    const depth = Math.floor(28 + rand() * 26);
+    const radius = Math.floor(depth * 2.2 + rand() * 52);
     craters.push({ x: cx, radius, depth });
     const outer = Math.ceil(radius * 1.4);
     for (let dx = -outer; dx <= outer; dx++) {
@@ -186,6 +193,27 @@ function placeIceLens(
   }
 }
 
+/** Ячейка льда без единого соседа-льда возвращается породой. */
+function removeIceSpecks(world: World): void {
+  const cells = world.cells;
+  const w = world.width;
+  for (let y = 1; y < world.height - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      if (cells[i] !== MAT.ICE) continue;
+      if (
+        cells[i - 1] === MAT.ICE ||
+        cells[i + 1] === MAT.ICE ||
+        cells[i - w] === MAT.ICE ||
+        cells[i + w] === MAT.ICE
+      ) {
+        continue;
+      }
+      world.setRaw(x, y, MAT.ROCK);
+    }
+  }
+}
+
 /** Вырезает вертикальный столбец пустоты — общий примитив для тоннелей. */
 function carveColumn(world: World, x: number, top: number, height: number): void {
   for (let y = top; y < top + height; y++) world.setRaw(x, y, MAT.VACUUM);
@@ -222,7 +250,7 @@ function carveLavaTube(world: World, rand: () => number, fromX: number, toX: num
   for (let x = fromX; x <= toX; x++) {
     const t = (x - fromX) / (toX - fromX);
     const centerY = TUBE_BASE_Y + wobble(t) * TUBE_WOBBLE_Y;
-    const height = 24 + Math.round(wobble(t * 2.7) * 5);
+    const height = 48 + Math.round(wobble(t * 2.7) * 10);
     const top = Math.round(centerY - height / 2);
     carveColumn(world, x, top, height);
     floors[x] = top + height;
@@ -321,7 +349,7 @@ export interface GeneratedWorld {
  * Полуширина размытия границы «порода — глубинная порода», в ячейках.
  * Граница лежит в толще, места вокруг неё вдоволь.
  */
-const DEEP_BLEND = 6;
+const DEEP_BLEND = 12;
 
 /**
  * Полуширина размытия границы «пыль — порода».
@@ -330,7 +358,7 @@ const DEEP_BLEND = 6;
  * полоса размытия шире него пробивает крышу наружу — поверхность мира местами
  * становится породой вместо реголита. Держит `tests/pixel-world.ts`.
  */
-const DUST_BLEND = 2;
+const DUST_BLEND = 4;
 
 /**
  * Какая из двух пород лежит в ячейке у границы между ними.
@@ -370,7 +398,7 @@ export function generateLuna(seed: number): GeneratedWorld {
   const deepBoundary = makeNoise(rand, 12);
   for (let x = 0; x < WORLD_W; x++) {
     const top = surface[x];
-    const deepY = DEEP_ROCK_Y + deepBoundary(x / WORLD_W) * 30;
+    const deepY = DEEP_ROCK_Y + deepBoundary(x / WORLD_W) * 60;
     const dustY = top + DUST_DEPTH;
     for (let y = top; y < WORLD_H; y++) {
       // Терраин выкладывается СПЁКШИМСЯ реголитом: рыхлый здесь обрушил бы
@@ -385,12 +413,12 @@ export function generateLuna(seed: number): GeneratedWorld {
 
   // Валуны: пятна глубинной породы в основном слое. Без них порода —
   // сплошное серое поле, по которому не видно ни глубины, ни движения.
-  const boulderCount = 90;
+  const boulderCount = 360;
   for (let i = 0; i < boulderCount; i++) {
     const bx = Math.floor(rand() * WORLD_W);
-    const by = Math.floor(200 + rand() * (WORLD_H - 220));
-    const rx = 4 + Math.floor(rand() * 11);
-    const ry = Math.max(2, Math.floor(rx * (0.5 + rand() * 0.5)));
+    const by = Math.floor(400 + rand() * (WORLD_H - 440));
+    const rx = 8 + Math.floor(rand() * 22);
+    const ry = Math.max(4, Math.floor(rx * (0.5 + rand() * 0.5)));
     for (let dy = -ry; dy <= ry; dy++) {
       for (let dx = -rx; dx <= rx; dx++) {
         if ((dx * dx) / (rx * rx) + (dy * dy) / (ry * ry) > 1) continue;
@@ -409,17 +437,19 @@ export function generateLuna(seed: number): GeneratedWorld {
 
   // 1. Якорная залежь на стене трубки. Точка фиксирована и от зерна не зависит
   //    — этим и гарантировано требование «залежь выходит в объём пещеры».
-  //    Полувысота взята с запасом от размаха извива (22) плюс половина высоты
-  //    трубки (~15): при любом изгибе линза перекрывает стену.
-  placeIceLens(world, surface, ICE_ANCHOR_X, TUBE_BASE_Y, 14, TUBE_WOBBLE_Y + 8);
+  //    Полувысота покрывает ХУДШИЙ случай: размах извива (44) плюс половина
+  //    наибольшей высоты трубки (29) плюс запас. Запас «на глаз» здесь
+  //    не годится — при другом зерне изгиб уходит на край размаха, и линза
+  //    промахивается мимо стены целиком.
+  placeIceLens(world, surface, ICE_ANCHOR_X, TUBE_BASE_Y, 28, TUBE_WOBBLE_Y + 32);
 
   // 2. Кратерные: под днищами самых глубоких кратеров, сразу под слоем пыли.
   //    Затенённый лёд на дне лунных кратеров — реальность и лор игры, а заодно
   //    видимый ориентир: кратер говорит игроку, где копать.
   const deepest = craters.slice().sort((a, b) => b.depth - a.depth);
   for (const crater of deepest.slice(0, 3)) {
-    const ry = 5 + Math.floor(rand() * 4);
-    const rx = Math.max(6, Math.round(crater.radius * 0.45));
+    const ry = 10 + Math.floor(rand() * 8);
+    const rx = Math.max(12, Math.round(crater.radius * 0.45));
     // Верх линзы — ровно под пылью. Днище кратера — самая нижняя его точка,
     // поэтому на соседних колонках слой пыли остаётся не тоньше.
     placeIceLens(world, surface, crater.x, surface[crater.x]! + DUST_DEPTH + ry, rx, ry);
@@ -427,12 +457,12 @@ export function generateLuna(seed: number): GeneratedWorld {
 
   // 3. Рассеянные в толще: чтобы лёд встречался и при обычном копании вглубь,
   //    а не только в двух отмеченных местах.
-  const scatteredCount = 8;
+  const scatteredCount = 32;
   for (let i = 0; i < scatteredCount; i++) {
     const bx = Math.floor(rand() * WORLD_W);
-    const by = Math.floor(215 + rand() * (WORLD_H - 250));
-    const rx = 5 + Math.floor(rand() * 9);
-    const ry = Math.max(3, Math.floor(rx * (0.45 + rand() * 0.55)));
+    const by = Math.floor(430 + rand() * (WORLD_H - 500));
+    const rx = 10 + Math.floor(rand() * 18);
+    const ry = Math.max(6, Math.floor(rx * (0.45 + rand() * 0.55)));
     placeIceLens(world, surface, bx, by, rx, ry);
   }
 
@@ -442,9 +472,9 @@ export function generateLuna(seed: number): GeneratedWorld {
   const junctionX = TUBE_FROM_X;
   const tubeFloors = carveLavaTube(world, rand, TUBE_FROM_X, TUBE_TO_X);
 
-  const rampStartX = 210;
-  const rampStartY = surface[rampStartX] + 2;
-  carveRamp(world, rampStartX, rampStartY, junctionX, tubeFloors[junctionX], 22);
+  const rampStartX = 420;
+  const rampStartY = surface[rampStartX] + 4;
+  carveRamp(world, rampStartX, rampStartY, junctionX, tubeFloors[junctionX], 44);
 
   // Модуль — ПОСЛЕ тоннелей и ДО расчёта точки старта. После тоннелей потому,
   // что `carveColumn` пишет пустоту безусловно и срезал бы корпус, задень его
@@ -452,10 +482,16 @@ export function generateLuna(seed: number): GeneratedWorld {
   // обязан считаться по уже готовому.
   const receiver = placeLandingModule(world, surface);
 
+  // ПОСЛЕ всех прорезаний: тоннель, прошедший через край залежи, оставляет
+  // от неё одиночные ячейки. Крапинка льда — не залежь: её не видно в толще,
+  // выкопать её нельзя осмысленно, а обещание «лёд встречается залежами»
+  // она нарушает. Держит `tests/pixel-world.ts`.
+  removeIceSpecks(world);
+
   // Старт — левее входа в спуск, на нетронутой поверхности.
   // Опора ищется по всей ширине хитбокса: рельеф неровный, и по одной колонке
   // персонаж встал бы наполовину внутри соседнего бугра.
-  const spawnLeft = 110;
+  const spawnLeft = 220;
   let groundY = WORLD_H;
   for (let x = spawnLeft; x < spawnLeft + PLAYER.hitboxW; x++) {
     groundY = Math.min(groundY, findGroundY(world, x));

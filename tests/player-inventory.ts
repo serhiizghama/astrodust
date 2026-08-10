@@ -18,7 +18,7 @@ import {
 import type { Rect } from '../src/geometry';
 import { Digger, Vacuum } from '../src/systems';
 import { Player, Inventory } from '../src/entities';
-import { PLAYER, FIXED_DT, WORLD_SEED, VIEW_W, VIEW_H, DIG, VACUUM } from '../src/config';
+import { PLAYER, FIXED_DT, WORLD_SEED, BASE_VIEW_W, BASE_VIEW_H, DIG, VACUUM } from '../src/config';
 import { aimDirection, actionTarget, ToolModeState } from '../src/core';
 import { check, luna } from './harness';
 import { box, count, settle, pending, quiet } from './fixtures/world';
@@ -326,7 +326,9 @@ const { spawn } = first;
     // Ставится только в пустоту, мир не разрушается.
     {
       const w = box();
-      for (let y = 38; y <= 42; y++) for (let x = 38; x <= 42; x++) w.set(x, y, MAT.ROCK);
+      // Порода на всю область кисти: за её краем нашлась бы пустота,
+      // и высыпание прошло бы мимо проверки.
+      for (let y = 34; y <= 46; y++) for (let x = 34; x <= 46; x++) w.set(x, y, MAT.ROCK);
       const rockBefore = count(w, MAT.ROCK);
       const inv = new Inventory();
       inv.add(MAT.REGOLITH_LOOSE, 50);
@@ -498,7 +500,7 @@ const { spawn } = first;
     // Строка обязана рисоваться при ВЫКЛЮЧЕННОЙ диагностике: инвентарь и счёт —
     // состояние игры, а не инструмент разработчика.
     const drawn: string[] = [];
-    const pixels = new Uint8ClampedArray(VIEW_W * VIEW_H * 4);
+    const pixels = new Uint8ClampedArray(BASE_VIEW_W * BASE_VIEW_H * 4);
     const display = {
       pixels,
       ctx: {
@@ -517,6 +519,8 @@ const { spawn } = first;
         strokeStyle: '',
         lineWidth: 1,
       },
+      width: BASE_VIEW_W,
+      height: BASE_VIEW_H,
       image: {},
       present() {},
     } as unknown as Display;

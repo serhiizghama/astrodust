@@ -1,4 +1,4 @@
-import { VIEW_W, VIEW_H, DIG } from '../config';
+import { BASE_VIEW_W, BASE_VIEW_H, DIG } from '../config';
 import { Display } from './display';
 
 /** Клавиши, которые игра забирает себе — браузер не должен на них реагировать. */
@@ -231,9 +231,13 @@ export class Input {
   private pressed = new Set<string>();
   private released = new Set<string>();
 
-  /** Позиция курсора в координатах буфера кадра. */
-  mouseX = VIEW_W / 2;
-  mouseY = VIEW_H / 2;
+  /**
+   * Позиция курсора в координатах буфера кадра. До первого движения мыши —
+   * середина опорного кадра: настоящий размер известен только после того,
+   * как окно о нём сообщит.
+   */
+  mouseX = BASE_VIEW_W / 2;
+  mouseY = BASE_VIEW_H / 2;
   /** Удерживается ли левая кнопка мыши. */
   mouseLeftHeld = false;
   private mouseLeftPressed = false;
@@ -287,8 +291,8 @@ export class Input {
 
   private onMouseMove = (e: MouseEvent): void => {
     const p = this.display.clientToBuffer(e.clientX, e.clientY);
-    this.mouseX = Math.max(0, Math.min(VIEW_W - 1, p.x));
-    this.mouseY = Math.max(0, Math.min(VIEW_H - 1, p.y));
+    this.mouseX = Math.max(0, Math.min(this.display.width - 1, p.x));
+    this.mouseY = Math.max(0, Math.min(this.display.height - 1, p.y));
     this.aim.note('mouse', this.aimFrozen);
   };
 

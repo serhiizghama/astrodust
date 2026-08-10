@@ -46,7 +46,7 @@ check('Пустота не твёрдая', !world.isSolid(spawn.x, spawn.y));
     p.update(FIXED_DT, asInput(input), world);
     maxDepth = Math.max(maxDepth, p.y);
   }
-  check('Спуск в лавовую трубку проходим', maxDepth > 280, `максимальная глубина y=${maxDepth}`);
+  check('Спуск в лавовую трубку проходим', maxDepth > 560, `максимальная глубина y=${maxDepth}`);
 
   input.right = false;
   input.left = true;
@@ -55,7 +55,7 @@ check('Пустота не твёрдая', !world.isSolid(spawn.x, spawn.y));
     p.update(FIXED_DT, asInput(input), world);
     minY = Math.min(minY, p.y);
   }
-  check('Возврат из пещеры на поверхность возможен', minY < 220, `поднялся до y=${minY}`);
+  check('Возврат из пещеры на поверхность возможен', minY < 440, `поднялся до y=${minY}`);
 }
 
 // --- Лёд и вода ---
@@ -373,8 +373,8 @@ check('Пустота не твёрдая', !world.isSolid(spawn.x, spawn.y));
     // Залежь выходит в объём лавовой трубки: докопаться до неё можно с уже
     // существующего маршрута, а не наугад через всю толщу.
     let atTube = 0;
-    for (let y = 260; y < 360; y++) {
-      for (let x = 470; x <= 930; x++) {
+    for (let y = 520; y < 720; y++) {
+      for (let x = 940; x <= 1860; x++) {
         if (w.get(x, y) !== MAT.ICE) continue;
         if (
           w.get(x - 1, y) === MAT.VACUUM ||

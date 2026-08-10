@@ -16,27 +16,41 @@ import { generateLuna } from '../src/world';
 import { Camera, Renderer } from '../src/render';
 import type { HudState } from '../src/render';
 import { Player } from '../src/entities';
-import { WORLD_SEED, VIEW_W, VIEW_H, VACUUM } from '../src/config';
+import {
+  WORLD_SEED,
+  BASE_VIEW_W,
+  BASE_VIEW_H,
+  MAX_VIEW_W,
+  MAX_VIEW_H,
+  VACUUM,
+} from '../src/config';
 import type { Display } from '../src/core';
 
-const pixels = new Uint8ClampedArray(VIEW_W * VIEW_H * 4);
-for (let i = 3; i < pixels.length; i += 4) pixels[i] = 255;
-
+/**
+ * Размер кадра — величина рантайма, поэтому замеряются оба края диапазона:
+ * опорный кадр и потолок разрешения буфера. Между ними стоимость линейна
+ * по площади, и промежуточные окна ничего нового не показывают.
+ */
 const fakeDisplay = {
-  pixels,
+  pixels: new Uint8ClampedArray(MAX_VIEW_W * MAX_VIEW_H * 4),
   ctx: {
     putImageData() {},
     fillText() {},
     // Строка состояния выравнивает счёт по правому краю и спрашивает ширину
-    // надписи. Моноширинный 8px — примерно 4.8 пикселя на знак.
-    measureText: (s: string) => ({ width: s.length * 4.8 }),
+    // надписи. Моноширинный 16px — примерно 9.6 пикселя на знак.
+    measureText: (s: string) => ({ width: s.length * 9.6 }),
     font: '',
     textBaseline: '',
     fillStyle: '',
   },
+  width: BASE_VIEW_W,
+  height: BASE_VIEW_H,
   image: {},
   present() {},
 } as unknown as Display;
+
+const view = fakeDisplay as unknown as { width: number; height: number };
+for (let i = 3; i < fakeDisplay.pixels.length; i += 4) fakeDisplay.pixels[i] = 255;
 
 const { world, spawn, surface } = generateLuna(WORLD_SEED);
 const renderer = new Renderer(fakeDisplay, world, surface, WORLD_SEED);
@@ -67,6 +81,7 @@ const hud: HudState = {
 /** Средняя стоимость кадра в миллисекундах для заданного положения камеры. */
 function measure(label: string, targetX: number, targetY: number): void {
   const camera = new Camera(world.width, world.height);
+  camera.setViewport(view.width, view.height);
   camera.snapTo(targetX, targetY);
 
   // Прогрев: без него в замер попадает компиляция горячего цикла.
@@ -97,12 +112,12 @@ function measure(label: string, targetX: number, targetY: number): void {
 
   // Доля неба в кадре — по ней видно, что именно оплачивается.
   let skyPixels = 0;
-  for (let sy = 0; sy < VIEW_H; sy++) {
-    for (let sx = 0; sx < VIEW_W; sx++) {
+  for (let sy = 0; sy < view.height; sy++) {
+    for (let sx = 0; sx < view.width; sx++) {
       if (camera.y + sy < surface[camera.x + sx]!) skyPixels++;
     }
   }
-  const skyShare = ((skyPixels / (VIEW_W * VIEW_H)) * 100).toFixed(0);
+  const skyShare = ((skyPixels / (view.width * view.height)) * 100).toFixed(0);
 
   console.log(
     `${label.padEnd(28)} ${perFrame.toFixed(3)} мс/кадр` +
@@ -111,6 +126,15 @@ function measure(label: string, targetX: number, targetY: number): void {
 }
 
 console.log('Стоимость кадра (меньше — лучше)\n');
-measure('Максимум неба', 500, 0);
-measure('Поверхность (точка старта)', spawn.x, spawn.y);
-measure('Лавовая трубка', 700, 310);
+for (const [w, h, name] of [
+  [BASE_VIEW_W, BASE_VIEW_H, 'опорный кадр'],
+  [MAX_VIEW_W, MAX_VIEW_H, 'потолок буфера'],
+] as const) {
+  view.width = w;
+  view.height = h;
+  console.log(`${name} ${w}×${h}`);
+  measure('  Максимум неба', 1000, 0);
+  measure('  Поверхность (точка старта)', spawn.x, spawn.y);
+  measure('  Лавовая трубка', 1400, 620);
+  console.log('');
+}

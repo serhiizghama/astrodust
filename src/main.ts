@@ -44,6 +44,10 @@ const overlay = new ResearchOverlay();
 const player = new Player(spawn.x, spawn.y, research.tuning);
 
 const camera = new Camera(world.width, world.height);
+// Размер кадра — производная окна, поэтому камера узнаёт его от канваса,
+// а не от константы. Подписка срабатывает сразу же, до `snapTo`: без размера
+// камера не может ограничить кадр границами мира.
+display.onViewportChange((w, h) => camera.setViewport(w, h));
 camera.snapTo(player.centerX, player.centerY);
 
 const landingModule = new LandingModule(receiver, research);

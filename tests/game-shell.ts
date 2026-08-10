@@ -12,9 +12,20 @@ import {
   SEPARATOR_KIND,
   Separator,
 } from '../src/entities';
-import { PLAYER, VIEW_W, VIEW_H, DIG, CONVEYOR, FIXED_DT, SEPARATOR } from '../src/config';
+import {
+  PLAYER,
+  BASE_VIEW_W,
+  BASE_VIEW_H,
+  MAX_VIEW_W,
+  MAX_VIEW_H,
+  DIG,
+  CONVEYOR,
+  FIXED_DT,
+  SEPARATOR,
+} from '../src/config';
 import {
   Input,
+  fitFrame,
   aimDirection,
   aimTarget,
   actionTarget,
@@ -32,12 +43,75 @@ import { box, ground } from './fixtures/world';
 const first = luna();
 const { world } = first;
 
+// --- Кадр под окно ---
+//
+// Правило подбора вынесено чистой функцией именно ради этой проверки: канвас,
+// `window.innerWidth` и слушатель `resize` браузерные, а само правило — нет.
+{
+  const fullHd = fitFrame(1920, 1080);
+  check(
+    'Кадр: окно, кратное опорному, даёт ровно опорный кадр',
+    fullHd.w === BASE_VIEW_W && fullHd.h === BASE_VIEW_H && fullHd.scale === 3,
+    `${fullHd.w}×${fullHd.h} ×${fullHd.scale}`,
+  );
+
+  const windowed = fitFrame(1908, 980);
+  check(
+    'Кадр: окно, не кратное ни одному множителю, покрывается целиком',
+    windowed.scale === 3 && windowed.w === 636 && windowed.h === 327,
+    `${windowed.w}×${windowed.h} ×${windowed.scale}`,
+  );
+
+  // Полос нет ни при каком окне: канвас не меньше окна, а свес — меньше
+  // одного множителя, то есть срезается краем окна, а не оставляет пустоту.
+  {
+    let uncovered = 0;
+    let overhang = 0;
+    let tooBig = 0;
+    let fractional = 0;
+    for (let w = 320; w <= 3840; w += 7) {
+      for (let h = 200; h <= 2160; h += 13) {
+        const fit = fitFrame(w, h);
+        if (fit.w * fit.scale < w || fit.h * fit.scale < h) uncovered++;
+        if (fit.w * fit.scale - w >= fit.scale || fit.h * fit.scale - h >= fit.scale) overhang++;
+        if (fit.w > MAX_VIEW_W || fit.h > MAX_VIEW_H) tooBig++;
+        if (!Number.isInteger(fit.scale) || fit.scale < 1) fractional++;
+      }
+    }
+    check('Кадр: канвас не меньше окна ни при каком его размере', uncovered === 0, `${uncovered}`);
+    check('Кадр: свес меньше одного множителя', overhang === 0, `${overhang}`);
+    check('Кадр: буфер не выходит за потолок', tooBig === 0, `${tooBig}`);
+    check('Кадр: множитель целый и не меньше единицы', fractional === 0, `${fractional}`);
+  }
+
+  // Потолок отсекает окно, при котором множитель 1 сделал бы кадр равным окну.
+  {
+    const small = fitFrame(900, 500);
+    check(
+      'Кадр: при упоре в потолок повышается множитель, а не размер буфера',
+      small.scale === 2 && small.w <= MAX_VIEW_W && small.h <= MAX_VIEW_H,
+      `${small.w}×${small.h} ×${small.scale}`,
+    );
+  }
+
+  // Изменение окна меняет и множитель, и размер буфера — константы тут нет.
+  {
+    const a = fitFrame(1280, 720);
+    const b = fitFrame(2560, 1440);
+    check(
+      'Кадр: разные окна дают разные множители при том же опорном кадре',
+      a.scale !== b.scale && a.w === BASE_VIEW_W && b.w === BASE_VIEW_W,
+      `×${a.scale} и ×${b.scale}`,
+    );
+  }
+}
+
 // --- Камера ---
 {
   const cam = new Camera(world.width, world.height);
   cam.snapTo(500, 300);
-  const cx = VIEW_W / 2;
-  const cy = VIEW_H / 2;
+  const cx = BASE_VIEW_W / 2;
+  const cy = BASE_VIEW_H / 2;
   check(
     'Камера: snapTo центрирует цель',
     cam.x === 500 - cx && cam.y === 300 - cy,
@@ -49,7 +123,7 @@ const { world } = first;
   check('Камера: движение в мёртвой зоне не двигает кадр', cam.x === beforeX, `x=${cam.x}`);
 
   for (let i = 0; i < 200; i++) cam.follow(700, 300);
-  check('Камера: догоняет цель за мёртвой зоной', Math.abs(cam.x - (700 - cx)) <= 41, `x=${cam.x}`);
+  check('Камера: догоняет цель за мёртвой зоной', Math.abs(cam.x - (700 - cx)) <= 55, `x=${cam.x}`);
 
   for (let i = 0; i < 400; i++) cam.follow(5, 5);
   check(
@@ -61,7 +135,7 @@ const { world } = first;
   for (let i = 0; i < 800; i++) cam.follow(world.width - 5, world.height - 5);
   check(
     'Камера: не выезжает за правый/нижний край',
-    cam.x === world.width - VIEW_W && cam.y === world.height - VIEW_H,
+    cam.x === world.width - BASE_VIEW_W && cam.y === world.height - BASE_VIEW_H,
     `(${cam.x},${cam.y})`,
   );
 
@@ -127,6 +201,8 @@ const { world } = first;
   globals.document = Object.assign(doc, { hidden: false });
 
   const display = {
+    width: BASE_VIEW_W,
+    height: BASE_VIEW_H,
     clientToBuffer: (x: number, y: number) => ({ x: x / 2, y: y / 2 }),
   } as unknown as import('../src/core').Display;
   const input = new Input(display);

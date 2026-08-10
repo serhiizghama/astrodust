@@ -19,8 +19,8 @@ import { Builder } from '../src/systems';
 import type { HudState } from '../src/render';
 import {
   WORLD_SEED,
-  VIEW_W,
-  VIEW_H,
+  BASE_VIEW_W,
+  BASE_VIEW_H,
   VACUUM,
   MODULE,
   SEPARATOR,
@@ -70,7 +70,7 @@ function encodePng(rgba: Uint8ClampedArray, scale: number, crop: Crop): Uint8Arr
   let p = 0;
   for (let y = 0; y < sh; y++) {
     raw[p++] = 0;
-    const srcRow = (crop.y + ((y / scale) | 0)) * VIEW_W;
+    const srcRow = (crop.y + ((y / scale) | 0)) * BASE_VIEW_W;
     for (let x = 0; x < sw; x++) {
       const src = (srcRow + crop.x + ((x / scale) | 0)) * 4;
       raw[p++] = rgba[src]!;
@@ -102,7 +102,7 @@ function encodePng(rgba: Uint8ClampedArray, scale: number, crop: Crop): Uint8Arr
   return png;
 }
 
-const pixels = new Uint8ClampedArray(VIEW_W * VIEW_H * 4);
+const pixels = new Uint8ClampedArray(BASE_VIEW_W * BASE_VIEW_H * 4);
 for (let i = 3; i < pixels.length; i += 4) pixels[i] = 255;
 
 const fakeDisplay = {
@@ -117,6 +117,8 @@ const fakeDisplay = {
     textBaseline: '',
     fillStyle: '',
   },
+  width: BASE_VIEW_W,
+  height: BASE_VIEW_H,
   image: {},
   present() {},
 } as unknown as Display;
@@ -127,7 +129,7 @@ const renderer = new Renderer(fakeDisplay, world, surface, WORLD_SEED);
 const suffix = process.argv[2] ? `-${process.argv[2]}` : '';
 mkdirSync('shots', { recursive: true });
 
-const FULL: Crop = { x: 0, y: 0, w: VIEW_W, h: VIEW_H };
+const FULL: Crop = { x: 0, y: 0, w: BASE_VIEW_W, h: BASE_VIEW_H };
 
 /**
  * Точки съёмки. Кроме общих планов — увеличенные вырезки: детали вроде диска
@@ -135,29 +137,29 @@ const FULL: Crop = { x: 0, y: 0, w: VIEW_W, h: VIEW_H };
  * по числам нельзя.
  */
 const SHOTS: Array<{ name: string; camX: number; camY: number; scale?: number; crop?: Crop }> = [
-  { name: 'sky', camX: 500, camY: 0 },
+  { name: 'sky', camX: 1000, camY: 0 },
   { name: 'surface', camX: spawn.x, camY: spawn.y },
   // Посадочный модуль: единственное рукотворное тело в мире, и единственное
   // место, где проверяется, читается ли оно рукотворным. Камера чуть выше
   // площадки — иначе стенки уходят за нижний край.
-  { name: 'module', camX: MODULE.x + MODULE.width / 2, camY: spawn.y - 20 },
+  { name: 'module', camX: MODULE.x + MODULE.width / 2, camY: spawn.y - 40 },
   {
     name: 'zoom-module',
     camX: MODULE.x + MODULE.width / 2,
-    camY: spawn.y - 20,
+    camY: spawn.y - 40,
     scale: 6,
     // Камера у левого края мира упирается в кламп и стоит на x=0, поэтому
     // экранная колонка корпуса совпадает с мировой.
-    crop: { x: 50, y: 96, w: 56, h: 56 },
+    crop: { x: 100, y: 192, w: 112, h: 112 },
   },
-  { name: 'horizon', camX: 780, camY: 60 },
-  { name: 'cave', camX: 700, camY: 310 },
+  { name: 'horizon', camX: 1560, camY: 120 },
+  { name: 'cave', camX: 1400, camY: 620 },
   // Тонирование судится глазом и только на увеличении: зерно, кромка хода
   // и дизеринг затенения при ×3 сливаются в общий тон, а вопрос «читается ли
   // это породой или помехами» решается видом отдельных пикселей.
-  { name: 'zoom-cave', camX: 700, camY: 310, scale: 8, crop: { x: 60, y: 40, w: 60, h: 50 } },
-  { name: 'zoom-earth', camX: 500, camY: 0, scale: 10, crop: { x: 226, y: 22, w: 44, h: 42 } },
-  { name: 'zoom-ridge', camX: 500, camY: 0, scale: 6, crop: { x: 80, y: 74, w: 160, h: 72 } },
+  { name: 'zoom-cave', camX: 1400, camY: 620, scale: 8, crop: { x: 120, y: 80, w: 60, h: 50 } },
+  { name: 'zoom-earth', camX: 1000, camY: 0, scale: 10, crop: { x: 452, y: 44, w: 88, h: 84 } },
+  { name: 'zoom-ridge', camX: 1000, camY: 0, scale: 6, crop: { x: 160, y: 148, w: 320, h: 144 } },
 ];
 
 /**
@@ -188,8 +190,8 @@ function countColor(color: number): number {
  */
 function countMaterial(camera: Camera, material: number): number {
   let n = 0;
-  for (let sy = 0; sy < VIEW_H; sy++) {
-    for (let sx = 0; sx < VIEW_W; sx++) {
+  for (let sy = 0; sy < BASE_VIEW_H; sy++) {
+    for (let sx = 0; sx < BASE_VIEW_W; sx++) {
       if (world.get(camera.x + sx, camera.y + sy) === material) n++;
     }
   }
@@ -232,12 +234,12 @@ for (const shot of SHOTS) {
   const camera = new Camera(world.width, world.height);
   camera.snapTo(shot.camX, shot.camY);
   // Персонаж — в центре кадра, на видимой опоре под ним, если она есть.
-  const player = new Player(camera.x + VIEW_W / 2, camera.y + VIEW_H / 2);
+  const player = new Player(camera.x + BASE_VIEW_W / 2, camera.y + BASE_VIEW_H / 2);
   renderer.render({
     camera: camera,
     player: player,
-    crosshairX: VIEW_W / 2 + 20,
-    crosshairY: VIEW_H / 2,
+    crosshairX: BASE_VIEW_W / 2 + 20,
+    crosshairY: BASE_VIEW_H / 2,
     crosshairInReach: true,
     hud: hud,
     fps: 0,
@@ -299,8 +301,8 @@ for (const shot of SHOTS) {
   renderer.render({
     camera: camera,
     player: player,
-    crosshairX: VIEW_W / 2,
-    crosshairY: VIEW_H / 2,
+    crosshairX: BASE_VIEW_W / 2,
+    crosshairY: BASE_VIEW_H / 2,
     crosshairInReach: true,
     hud: {
       ...hud,
@@ -408,8 +410,8 @@ for (const shot of SHOTS) {
   renderer.render({
     camera: camera,
     player: player,
-    crosshairX: VIEW_W / 2,
-    crosshairY: VIEW_H / 2,
+    crosshairX: BASE_VIEW_W / 2,
+    crosshairY: BASE_VIEW_H / 2,
     crosshairInReach: true,
     hud: hudBelt,
     fps: 0,
@@ -425,8 +427,8 @@ for (const shot of SHOTS) {
   renderer.render({
     camera: camera,
     player: player,
-    crosshairX: VIEW_W / 2,
-    crosshairY: VIEW_H / 2,
+    crosshairX: BASE_VIEW_W / 2,
+    crosshairY: BASE_VIEW_H / 2,
     crosshairInReach: true,
     hud: hudBelt,
     fps: 0,

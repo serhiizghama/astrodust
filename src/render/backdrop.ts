@@ -1,4 +1,4 @@
-import { VIEW_W, VIEW_H, BACKDROP, WORLD_W } from '../config';
+import { BASE_VIEW_W, BASE_VIEW_H, MAX_VIEW_W, BACKDROP, WORLD_W } from '../config';
 import type { BackdropSpec, WorldProfile } from '../world';
 import { mulberry32, makeNoise } from '../world';
 import { RAMP } from '../palette';
@@ -24,9 +24,10 @@ import { threshold } from './dither';
 const RIM_SLOPE_SPAN = 3;
 
 /**
- * Поверхность соседнего тела в клетках 2×2 — форма диска считается отдельно.
- * Крупные клетки не небрежность: на диске в 22 пикселя мелкий рисунок
- * превращается в шум, а блоки 2×2 читаются как материки.
+ * Поверхность соседнего тела клетками — форма диска считается отдельно.
+ * Размер клетки выводится из диаметра диска: на нём умещается ровно 11 клеток
+ * по стороне. Крупные клетки не небрежность — рисунок в один пиксель на диске
+ * такого размера превращается в шум, а клетки читаются как материки.
  *
  * `O` океан, `g` суша, `G` светлая суша, `c` облака и лёд, `.` — океан по
  * умолчанию (нужен только чтобы рисунок было видно глазом в исходнике).
@@ -107,7 +108,25 @@ export class Backdrop {
    * Заполняется проходом по колонкам и служит клипом для точек: одно чтение
    * на точку вместо повторного разбора слоёв.
    */
-  private readonly skyFloor = new Int16Array(VIEW_W);
+  private readonly skyFloor = new Int16Array(MAX_VIEW_W);
+
+  /**
+   * Размер кадра. Опорный до первого `setViewport`: задник обязан быть
+   * работоспособным до того, как окно сообщит свой размер.
+   */
+  private viewW = BASE_VIEW_W;
+  private viewH = BASE_VIEW_H;
+
+  /**
+   * Высота поля звёзд в строках.
+   *
+   * Выведена, а не назначена: окно неба — это самая высокая точка поверхности
+   * мира плюс ход поля от вертикального параллакса. Поле ниже окна оборвалось
+   * бы видимой границей у верха кадра, а константа, взятая с запасом для
+   * одного размера кадра, для другого окажется меньше нужного.
+   * Держит `tests/space-backdrop.ts`.
+   */
+  private readonly fieldH: number;
 
   /** Черновики на кадр — чтобы не выделять память в цикле отрисовки. */
   private readonly tops: Int32Array;
@@ -128,6 +147,10 @@ export class Backdrop {
     this.skyB = profile.skyColor & 0xff;
     this.rimWarm = spec.rimWarm;
     this.rimCold = spec.rimCold;
+
+    let skyWindow = 0;
+    for (let x = 0; x < surface.length; x++) if (surface[x]! > skyWindow) skyWindow = surface[x]!;
+    this.fieldH = skyWindow + Math.round(BACKDROP.vertParallaxLimit * spec.skyParallax) + 1;
 
     // Отдельный поток случайных чисел: задник не должен сдвигать генерацию
     // рельефа, иначе добавление слоя перекроило бы весь мир.
@@ -162,11 +185,22 @@ export class Backdrop {
     };
   }
 
+  /**
+   * Размер кадра меняется вместе с окном. Ставится ДО `maxSurfaceInView`
+   * и `draw` — обе читают его, а не получают параметром: между ними размер
+   * измениться не может, а протаскивать его двумя аргументами через шесть
+   * методов внутреннего прохода — шесть мест, где его можно перепутать.
+   */
+  setViewport(w: number, h: number): void {
+    this.viewW = w;
+    this.viewH = h;
+  }
+
   /** Наибольшая высота твёрдого верха в видимой полосе колонок. */
   maxSurfaceInView(camX: number): number {
     let max = 0;
     const surface = this.surface;
-    for (let sx = 0; sx < VIEW_W; sx++) {
+    for (let sx = 0; sx < this.viewW; sx++) {
       const h = surface[camX + sx]!;
       if (h > max) max = h;
     }
@@ -238,7 +272,7 @@ export class Backdrop {
   } {
     const spec = this.spec;
     const fieldW = WORLD_W;
-    const fieldH = BACKDROP.starFieldH;
+    const fieldH = this.fieldH;
     const xs: number[] = [];
     const ys: number[] = [];
     const cs: number[] = [];
@@ -261,15 +295,19 @@ export class Backdrop {
 
     const mw = spec.milkyWay;
     if (mw) {
-      const bandCenter = (x: number): number => mw.centerY + (x - fieldW / 2) * mw.tilt;
+      // Доли поля переводятся в строки здесь и больше нигде: ниже полоса
+      // считается в строках, как и звёзды.
+      const mwCenter = mw.centerY * fieldH;
+      const mwHalf = mw.halfWidth * fieldH;
+      const bandCenter = (x: number): number => mwCenter + (x - fieldW / 2) * mw.tilt;
 
       // Сгущение звёзд в полосе.
-      const extra = Math.round(baseCount * (mw.densityBoost - 1) * ((2 * mw.halfWidth) / fieldH));
+      const extra = Math.round(baseCount * (mw.densityBoost - 1) * ((2 * mwHalf) / fieldH));
       for (let i = 0; i < extra; i++) {
         const x = Math.floor(rand() * fieldW);
         // Сумма двух равномерных даёт треугольное распределение: к середине
         // полосы гуще, к краям реже — без резкой границы.
-        const off = (rand() + rand() - 1) * mw.halfWidth;
+        const off = (rand() + rand() - 1) * mwHalf;
         const y = Math.round(bandCenter(x) + off);
         if (y < 0 || y >= fieldH) continue;
         xs.push(x);
@@ -292,11 +330,11 @@ export class Backdrop {
         const t = x / fieldW;
         const density = 0.34 + 0.26 * clump(t);
         const laneOffset = lane(t) * 0.42;
-        const from = Math.max(0, Math.ceil(cy - mw.halfWidth));
-        const to = Math.min(fieldH, Math.floor(cy + mw.halfWidth));
+        const from = Math.max(0, Math.ceil(cy - mwHalf));
+        const to = Math.min(fieldH, Math.floor(cy + mwHalf));
 
         for (let y = from; y < to; y++) {
-          const rel = (y - cy) / mw.halfWidth;
+          const rel = (y - cy) / mwHalf;
           let intensity = (1 - rel * rel) * density;
           if (Math.abs(rel - laneOffset) < 0.2) intensity *= 0.22;
           if (threshold(x, y) < intensity) {
@@ -352,9 +390,9 @@ export class Backdrop {
       offY[li] = Math.round(vertBase * this.layerParallax[li]!);
     }
 
-    for (let sx = 0; sx < VIEW_W; sx++) {
+    for (let sx = 0; sx < this.viewW; sx++) {
       let bottom = surface[camX + sx]! - camY;
-      if (bottom > VIEW_H) bottom = VIEW_H;
+      if (bottom > this.viewH) bottom = this.viewH;
       if (bottom <= 0) {
         skyFloor[sx] = 0;
         continue;
@@ -382,7 +420,7 @@ export class Backdrop {
 
         // Кромка ставится только там, где слой действительно выходит на
         // поверхность: срезанный более близким слоем верх подсвечивать нечем.
-        if (rawTops[li] === tops[li] && from === tops[li] && from < VIEW_H) {
+        if (rawTops[li] === tops[li] && from === tops[li] && from < this.viewH) {
           this.drawRim(px, sx, from, li, offX[li]!, mask);
         }
       }
@@ -425,7 +463,7 @@ export class Backdrop {
     const sunOnLeft = this.spec.sunDirX < 0;
     const color = facesLeft === sunOnLeft ? this.rimWarm : this.rimCold;
 
-    const i = (y * VIEW_W + sx) * 4;
+    const i = (y * this.viewW + sx) * 4;
     px[i] = (color >> 16) & 0xff;
     px[i + 1] = (color >> 8) & 0xff;
     px[i + 2] = color & 0xff;
@@ -442,7 +480,7 @@ export class Backdrop {
     const ys = this.pointY;
     const cs = this.pointColor;
     const skyFloor = this.skyFloor;
-    const right = offX + VIEW_W;
+    const right = offX + this.viewW;
 
     // Видимый срез вместо прохода по всему списку.
     let i = lowerBound(xs, offX);
@@ -452,7 +490,7 @@ export class Backdrop {
       const sx = xs[i]! - offX;
       if (sy >= skyFloor[sx]!) continue;
       const c = cs[i]!;
-      const at = (sy * VIEW_W + sx) * 4;
+      const at = (sy * this.viewW + sx) * 4;
       px[at] = (c >> 16) & 0xff;
       px[at + 1] = (c >> 8) & 0xff;
       px[at + 2] = c & 0xff;
@@ -471,15 +509,15 @@ export class Backdrop {
 
     for (let y = 0; y < size; y++) {
       const sy = originY + y;
-      if (sy < 0 || sy >= VIEW_H) continue;
+      if (sy < 0 || sy >= this.viewH) continue;
       for (let x = 0; x < size; x++) {
         const index = pixels[y * size + x]!;
         if (index === 0) continue;
         const sx = originX + x;
-        if (sx < 0 || sx >= VIEW_W) continue;
+        if (sx < 0 || sx >= this.viewW) continue;
         if (sy >= skyFloor[sx]!) continue;
         const c = COMPANION_PALETTE[index]!;
-        const at = (sy * VIEW_W + sx) * 4;
+        const at = (sy * this.viewW + sx) * 4;
         px[at] = (c >> 16) & 0xff;
         px[at + 1] = (c >> 8) & 0xff;
         px[at + 2] = c & 0xff;
@@ -499,12 +537,12 @@ export class Backdrop {
     const phase = time % o.periodSec;
     if (phase >= o.crossSec) return;
 
-    const sx = Math.round(-2 + (phase / o.crossSec) * (VIEW_W + 4));
+    const sx = Math.round(-2 + (phase / o.crossSec) * (this.viewW + 4));
     const sy = o.y - offY;
-    if (sx < 0 || sx >= VIEW_W || sy < 0 || sy >= VIEW_H) return;
+    if (sx < 0 || sx >= this.viewW || sy < 0 || sy >= this.viewH) return;
     if (sy >= this.skyFloor[sx]!) return;
 
-    const at = (sy * VIEW_W + sx) * 4;
+    const at = (sy * this.viewW + sx) * 4;
     px[at] = (o.color >> 16) & 0xff;
     px[at + 1] = (o.color >> 8) & 0xff;
     px[at + 2] = o.color & 0xff;
@@ -519,8 +557,8 @@ export class Backdrop {
     g: number,
     b: number,
   ): void {
-    let i = (from * VIEW_W + sx) * 4;
-    const stride = VIEW_W * 4;
+    let i = (from * this.viewW + sx) * 4;
+    const stride = this.viewW * 4;
     for (let y = from; y < to; y++, i += stride) {
       px[i] = r;
       px[i + 1] = g;
@@ -553,6 +591,11 @@ function buildCompanion(): Uint8Array {
   const out = new Uint8Array(size * size);
   const radius = size / 2 - 1;
   const center = (size - 1) / 2;
+  // Клетка рисунка выводится из диаметра, а не зашита сдвигом: диск задан
+  // размером в конфиге, а рисунок — таблицей, и при их расхождении половина
+  // диска залилась бы последним столбцом таблицы.
+  const cellW = size / COMPANION_PATTERN[0]!.length;
+  const cellH = size / COMPANION_PATTERN.length;
 
   // Солнце слева, поэтому затенён правый край. Порог смещён от центра, но
   // не к самому лимбу: это растущий гиббоид — фаза должна читаться, а тонкая
@@ -565,8 +608,8 @@ function buildCompanion(): Uint8Array {
       const dx = x - center;
       if (dx * dx + dy * dy > radius * radius) continue;
 
-      const px = Math.min(COMPANION_PATTERN[0]!.length - 1, x >> 1);
-      const py = Math.min(COMPANION_PATTERN.length - 1, y >> 1);
+      const px = Math.min(COMPANION_PATTERN[0]!.length - 1, Math.floor(x / cellW));
+      const py = Math.min(COMPANION_PATTERN.length - 1, Math.floor(y / cellH));
       let index = PATTERN_TO_INDEX[COMPANION_PATTERN[py]![px]!] ?? 3;
 
       // Терминатор с дизерингом: резкая граница на диске в 20 пикселей

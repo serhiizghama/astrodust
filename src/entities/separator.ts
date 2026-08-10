@@ -143,13 +143,21 @@ export class Separator extends Building {
     // с составом и потеряла бы разницу между «выдано» и «осталось внутри».
     if (free.length < SEPARATOR.batch) return false;
 
-    const iridiumAt = free[free.length >> 1]!;
-    let slag = SEPARATOR.batch - 1;
-    world.set(iridiumAt, y, MAT.IRIDIUM);
-    for (const x of free) {
-      if (x === iridiumAt || slag === 0) continue;
-      world.set(x, y, MAT.SLAG);
-      slag--;
+    // Иридий выкладывается в середине окна: у краёв он скатился бы по откосу
+    // кучи мимо ленты, подведённой под машину.
+    const middle = free.length >> 1;
+    const half = SEPARATOR.iridium >> 1;
+    let iridium = SEPARATOR.iridium;
+    let slag = SEPARATOR.batch - SEPARATOR.iridium;
+    for (let i = 0; i < free.length; i++) {
+      const x = free[i]!;
+      if (iridium > 0 && i >= middle - half && i < middle - half + SEPARATOR.iridium) {
+        world.set(x, y, MAT.IRIDIUM);
+        iridium--;
+      } else if (slag > 0) {
+        world.set(x, y, MAT.SLAG);
+        slag--;
+      }
     }
     return true;
   }
@@ -164,8 +172,8 @@ export class Separator extends Building {
     for (let i = 0; i < this.buffer; i++) out.push(MAT.PULP);
     if (this.timer > 0) for (let i = 0; i < SEPARATOR.batch; i++) out.push(MAT.PULP);
     if (this.pending) {
-      out.push(MAT.IRIDIUM);
-      for (let i = 1; i < SEPARATOR.batch; i++) out.push(MAT.SLAG);
+      for (let i = 0; i < SEPARATOR.iridium; i++) out.push(MAT.IRIDIUM);
+      for (let i = SEPARATOR.iridium; i < SEPARATOR.batch; i++) out.push(MAT.SLAG);
     }
     return out;
   }

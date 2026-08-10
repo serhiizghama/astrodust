@@ -23,8 +23,8 @@ import {
   PLAYER,
   FIXED_DT,
   WORLD_SEED,
-  VIEW_W,
-  VIEW_H,
+  BASE_VIEW_W,
+  BASE_VIEW_H,
   SEPARATOR,
   CONVEYOR,
   SIM_HZ,
@@ -76,9 +76,13 @@ const first = luna();
   }
 
   const SZ = CONVEYOR.size;
-  /** Координаты клетки сетки секций, свободной от пола в песочнице. */
-  const SECTION_X0 = 20;
-  const SECTION_Y = 28;
+  /**
+   * Координаты клетки сетки секций, свободной от пола в песочнице.
+   * Инвариант: кратны стороне секции — постановка выравнивает цель по сетке,
+   * и с некратного угла лента ложится не туда, куда её просили.
+   */
+  const SECTION_X0 = 3 * CONVEYOR.size;
+  const SECTION_Y = 3 * CONVEYOR.size;
 
   /** Ставит секцию, целясь в её левый верхний угол. */
   function lay(
@@ -292,14 +296,14 @@ const first = luna();
     const registry = new BuildingRegistry();
     // Ряд ленты кратен размеру секции: выравнивание касается обеих осей,
     // и произвольная строка притянулась бы к ближайшей клетке сетки.
-    const y0 = 56;
+    const y0 = 6 * SZ;
     const cargoRow = y0 - 1;
-    const gapAt = 60;
+    const gapAt = 8 * SZ;
     module.credits = CONVEYOR.sectionCost * 100;
-    for (let x = 12; x < 100; x += SZ) {
+    for (let x = 2 * SZ; x < 13 * SZ; x += SZ) {
       if (x !== gapAt) lay(w, registry, module, CONVEYOR_RIGHT_KIND, x, y0);
     }
-    for (let i = 0; i < 4; i++) w.set(16 + i * 3, cargoRow, MAT.REGOLITH_LOOSE);
+    for (let i = 0; i < 4; i++) w.set(3 * SZ + i * 3, cargoRow, MAT.REGOLITH_LOOSE);
     const total = count(w, MAT.REGOLITH_LOOSE);
 
     run(w, STEP * 120);
@@ -325,7 +329,7 @@ const first = luna();
     }
     const placed = lay(w, registry, module, CONVEYOR_RIGHT_KIND, gapAt, y0);
     const fresh = 3;
-    for (let i = 0; i < fresh; i++) w.set(20 + i * 3, cargoRow, MAT.REGOLITH_LOOSE);
+    for (let i = 0; i < fresh; i++) w.set(3 * SZ + i * 3, cargoRow, MAT.REGOLITH_LOOSE);
 
     run(w, STEP * 120);
     let through = 0;
@@ -748,7 +752,7 @@ const first = luna();
   // --- Кадр: бегущая полоса ---
 
   {
-    const pixels = new Uint8ClampedArray(VIEW_W * VIEW_H * 4);
+    const pixels = new Uint8ClampedArray(BASE_VIEW_W * BASE_VIEW_H * 4);
     const display = {
       pixels,
       ctx: {
@@ -759,6 +763,8 @@ const first = luna();
         textBaseline: '',
         fillStyle: '',
       },
+      width: BASE_VIEW_W,
+      height: BASE_VIEW_H,
       image: {},
       present() {},
     } as unknown as Display;
@@ -781,8 +787,8 @@ const first = luna();
 
     function pattern(row: number): boolean[] {
       const out: boolean[] = [];
-      for (let sx = 0; sx < VIEW_W; sx++) {
-        const i = (row * VIEW_W + sx) * 4;
+      for (let sx = 0; sx < BASE_VIEW_W; sx++) {
+        const i = (row * BASE_VIEW_W + sx) * 4;
         out.push(pixels[i] === stripeR && pixels[i + 1] === stripeG && pixels[i + 2] === stripeB);
       }
       return out;
@@ -807,7 +813,7 @@ const first = luna();
     const bodyColor = MATERIALS[MAT.CONVEYOR_RIGHT]!.color;
     let body = 0;
     for (let sx = 20; sx < 150; sx++) {
-      const i = (rowRight * VIEW_W + sx) * 4;
+      const i = (rowRight * BASE_VIEW_W + sx) * 4;
       if (pixels[i] === ((bodyColor >> 16) & 0xff)) body++;
     }
     const stripes = right0.slice(20, 150).filter(Boolean).length;
@@ -908,32 +914,43 @@ const first = luna();
 
   {
     // Сквозной прогон: машина выдаёт продукт, он падает на ленту ПОД ней
-    // и уезжает к приёмнику. Внутрь выпускного окна секция 4×4 не помещается —
-    // окно шириной 6, и выровненный квадрат попадает туда лишь при совпадении
-    // координат, — поэтому лента идёт под машиной, а машина стоит на пьедестале.
+    // и уезжает к приёмнику. Внутрь выпускного окна секция не помещается —
+    // окно уже двух секций, и выровненный квадрат попадает туда лишь при
+    // совпадении координат, — поэтому лента идёт под машиной, а машина стоит
+    // на пьедестале.
     //
     //   ▓▓▓▓▓▓▓▓▓▓▓▓        пульпа на приёмной грани
     //   ▓░░░░░░░░░░▓
     //   ▓▓▓      ▓▓▓        выпускное окно
     //   ═══      ░░░        пьедестал под левой ногой, справа проход
     //   ▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶▶  лента идёт под машиной к приёмнику
-    const w = sandbox(220, 96);
+    const w = sandbox(440, 192);
     const registry = new BuildingRegistry();
-    const module = new LandingModule({ x: 186, y: 84, w: 10, h: 8 });
+    const ZONE = { x: 372, y: 168, w: 20, h: 16 };
+    const module = new LandingModule(ZONE);
     module.credits = SEPARATOR.cost + CONVEYOR.sectionCost * 100;
 
-    // Лента: секции по сетке, верхний ряд 88, груз едет по строке 87.
-    const beltTop = 88;
-    for (let x = 28; x <= 192; x += SZ) lay(w, registry, module, CONVEYOR_RIGHT_KIND, x, beltTop);
+    // Лента: секции по сетке, груз едет по строке над её верхним рядом.
+    const beltTop = 22 * SZ;
+    const cargoRow = beltTop - 1;
+    const beltFrom = 7 * SZ;
+    const beltTo = 48 * SZ;
+    for (let x = beltFrom; x <= beltTo; x += SZ) {
+      lay(w, registry, module, CONVEYOR_RIGHT_KIND, x, beltTop);
+    }
     // Упор в конце: очередь встаёт внутри зоны приёмника, а не сыплется мимо.
-    w.set(196, 87, MAT.ROCK);
-    w.set(196, 86, MAT.ROCK);
+    const stopX = ZONE.x + ZONE.w;
+    w.set(stopX, cargoRow, MAT.ROCK);
+    w.set(stopX, cargoRow - 1, MAT.ROCK);
 
     // Машина: её ноги кончаются на ряд ВЫШЕ строки груза, иначе продукт упёрся
     // бы в собственную ногу и никуда не поехал.
-    const bx = 40;
-    const by = beltTop - 1 - SEPARATOR.height;
-    for (let dx = 0; dx < 3; dx++) w.set(bx + dx, by + SEPARATOR.height, MAT.ROCK);
+    const bx = 80;
+    const by = cargoRow - SEPARATOR.height;
+    // Пьедестал ровно под левой ногой: её ширина — половина того, что осталось
+    // от корпуса за вычетом выпускного окна.
+    const legW = (SEPARATOR.width - SEPARATOR.window) >> 1;
+    for (let dx = 0; dx < legW; dx++) w.set(bx + dx, by + SEPARATOR.height, MAT.ROCK);
     const cx = bx + (SEPARATOR_KIND.width >> 1);
     const cy = by + (SEPARATOR_KIND.height >> 1);
     const built = Builder.apply(w, registry, module, SEPARATOR_KIND, cx, cy, cx, cy);
@@ -948,22 +965,24 @@ const first = luna();
       if (module.update(w).research > 0 && earnedAt < 0) earnedAt = i;
     }
     let slagInZone = 0;
-    for (let y = 84; y < 92; y++) {
-      for (let x = 186; x < 196; x++) if (w.get(x, y) === MAT.SLAG) slagInZone++;
+    for (let y = ZONE.y; y < ZONE.y + ZONE.h; y++) {
+      for (let x = ZONE.x; x < ZONE.x + ZONE.w; x++) {
+        if (w.get(x, y) === MAT.SLAG) slagInZone++;
+      }
     }
     check(
       'Сквозной прогон: продукт выходит на ленту под машиной и доезжает до модуля',
       built === 'placed' &&
-        module.research.points - before === MAT_RESEARCH_RATE[MAT.IRIDIUM]! &&
+        module.research.points - before === SEPARATOR.iridium * MAT_RESEARCH_RATE[MAT.IRIDIUM]! &&
         count(w, MAT.IRIDIUM) === 0 &&
-        slagInZone === SEPARATOR.batch - 1,
+        slagInZone === SEPARATOR.batch - SEPARATOR.iridium,
       `${built}, начислено ${module.research.points - before} ✦, шлака в зоне ${slagInZone}`,
     );
     // Замер: сколько занимает доставка от выпускного окна до приёмника.
     check(
       'Доставка от выпускного окна до приёмника укладывается в разумное время',
       earnedAt > 0 && earnedAt < STEP * 400,
-      `${(earnedAt / SIM_HZ).toFixed(1)} с на ${192 - bx} ячеек ленты`,
+      `${(earnedAt / SIM_HZ).toFixed(1)} с на ${beltTo - bx} ячеек ленты`,
     );
   }
 
@@ -1035,11 +1054,14 @@ const first = luna();
     //
     // Лента набирается НАСТОЯЩИМИ секциями по сетке — иначе замер отвечал бы
     // на вопрос о ленте, которую игрок построить не может.
-    const H = 84;
+    // Пол ниже верха мира не меньше чем на секцию: врезанная в него лента
+    // обязана поместиться целиком, иначе замер отвечал бы на вопрос о ленте,
+    // которая не встала.
+    const H = 96;
     const w = new World(200, H, first.world.profile);
     // Пол кратен размеру секции: врезанная в него лента ложится ровно так,
     // что её верхний ряд совпадает с подошвой кучи.
-    const floorTop = 80;
+    const floorTop = 10 * SZ;
     for (let y = floorTop; y < H; y++) {
       for (let x = 0; x < 200; x++) w.set(x, y, MAT.ROCK);
     }

@@ -9,8 +9,10 @@ const first = luna();
 // --- Копание ---
 {
   function rockWorld(): World {
-    const w = new World(128, 128, first.world.profile);
-    for (let x = 0; x < 128; x++) for (let y = 40; y < 128; y++) w.set(x, y, MAT.ROCK);
+    // Ширина с запасом от дальности копания: цель «вне досягаемости» обязана
+    // лежать в мире, иначе проверка мерила бы край мира, а не дальность.
+    const w = new World(256, 128, first.world.profile);
+    for (let x = 0; x < 256; x++) for (let y = 40; y < 128; y++) w.set(x, y, MAT.ROCK);
     return w;
   }
 
@@ -249,7 +251,7 @@ const first = luna();
     const w = rockWorld();
     const before = w.cells.slice();
     const digger = new Digger();
-    const far = DIG.reach + 10; // с запасом от края мира шириной 128
+    const far = DIG.reach + 10; // внутри мира шириной 256
     digger.update(1, w, true, 60, 60, 60 + far, 60);
     let changed = 0;
     for (let i = 0; i < before.length; i++) if (before[i] !== w.cells[i]) changed++;
