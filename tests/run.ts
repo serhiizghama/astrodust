@@ -25,6 +25,7 @@ const SUITES: Record<string, () => Promise<unknown>> = {
   conveyor: () => import('./conveyor'),
   research: () => import('./research'),
   'space-backdrop': () => import('./space-backdrop'),
+  'surface-shading': () => import('./surface-shading'),
   'procedural-audio': () => import('./procedural-audio'),
 };
 

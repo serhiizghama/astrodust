@@ -1,7 +1,7 @@
 import { World } from '../world';
 import type { WorldProfile } from '../world';
 import { MAT, MAT_STATE, MatterState } from '../materials';
-import { mulberry32, makeNoise } from '../rng';
+import { mulberry32, makeNoise, hashChance } from '../rng';
 import { RAMP } from '../../palette';
 import { WORLD_W, WORLD_H, PLAYER, MODULE } from '../../config';
 import type { Rect } from '../../geometry';
@@ -25,6 +25,14 @@ export const LUNA: WorldProfile = {
   // задника, а пещера покрывает площадь, и подсчёт площади слоя стал бы
   // подсчётом площади пещеры. Держит `tests/space-backdrop.ts`.
   caveColor: RAMP.rust[1],
+  // Темнее `caveColor` и темнее самой тёмной породы (`earth[0]`, яркость 54):
+  // при яркости 36 запас есть. НЕ `violet[0]` (32.5) и НЕ `rust[0]` (27.5) —
+  // обе ступени площадные у задника, заливка слоя и свечение полосы.
+  //
+  // Тон соседний с `caveColor`, а не контрастный: две ступени смешиваются
+  // дизерингом, и на паре «синий с бордовым» переход читался бы фиолетовым
+  // шумом, а не затемнением.
+  caveDeepColor: RAMP.warm[0],
   backdrop: {
     starDensity: 0.0045,
     // Три уровня яркости: однородное поле точек читается шумом, а не небом.
@@ -309,6 +317,48 @@ export interface GeneratedWorld {
 /**
  * Собирает мир Луны из зерна. Одно и то же зерно всегда даёт одну и ту же сетку.
  */
+/**
+ * Полуширина размытия границы «порода — глубинная порода», в ячейках.
+ * Граница лежит в толще, места вокруг неё вдоволь.
+ */
+const DEEP_BLEND = 6;
+
+/**
+ * Полуширина размытия границы «пыль — порода».
+ *
+ * Инвариант: строго меньше `DUST_DEPTH`. Слой пыли толщиной пять ячеек, и
+ * полоса размытия шире него пробивает крышу наружу — поверхность мира местами
+ * становится породой вместо реголита. Держит `tests/pixel-world.ts`.
+ */
+const DUST_BLEND = 2;
+
+/**
+ * Какая из двух пород лежит в ячейке у границы между ними.
+ *
+ * Размытие делается В САМОМ МИРЕ, а не в кадре. Граница, размытая только
+ * в кадре, обещает игроку переход там, где копание встретит ровную ступеньку:
+ * сетка — единственный источник правды о геометрии, и рисовать поверх неё то,
+ * чего в ней нет, — враньё о том, что можно выкопать.
+ *
+ * Решение берётся хешем координат, а не генератором: значение ячейки не должно
+ * зависеть ни от порядка обхода, ни от того, спрашивали ли про соседей.
+ * `salt` разводит две границы — иначе обе размывались бы одним рисунком.
+ */
+function blend(
+  x: number,
+  y: number,
+  boundary: number,
+  half: number,
+  above: number,
+  below: number,
+  salt: number,
+): number {
+  const d = y - boundary;
+  if (d <= -half) return above;
+  if (d >= half) return below;
+  return hashChance(x, y, salt) < (d + half) / (2 * half) ? below : above;
+}
+
 export function generateLuna(seed: number): GeneratedWorld {
   const rand = mulberry32(seed);
   const world = new World(WORLD_W, WORLD_H, LUNA);
@@ -321,13 +371,14 @@ export function generateLuna(seed: number): GeneratedWorld {
   for (let x = 0; x < WORLD_W; x++) {
     const top = surface[x];
     const deepY = DEEP_ROCK_Y + deepBoundary(x / WORLD_W) * 30;
+    const dustY = top + DUST_DEPTH;
     for (let y = top; y < WORLD_H; y++) {
-      let material: number;
       // Терраин выкладывается СПЁКШИМСЯ реголитом: рыхлый здесь обрушил бы
       // всю поверхность мира на первом же шаге симуляции.
-      if (y < top + DUST_DEPTH) material = MAT.REGOLITH_PACKED;
-      else if (y < deepY) material = MAT.ROCK;
-      else material = MAT.ROCK_DEEP;
+      const material =
+        y < dustY + DUST_BLEND
+          ? blend(x, y, dustY, DUST_BLEND, MAT.REGOLITH_PACKED, MAT.ROCK, 0x1d)
+          : blend(x, y, deepY, DEEP_BLEND, MAT.ROCK, MAT.ROCK_DEEP, 0x2e);
       world.setRaw(x, y, material);
     }
   }

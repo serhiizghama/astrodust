@@ -14,12 +14,40 @@ export class ChunkGrid {
   readonly rows: number;
   private current: Uint8Array;
   private next: Uint8Array;
+  /**
+   * Чанки, изменившиеся с момента последнего пересчёта карты освещённости.
+   *
+   * ТРЕТЬЕ поколение, а не переиспользование `current`/`next`: те двое
+   * переворачиваются каждый шаг, а карта пересчитывается с потолком и может
+   * отставать на несколько кадров. Читая их, она теряла бы изменения тех
+   * шагов, до которых не дошла.
+   *
+   * Снимается только тем, кто пересчитал, — методом `clearLightDirty`.
+   */
+  private readonly lightDirty: Uint8Array;
 
   constructor(worldW: number, worldH: number) {
     this.cols = Math.ceil(worldW / CHUNK_SIZE);
     this.rows = Math.ceil(worldH / CHUNK_SIZE);
     this.current = new Uint8Array(this.cols * this.rows);
     this.next = new Uint8Array(this.cols * this.rows);
+    // Единицами: карта ещё не считалась ни разу, грязен весь мир.
+    this.lightDirty = new Uint8Array(this.cols * this.rows).fill(1);
+  }
+
+  /** Изменился ли чанк с последнего пересчёта карты освещённости. */
+  isLightDirty(ci: number): boolean {
+    return this.lightDirty[ci] === 1;
+  }
+
+  /** Снимает пометку — вызывает только тот, кто чанк пересчитал. */
+  clearLightDirty(ci: number): void {
+    this.lightDirty[ci] = 0;
+  }
+
+  /** Сколько всего чанков в сетке. */
+  get count(): number {
+    return this.cols * this.rows;
   }
 
   /**
@@ -35,7 +63,10 @@ export class ChunkGrid {
 
     for (let cy = cy0; cy <= cy1; cy++) {
       const base = cy * this.cols;
-      for (let cx = cx0; cx <= cx1; cx++) this.next[base + cx] = 1;
+      for (let cx = cx0; cx <= cx1; cx++) {
+        this.next[base + cx] = 1;
+        this.lightDirty[base + cx] = 1;
+      }
     }
   }
 

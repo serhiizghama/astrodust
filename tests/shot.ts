@@ -152,11 +152,21 @@ const SHOTS: Array<{ name: string; camX: number; camY: number; scale?: number; c
   },
   { name: 'horizon', camX: 780, camY: 60 },
   { name: 'cave', camX: 700, camY: 310 },
+  // Тонирование судится глазом и только на увеличении: зерно, кромка хода
+  // и дизеринг затенения при ×3 сливаются в общий тон, а вопрос «читается ли
+  // это породой или помехами» решается видом отдельных пикселей.
+  { name: 'zoom-cave', camX: 700, camY: 310, scale: 8, crop: { x: 60, y: 40, w: 60, h: 50 } },
   { name: 'zoom-earth', camX: 500, camY: 0, scale: 10, crop: { x: 226, y: 22, w: 44, h: 42 } },
   { name: 'zoom-ridge', camX: 500, camY: 0, scale: 6, crop: { x: 80, y: 74, w: 160, h: 72 } },
 ];
 
-/** Считает, сколько пикселей кадра окрашены в точно заданный цвет. */
+/**
+ * Считает, сколько пикселей кадра окрашены в точно заданный цвет.
+ *
+ * Пригодно ТОЛЬКО для задника и точечных акцентов: у них нет другого
+ * представления, кроме пикселей. Количество материала так мерить нельзя —
+ * см. `countMaterial`.
+ */
 function countColor(color: number): number {
   const r = (color >> 16) & 0xff;
   const g = (color >> 8) & 0xff;
@@ -164,6 +174,24 @@ function countColor(color: number): number {
   let n = 0;
   for (let i = 0; i < pixels.length; i += 4) {
     if (pixels[i] === r && pixels[i + 1] === g && pixels[i + 2] === b) n++;
+  }
+  return n;
+}
+
+/**
+ * Сколько ячеек материала попало в видимую камерой область.
+ *
+ * Считается по сетке мира, а не подсчётом пикселей цвета материала: сетка —
+ * источник правды о геометрии, кадр — её изображение, и мерить надо оригинал.
+ * Подсчёт по кадру вдобавок занижал бы результат молча, как только у материала
+ * появится вторая ступень.
+ */
+function countMaterial(camera: Camera, material: number): number {
+  let n = 0;
+  for (let sy = 0; sy < VIEW_H; sy++) {
+    for (let sx = 0; sx < VIEW_W; sx++) {
+      if (world.get(camera.x + sx, camera.y + sy) === material) n++;
+    }
   }
   return n;
 }
@@ -307,10 +335,16 @@ for (const shot of SHOTS) {
       h: SEPARATOR.height + 18,
     }),
   );
+  // Сколько намолотило — по сетке; видно ли это глазом — по кадру. Второе
+  // сведено к факту присутствия: точное число пикселей ступени ничего не
+  // говорит о читаемости, а меняется от любой правки тонирования.
+  const iridiumSeen = countColor(MATERIALS[MAT.IRIDIUM]!.color) > 0;
+  const slagSeen = countColor(MATERIALS[MAT.SLAG]!.color) > 0;
   console.log(
     `shots/separator${suffix}.png`.padEnd(28) +
       ` постановка ${placed}, состояние ${machine?.state}, ` +
-      `иридия ${countColor(MATERIALS[MAT.IRIDIUM]!.color)}, шлака ${countColor(MATERIALS[MAT.SLAG]!.color)}`,
+      `иридия ${countMaterial(camera, MAT.IRIDIUM)}, шлака ${countMaterial(camera, MAT.SLAG)}, ` +
+      `в кадре иридий ${iridiumSeen ? 'да' : 'НЕТ'}, шлак ${slagSeen ? 'да' : 'НЕТ'}`,
   );
 }
 

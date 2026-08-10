@@ -302,13 +302,17 @@ const first = luna();
 // потеряли бы смысл, продолжая проходить.
 {
   const fills = LUNA.backdrop.layers.map((l) => l.fill);
-  const clash = fills.indexOf(LUNA.caveColor);
+  // Ступеней у пещеры несколько, и проверять надо КАЖДУЮ: проверка одной
+  // базовой пропустила бы вторую молча — ровно тот случай, ради которого
+  // ограничение и существует.
+  const caveShades = [LUNA.caveColor, LUNA.caveDeepColor];
+  const clashing = caveShades.filter((c) => fills.includes(c));
   check(
-    'Цвет пещеры не совпадает ни с одной заливкой слоя задника',
-    clash === -1,
-    clash === -1
-      ? `пещера ${LUNA.caveColor.toString(16)}, слои ${fills.map((f) => f.toString(16)).join(', ')}`
-      : `совпал со слоем ${clash}`,
+    'Ни одна ступень пещеры не совпадает с заливкой слоя задника',
+    clashing.length === 0,
+    clashing.length === 0
+      ? `пещера ${caveShades.map((c) => c.toString(16)).join('/')}, слои ${fills.map((f) => f.toString(16)).join(', ')}`
+      : `совпали ${clashing.map((c) => c.toString(16)).join(', ')}`,
   );
   check(
     'Цвет неба не совпадает ни с одной заливкой слоя задника',

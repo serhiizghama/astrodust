@@ -1,8 +1,11 @@
-import { VIEW_W, VIEW_H, DIG, VACUUM, CONVEYOR, SIM_HZ } from '../config';
+import { VIEW_W, VIEW_H, DIG, VACUUM, CONVEYOR, SIM_HZ, SHADING } from '../config';
 import { Display } from '../core';
 import { Camera } from './camera';
 import { World, MAT, MAT_CARRY } from '../world';
-import { MAT_R, MAT_G, MAT_B, CONVEYOR_STRIPE_COLOR } from './material-colors';
+import { SHADE_R, SHADE_G, SHADE_B, CONVEYOR_STRIPE_COLOR } from './material-colors';
+import { GRAIN } from './grain';
+import { BAYER, DITHER_MASK, DITHER_LEVELS } from './dither';
+import { Lightmap, LIGHT_NEUTRAL } from './lightmap';
 import { Backdrop } from './backdrop';
 import { RAMP, css } from '../palette';
 import { drawResearchOverlay } from './overlay';
@@ -45,6 +48,98 @@ function brushOutline(radius: number): Int8Array {
   }
 
   return Int8Array.from(pairs);
+}
+
+/** Сколько ступеней у интерьера пещеры: у выхода и в глубине. */
+const CAVE_SHADES = 2;
+
+// Настройки тонирования — в локальные константы модуля. Внутренний цикл
+// касается их на каждый пиксель кадра, а `SHADING.x` там — загрузка свойства.
+const SHADE_BITS = SHADING.shadeBits;
+const SHADE_MAX = SHADING.shadesPerMaterial - 1;
+const GRAIN_SIZE = SHADING.grainTile;
+const GRAIN_MASK = GRAIN_SIZE - 1;
+const EXPOSURE_STEP = SHADING.exposureStep;
+const EXPOSURE_MAX = SHADING.exposureMax;
+const DEPTH_SHIFT = SHADING.depthShift;
+const DEPTH_DITHER_MAX = SHADING.depthDitherMax;
+const CAVE_DEPTH_SHIFT = SHADING.caveDepthShift;
+const LIGHT_SHIFT = Math.log2(SHADING.lightScale);
+
+/**
+ * Ступень твёрдой ячейки: зерно, плюс экспозиция, минус глубина.
+ *
+ * Экспозиция — число пустых соседей из четырёх. Без неё свежевыкопанный ход
+ * неотличим от нетронутой толщи: игрок не видит результата собственного
+ * действия иначе как по изменению силуэта.
+ *
+ * Соседи по горизонтали приходят готовыми: обход идёт по строке, и оба уже
+ * прочитаны — левый как ячейка прошлой итерации, правый как ячейка следующей.
+ * Повторное чтение стоило бы двух обращений к массиву на каждый пиксель кадра.
+ *
+ * Края мира: по вертикали смещение обнуляется вызывающим и ячейка читает саму
+ * себя, по горизонтали чтение уходит за массив и даёт `undefined`. И то, и
+ * другое не равно пустоте, то есть считается твёрдым, — ровно то, что правило
+ * непроходимых границ мира и обещает.
+ */
+function shadeOf(
+  cells: Uint8Array,
+  c: number,
+  left: number | undefined,
+  right: number | undefined,
+  upOff: number,
+  downOff: number,
+  grainAt: number,
+  bayerAt: number,
+  depth: number,
+  lit: number,
+): number {
+  let shade = GRAIN[grainAt]!;
+
+  let open = 0;
+  if (cells[c + upOff] === MAT.VACUUM) open++;
+  if (cells[c + downOff] === MAT.VACUUM) open++;
+  if (left === MAT.VACUUM) open++;
+  if (right === MAT.VACUUM) open++;
+  if (open > EXPOSURE_MAX) open = EXPOSURE_MAX;
+  shade += open * EXPOSURE_STEP;
+
+  // Глубина затемняет ДОЛЮ пикселей, а не сдвигает ступень целиком: сдвиг
+  // опустил бы вниз всё распределение зерна, и доминантой на глубине стал бы
+  // тёмный акцент вместо базовой ступени.
+  const t = BAYER[bayerAt]!;
+  if (depth > 0) {
+    let level = depth >> DEPTH_SHIFT;
+    if (level > DEPTH_DITHER_MAX) level = DEPTH_DITHER_MAX;
+    if (t < level) shade--;
+  }
+
+  // Освещённость — тоже доля, а не сдвиг ступени, и по той же причине:
+  // сплошной сдвиг отнял бы у базовой ступени доминанту рядом с источником.
+  //
+  // Без проверки «есть ли свет»: карта не опускается ниже нейтрали, поэтому
+  // разность неотрицательна, и при нуле сравнение просто не срабатывает.
+  // Ветка сэкономила бы сравнение там, где света нет, ценой перехода на
+  // каждый непустой пиксель кадра.
+  if (t < lit - LIGHT_NEUTRAL) shade++;
+
+  if (shade < 0) return 0;
+  return shade > SHADE_MAX ? SHADE_MAX : shade;
+}
+
+/**
+ * Ступень пустоты ниже поверхности: 0 у выхода, 1 в глубине, переход —
+ * дизерингом. Плоская заливка сообщает игроку только «здесь пусто»,
+ * затенённая — ещё и «выход в той стороне», а это навигация в мире без карты.
+ */
+function caveShade(depth: number, bayerAt: number, lit: number): number {
+  if (depth <= 0) return 0;
+  // Свет отодвигает темноту: пустота у лавы обязана светиться, иначе расплав
+  // освещает породу вокруг, а воздух над собой — нет.
+  let level = (depth >> CAVE_DEPTH_SHIFT) - (lit - LIGHT_NEUTRAL);
+  if (level <= 0) return 0;
+  if (level > DITHER_LEVELS) level = DITHER_LEVELS;
+  return BAYER[bayerAt]! < level ? 1 : 0;
 }
 
 export const BRUSH_OUTLINE = brushOutline(DIG.radius);
@@ -214,9 +309,15 @@ export interface FrameView {
 
 export class Renderer {
   private readonly backdrop: Backdrop;
-  private readonly caveR: number;
-  private readonly caveG: number;
-  private readonly caveB: number;
+  /**
+   * Ступени интерьера пещеры, от светлой к тёмной: 0 — у выхода, 1 — в глубине
+   * массива. Разложены на байты по той же причине, что и ступени материалов, —
+   * их читает внутренний цикл по пикселям.
+   */
+  private readonly caveR = new Uint8Array(CAVE_SHADES);
+  private readonly caveG = new Uint8Array(CAVE_SHADES);
+  private readonly caveB = new Uint8Array(CAVE_SHADES);
+  private readonly lightmap: Lightmap;
 
   constructor(
     private readonly display: Display,
@@ -225,10 +326,17 @@ export class Renderer {
     seed: number,
   ) {
     const p = world.profile;
-    this.caveR = (p.caveColor >> 16) & 0xff;
-    this.caveG = (p.caveColor >> 8) & 0xff;
-    this.caveB = p.caveColor & 0xff;
+    const cave = [p.caveColor, p.caveDeepColor];
+    for (let i = 0; i < CAVE_SHADES; i++) {
+      this.caveR[i] = (cave[i]! >> 16) & 0xff;
+      this.caveG[i] = (cave[i]! >> 8) & 0xff;
+      this.caveB[i] = cave[i]! & 0xff;
+    }
     this.backdrop = new Backdrop(p, seed, surface);
+    // Целиком и сразу: чанки при создании помечены грязными все, и догон
+    // по потолку растянул бы первые кадры партии на неосвещённой карте.
+    this.lightmap = new Lightmap(world);
+    this.lightmap.rebuildAll();
   }
 
   render(view: FrameView): void {
@@ -240,6 +348,9 @@ export class Renderer {
     // Считается один раз на кадр и служит обоим проходам: заднику — признаком
     // «неба в кадре нет», миру — границей, ниже которой проверять небо незачем.
     const maxSurface = this.backdrop.maxSurfaceInView(camera.x);
+
+    // Догон карты — до прохода мира, иначе кадр читает её на шаг устаревшей.
+    this.lightmap.update();
 
     this.backdrop.draw(this.display.pixels, camera.x, camera.y, time, maxSurface);
     this.drawWorld(camera, maxSurface, stripeOffset(time));
@@ -267,16 +378,26 @@ export class Renderer {
    * отдельным проходом: цена — одна выборка `MAT_CARRY[m]` на непустой пиксель.
    * Отдельный проход требовал бы списка лент, которого нет: лента — вещество,
    * а не сущность.
+   *
+   * Ступень собирается СЛОЖЕНИЕМ трёх вкладов — зерно, экспозиция, глубина, —
+   * а не последовательностью проверок. Соседние пиксели уходили бы в разные
+   * ветки, и предсказатель переходов на этом ломается; сложение ветвей не имеет.
    */
   private drawWorld(camera: Camera, maxSurface: number, offset: number): void {
     const px = this.display.pixels;
     const cells = this.world.cells;
     const worldW = this.world.width;
+    const worldBottom = this.world.height - 1;
     const camX = camera.x;
     const camY = camera.y;
     const surface = this.surface;
     const period = CONVEYOR.stripePeriod;
     const stripe = CONVEYOR.stripeWidth;
+    const caveR = this.caveR;
+    const caveG = this.caveG;
+    const caveB = this.caveB;
+    const light = this.lightmap.level;
+    const lightCols = this.lightmap.cols;
 
     let splitRow = maxSurface - camY;
     if (splitRow < 0) splitRow = 0;
@@ -289,9 +410,24 @@ export class Renderer {
     for (let sy = 0; sy < splitRow; sy++) {
       const wy = camY + sy;
       const rowBase = wy * worldW;
+      // Смещения соседей по вертикали. На краю мира смещение нулевое — ячейка
+      // читает саму себя, то есть твёрдое, и открытой не считается. Это не
+      // уловка: запрос твёрдости за пределами сетки и обязан давать «твёрдая».
+      const upOff = wy > 0 ? -worldW : 0;
+      const downOff = wy < worldBottom ? worldW : 0;
+      const grainRow = (wy & GRAIN_MASK) * GRAIN_SIZE;
+      const bayerRow = (wy & DITHER_MASK) << 2;
+      const lightRow = (wy >> LIGHT_SHIFT) * lightCols;
+
+      const rowStart = rowBase + camX;
+      let prev = cells[rowStart - 1];
+      let cur = cells[rowStart];
+
       for (let sx = 0; sx < VIEW_W; sx++, idx += 4) {
         const wx = camX + sx;
-        const m = cells[rowBase + wx]!;
+        const c = rowStart + sx;
+        const m = cur!;
+        const next = cells[c + 1];
 
         if (m !== MAT.VACUUM) {
           const carry = MAT_CARRY[m]!;
@@ -300,24 +436,60 @@ export class Renderer {
             px[idx + 1] = STRIPE_G;
             px[idx + 2] = STRIPE_B;
           } else {
-            px[idx] = MAT_R[m]!;
-            px[idx + 1] = MAT_G[m]!;
-            px[idx + 2] = MAT_B[m]!;
+            const at =
+              (m << SHADE_BITS) |
+              shadeOf(
+                cells,
+                c,
+                prev,
+                next,
+                upOff,
+                downOff,
+                grainRow | (wx & GRAIN_MASK),
+                bayerRow | (wx & DITHER_MASK),
+                wy - surface[wx]!,
+                light[lightRow + (wx >> LIGHT_SHIFT)]!,
+              );
+            px[idx] = SHADE_R[at]!;
+            px[idx + 1] = SHADE_G[at]!;
+            px[idx + 2] = SHADE_B[at]!;
           }
         } else if (wy >= surface[wx]!) {
-          px[idx] = this.caveR;
-          px[idx + 1] = this.caveG;
-          px[idx + 2] = this.caveB;
+          const s = caveShade(
+            wy - surface[wx]!,
+            bayerRow | (wx & DITHER_MASK),
+            light[lightRow + (wx >> LIGHT_SHIFT)]!,
+          );
+          px[idx] = caveR[s]!;
+          px[idx + 1] = caveG[s]!;
+          px[idx + 2] = caveB[s]!;
         }
+
+        prev = m;
+        cur = next;
       }
     }
 
     // Нижняя часть: неба здесь быть не может, пустота — всегда пещера.
     for (let sy = splitRow; sy < VIEW_H; sy++) {
-      const rowBase = (camY + sy) * worldW;
+      const wy = camY + sy;
+      const rowBase = wy * worldW;
+      const upOff = wy > 0 ? -worldW : 0;
+      const downOff = wy < worldBottom ? worldW : 0;
+      const grainRow = (wy & GRAIN_MASK) * GRAIN_SIZE;
+      const bayerRow = (wy & DITHER_MASK) << 2;
+      const lightRow = (wy >> LIGHT_SHIFT) * lightCols;
+
+      const rowStart = rowBase + camX;
+      let prev = cells[rowStart - 1];
+      let cur = cells[rowStart];
+
       for (let sx = 0; sx < VIEW_W; sx++, idx += 4) {
         const wx = camX + sx;
-        const m = cells[rowBase + wx]!;
+        const c = rowStart + sx;
+        const m = cur!;
+        const next = cells[c + 1];
+
         if (m !== MAT.VACUUM) {
           const carry = MAT_CARRY[m]!;
           if (carry !== 0 && (((wx - carry * offset) % period) + period) % period < stripe) {
@@ -325,15 +497,37 @@ export class Renderer {
             px[idx + 1] = STRIPE_G;
             px[idx + 2] = STRIPE_B;
           } else {
-            px[idx] = MAT_R[m]!;
-            px[idx + 1] = MAT_G[m]!;
-            px[idx + 2] = MAT_B[m]!;
+            const at =
+              (m << SHADE_BITS) |
+              shadeOf(
+                cells,
+                c,
+                prev,
+                next,
+                upOff,
+                downOff,
+                grainRow | (wx & GRAIN_MASK),
+                bayerRow | (wx & DITHER_MASK),
+                wy - surface[wx]!,
+                light[lightRow + (wx >> LIGHT_SHIFT)]!,
+              );
+            px[idx] = SHADE_R[at]!;
+            px[idx + 1] = SHADE_G[at]!;
+            px[idx + 2] = SHADE_B[at]!;
           }
         } else {
-          px[idx] = this.caveR;
-          px[idx + 1] = this.caveG;
-          px[idx + 2] = this.caveB;
+          const s = caveShade(
+            wy - surface[wx]!,
+            bayerRow | (wx & DITHER_MASK),
+            light[lightRow + (wx >> LIGHT_SHIFT)]!,
+          );
+          px[idx] = caveR[s]!;
+          px[idx + 1] = caveG[s]!;
+          px[idx + 2] = caveB[s]!;
         }
+
+        prev = m;
+        cur = next;
       }
     }
   }

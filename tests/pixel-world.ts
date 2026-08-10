@@ -417,3 +417,100 @@ check('Пустота не твёрдая', !world.isSolid(spawn.x, spawn.y));
     check('Точка старта не во льду', iceAtSpawn === 0, `ячеек льда в спавне ${iceAtSpawn}`);
   }
 }
+
+// --- Разнородность толщи ---
+//
+// Однородный массив выглядит заливкой независимо от того, как он затенён:
+// тонирование добавляет зерно в пределах одного вещества, а крупный рисунок
+// даёт только сама порода. Всё проверяемое здесь — свойство МИРА: слой
+// и вкрапление видны в коллизии, имеют свою выработку и выкапываются.
+{
+  const cells = world.cells;
+  const W = world.width;
+  const H = world.height;
+
+  /** Верхняя ячейка глубинной породы в колонке; -1 — её в колонке нет. */
+  function deepTop(x: number): number {
+    for (let y = 0; y < H; y++) if (cells[y * W + x] === MAT.ROCK_DEEP) return y;
+    return -1;
+  }
+
+  {
+    const tops: number[] = [];
+    for (let x = 0; x < W; x += 8) {
+      const t = deepTop(x);
+      if (t >= 0) tops.push(t);
+    }
+    const min = Math.min(...tops);
+    const max = Math.max(...tops);
+    check(
+      'Граница глубинной породы идёт волной, а не прямой',
+      max - min > 8,
+      `разброс высот ${max - min} при ${tops.length} колонках`,
+    );
+  }
+
+  {
+    // Вкрапление — глубинная порода, окружённая обычной. Ищем ячейки
+    // ROCK_DEEP заведомо ВЫШЕ основной границы: там они могут быть только
+    // валунами, а не сплошным нижним слоем.
+    let inclusions = 0;
+    const tops: number[] = [];
+    for (let x = 0; x < W; x += 8) {
+      const t = deepTop(x);
+      if (t >= 0) tops.push(t);
+    }
+    const deepest = Math.max(...tops);
+    for (let y = 200; y < deepest - 40; y++) {
+      for (let x = 0; x < W; x++) {
+        if (cells[y * W + x] !== MAT.ROCK_DEEP) continue;
+        if (cells[y * W + x - 1] === MAT.ROCK || cells[y * W + x + 1] === MAT.ROCK) inclusions++;
+      }
+    }
+    check(
+      'В толще обычной породы есть вкрапления глубинной',
+      inclusions > 0,
+      `граничных ячеек вкраплений ${inclusions}`,
+    );
+  }
+
+  {
+    // Полоса вдоль границы содержит обе породы вперемешку. Ровный стык дал бы
+    // в каждой строке ровно одну породу; размытие — обе в одной строке.
+    let mixedRows = 0;
+    for (let x = 0; x < W; x += 37) {
+      const t = deepTop(x);
+      if (t < 0) continue;
+      let rock = 0;
+      let deep = 0;
+      for (let y = t; y < t + 10 && y < H; y++) {
+        const m = cells[y * W + x];
+        if (m === MAT.ROCK) rock++;
+        else if (m === MAT.ROCK_DEEP) deep++;
+      }
+      if (rock > 0 && deep > 0) mixedRows++;
+    }
+    check(
+      'Граница двух пород размыта в самом мире, а не проведена ровно',
+      mixedRows > 0,
+      `колонок со смешанной полосой ${mixedRows}`,
+    );
+  }
+
+  {
+    // Размытие не съедает слой пыли. Проверяется отсутствие ПОРОДЫ наверху,
+    // а не наличие пыли: на поверхности законно встречаются корпус модуля
+    // и пустота прорезанных проходов, и требовать пыль везде значило бы
+    // падать на них, а не на том, что проверяется.
+    let bare = 0;
+    for (let x = 0; x < W; x++) {
+      const m = cells[first.surface[x]! * W + x];
+      if (m === MAT.ROCK || m === MAT.ROCK_DEEP) bare++;
+    }
+    check(
+      'Размытие не пробило слой пыли: породы на поверхности нет',
+      bare === 0,
+      `колонок с породой наверху ${bare} из ${W}`,
+    );
+  }
+}

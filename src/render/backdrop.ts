@@ -2,6 +2,7 @@ import { VIEW_W, VIEW_H, BACKDROP, WORLD_W } from '../config';
 import type { BackdropSpec, WorldProfile } from '../world';
 import { mulberry32, makeNoise } from '../world';
 import { RAMP } from '../palette';
+import { threshold } from './dither';
 
 /**
  * Задник неба: звёзды, полоса галактики, соседнее тело и слои силуэтов.
@@ -18,9 +19,6 @@ import { RAMP } from '../palette';
  *    непересекающиеся полосы и заливается сплошняком, поэтому ни один пиксель
  *    не пишется дважды.
  */
-
-/** Матрица упорядоченного дизеринга 4×4. Значения 0..15. */
-const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
 
 /** Полубаза, на которой берётся уклон гребня для выбора цвета подсветки. */
 const RIM_SLOPE_SPAN = 3;
@@ -301,7 +299,7 @@ export class Backdrop {
           const rel = (y - cy) / mw.halfWidth;
           let intensity = (1 - rel * rel) * density;
           if (Math.abs(rel - laneOffset) < 0.2) intensity *= 0.22;
-          if (BAYER[(y & 3) * 4 + (x & 3)]! / 16 < intensity) {
+          if (threshold(x, y) < intensity) {
             xs.push(x);
             ys.push(y);
             cs.push(mw.glowColor);
@@ -575,7 +573,7 @@ function buildCompanion(): Uint8Array {
       // выглядит сколом, а не тенью.
       const shade = dx - terminator;
       if (shade > 1) index = 1;
-      else if (shade > -1 && BAYER[(y & 3) * 4 + (x & 3)]! / 16 < (shade + 1) / 2) index = 1;
+      else if (shade > -1 && threshold(x, y) < (shade + 1) / 2) index = 1;
 
       // Тёмная кромка лимба: диск иначе выглядит наклейкой, а не шаром.
       const edge = Math.sqrt(dx * dx + dy * dy) / radius;
