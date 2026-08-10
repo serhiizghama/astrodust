@@ -4,6 +4,9 @@ import { Camera } from './camera';
 import { World } from '../world/world';
 import { MAT, MAT_R, MAT_G, MAT_B, MAT_CARRY, CONVEYOR_STRIPE_COLOR } from '../world/materials';
 import { Backdrop } from './backdrop';
+import { RAMP, css } from './palette';
+import { drawResearchOverlay } from './overlay';
+import type { OverlayView } from './overlay';
 import {
   Player,
   SPRITE_PIXELS,
@@ -56,6 +59,55 @@ export const BRUSH_OUTLINE = brushOutline(DIG.radius);
  */
 export const VACUUM_OUTLINE = brushOutline(VACUUM.radius);
 
+/**
+ * Контур кисти сбора для ЛЮБОГО радиуса, с памятью на посчитанное.
+ *
+ * Радиус сбора перестал быть константой — его правит технология, — и кольцо
+ * обязано следовать за ним. Кольцо, застывшее на базовом радиусе, обещало бы
+ * выемку меньше настоящей ровно после того, как игрок заплатил за большую:
+ * тот же обман, что и кольцо размером с копательную кисть в режиме сбора.
+ *
+ * Память нужна потому, что кольцо рисуется каждый кадр, а различных радиусов
+ * за партию бывает три. Перебирать квадрат (2r+1)² по шестьдесят раз в секунду
+ * ради неизменного набора точек незачем.
+ */
+const OUTLINE_CACHE = new Map<number, Int8Array>([[VACUUM.radius, VACUUM_OUTLINE]]);
+
+export function vacuumOutline(radius: number): Int8Array {
+  let ring = OUTLINE_CACHE.get(radius);
+  if (!ring) {
+    ring = brushOutline(radius);
+    OUTLINE_CACHE.set(radius, ring);
+  }
+  return ring;
+}
+
+/**
+ * Цвета состояния машины — и они же язык годности при постановке.
+ *
+ * Экспортируются, потому что цвет здесь СМЫСЛ, а не оформление: по нему
+ * проверки отличают работающую машину от забитой, считая пиксели ровно этого
+ * значения. Литерал в проверке означал бы, что перекраска машины молча ломает
+ * подсчёт, оставляя проверку зелёной или красной по не относящейся к делу
+ * причине.
+ *
+ * Зелёные — из той же лестницы, что и достижимый прицел, но НЕ те же ступени,
+ * и это ограничение измерения, а не вкуса: прицел рисуется в том же кадре,
+ * что и машина, и на общем цвете подсчёт пикселей полосы начинал считать
+ * заодно крестик с кольцом. Проверка при этом продолжала бы проходить — просто
+ * по другой причине. Взяты крайние ступени: простой `green[0]`, работа
+ * `green[5]`; обе отстоят от корпуса сепаратора (`green[2]`) минимум на две.
+ *
+ * Отказ взял `rust[5]`, а не более привычную лаву `rust[4]`: цвет негодности
+ * не должен совпадать с площадным веществом, иначе рамка призрака
+ * растворяется ровно над расплавом.
+ */
+export const MACHINE_STATE_COLORS = {
+  idle: RAMP.green[0],
+  working: RAMP.green[5],
+  blocked: RAMP.rust[5],
+} as const;
+
 const STRIPE_R = (CONVEYOR_STRIPE_COLOR >> 16) & 0xff;
 const STRIPE_G = (CONVEYOR_STRIPE_COLOR >> 8) & 0xff;
 const STRIPE_B = CONVEYOR_STRIPE_COLOR & 0xff;
@@ -87,11 +139,23 @@ export interface HudState {
   readonly mode: string;
   /** Собирает ли инструмент сейчас — от этого зависит вид прицела. */
   readonly collecting: boolean;
+  /**
+   * Радиус кисти сбора прямо сейчас: он настраиваемый, и кольцо прицела обязано
+   * показывать то, что всосётся, а не то, что всасывалось в начале партии.
+   */
+  readonly collectRadius: number;
   readonly carried: readonly { readonly name: string; readonly count: number }[];
   readonly used: number;
   readonly capacity: number;
   readonly selected: string;
   readonly credits: number;
+  /**
+   * Очки исследований. Стоят рядом с кредитами и видны ВСЕГДА, а не только
+   * внутри оверлея: игрок принимает по двум валютам разные решения — что
+   * построить и что открыть, — и валюта, которую видно только в меню,
+   * из этих решений выпадает.
+   */
+  readonly research: number;
   /**
    * Контур будущего здания в координатах МИРА и признак годности места.
    * `null` вне режима строительства.
@@ -125,6 +189,8 @@ export interface HudState {
   readonly machines: readonly MachineView[];
   /** Сводка по машинам для строки состояния. Пустая строка — машин нет. */
   readonly machineSummary: string;
+  /** Оверлей исследований, если он открыт. `null` — закрыт. */
+  readonly overlay: OverlayView | null;
 }
 
 export interface GhostView {
@@ -194,10 +260,14 @@ export class Renderer {
     this.drawMachines(camera, hud.machines);
     this.drawPlayer(camera, player);
     if (hud.ghost) this.drawGhost(camera, hud.ghost);
-    this.drawAim(crosshairX, crosshairY, crosshairInReach, hud.collecting);
+    this.drawAim(crosshairX, crosshairY, crosshairInReach, hud.collecting, hud.collectRadius);
     this.display.present();
     this.drawStatus(hud);
     this.drawDebug(fps, debugMaterial);
+    // Оверлей — последним: он перекрывает и мир, и строку состояния, и это
+    // правильный порядок. Пока он открыт, строка состояния всё равно
+    // не описывает того, чем игрок сейчас занят.
+    if (hud.overlay) drawResearchOverlay(this.display.ctx, hud.overlay);
   }
 
   /**
@@ -301,12 +371,7 @@ export class Renderer {
       const sy = m.y - camera.y;
       if (sx + m.w < 0 || sy + m.h < 0 || sx >= VIEW_W || sy >= VIEW_H) continue;
 
-      const colors = {
-        idle: 0x2f4a38,
-        working: 0x8fe08a,
-        blocked: 0xe0603c,
-      } as const;
-      const color = colors[m.state];
+      const color = MACHINE_STATE_COLORS[m.state];
 
       // Полоса заполняется слева направо по ходу порции. У простоя и забитого
       // выхода хода нет, поэтому полоса рисуется целиком: важен цвет.
@@ -325,7 +390,7 @@ export class Renderer {
   private drawGhost(camera: Camera, ghost: GhostView): void {
     const x0 = ghost.x - camera.x;
     const y0 = ghost.y - camera.y;
-    const color = ghost.ok ? 0x8fe08a : 0xe0603c;
+    const color = ghost.ok ? MACHINE_STATE_COLORS.working : MACHINE_STATE_COLORS.blocked;
 
     for (let i = 0; i < ghost.w; i++) {
       this.setPixel(x0 + i, y0, color);
@@ -365,11 +430,15 @@ export class Renderer {
     const footY = originY + SPRITE_H;
     const centerX = originX + Math.floor(SPRITE_W / 2);
     // Ядро ярче, шлейф тусклее — читается как факел даже в три пикселя.
-    this.setPixel(centerX - 1, footY, 0xffd27a);
-    this.setPixel(centerX, footY, 0xffd27a);
-    this.setPixel(centerX - 1, footY + 1, 0xff8a3c);
-    this.setPixel(centerX, footY + 1, 0xff8a3c);
-    this.setPixel(centerX - 1, footY + 2, 0x8a3a1c);
+    // Градиент несёт теперь И ТОН, И ЯРКОСТЬ: золото → розовый → маджента
+    // вместо прежнего затухания внутри одного оранжевого. Убывание яркости
+    // при этом сохранено (196.6 → 162.6 → 99.8) — смена тона добавляется
+    // к спаду, а не заменяет его, иначе факел рассыпался бы на три точки.
+    this.setPixel(centerX - 1, footY, RAMP.warm[5]);
+    this.setPixel(centerX, footY, RAMP.warm[5]);
+    this.setPixel(centerX - 1, footY + 1, RAMP.violet[5]);
+    this.setPixel(centerX, footY + 1, RAMP.violet[5]);
+    this.setPixel(centerX - 1, footY + 2, RAMP.violet[3]);
   }
 
   /**
@@ -391,17 +460,31 @@ export class Renderer {
    * копание — четыре луча наружу, сбор — четыре штриха внутрь, как всасывание.
    * Цвет остаётся признаком достижимости и режимом не занят.
    */
-  private drawAim(sx: number, sy: number, inReach: boolean, collecting: boolean): void {
+  private drawAim(
+    sx: number,
+    sy: number,
+    inReach: boolean,
+    collecting: boolean,
+    collectRadius: number,
+  ): void {
     const x = Math.round(sx);
     const y = Math.round(sy);
 
-    const ring = collecting ? VACUUM_OUTLINE : BRUSH_OUTLINE;
-    const outline = inReach ? 0x5c3612 : 0x33313a;
+    const ring = collecting ? vacuumOutline(collectRadius) : BRUSH_OUTLINE;
+    // Достижимо — зелёная пара, недостижимо — серая. Оранжевый, которым прицел
+    // был раньше, теперь занят лавой и подсветкой кромок, а зелёного в кадре
+    // нет вовсе: на коричневом грунте и сливовой пещере он выделяется сильнее
+    // всего. В обеих парах кольцо остаётся тусклее крестика (67 против 180
+    // и 70 против 106) — оно вдвое длиннее и при равной яркости перебивало бы
+    // саму точку прицеливания. Серый крестик совпадает с корпусом конвейера
+    // (`gray[5]`) и на ленте пропадает; курсор при этом остаётся виден
+    // по кольцу — оно на ступень темнее и с лентой не совпадает.
+    const outline = inReach ? RAMP.green[1] : RAMP.gray[4];
     for (let i = 0; i < ring.length; i += 2) {
       this.setPixel(x + ring[i]!, y + ring[i + 1]!, outline);
     }
 
-    const color = inReach ? 0xff9a3c : 0x5a5560;
+    const color = inReach ? RAMP.green[4] : RAMP.gray[5];
 
     // Копание бьёт наружу, сбор тянет внутрь: лучи у одного начинаются в двух
     // ячейках от центра и уходят от него, у другого стоят вплотную к кольцу
@@ -448,22 +531,30 @@ export class Renderer {
     // Выбранный вид постройки стоит рядом с подписью режима, а не в отдельной
     // строке: он относится к режиму и без него бессмыслен.
     const mode = hud.buildKind ? `${hud.mode}: ${hud.buildKind}` : hud.mode;
-    this.text(`${mode}   ${hud.used}/${hud.capacity}   ${carried}`, 4, VIEW_H - 14, 0xe8e4dc);
+    this.text(`${mode}   ${hud.used}/${hud.capacity}   ${carried}`, 4, VIEW_H - 14, RAMP.gray[9]);
     // Причина отказа — тем же цветом, что и негодный контур: связь между
     // красной рамкой и надписью не должна требовать догадки.
     if (hud.buildIssue) {
       const at = 4 + ctx.measureText(`${mode}   `).width;
-      this.text(hud.buildIssue, at, VIEW_H - 24, 0xe0603c);
+      this.text(hud.buildIssue, at, VIEW_H - 24, MACHINE_STATE_COLORS.blocked);
     }
     const second = hud.machineSummary
       ? `Высыпать: ${hud.selected}   ${hud.machineSummary}`
       : `Высыпать: ${hud.selected}`;
-    this.text(second, 4, VIEW_H - 4, 0xe8e4dc);
+    this.text(second, 4, VIEW_H - 4, RAMP.gray[9]);
 
     // Счёт — справа и цветом корпуса модуля: единственное место, куда кредиты
     // приходят, и единственное золотое пятно в кадре. Связь читается без подписи.
+    //
+    // Очки исследований стоят СТРОКОЙ ВЫШЕ, у того же края: обе валюты приходят
+    // из одного места и обе видны сразу, но разведены по строкам — «250 ₡ 12 ✦»
+    // одной строкой читается как одно число с двумя знаками. Цвет холодный
+    // против золота кредитов: валюты разводятся тоном, а не яркостью, и тот же
+    // `blue[5]` показывает очки внутри оверлея.
     const credits = `${hud.credits} ₡`;
-    this.text(credits, VIEW_W - 4 - ctx.measureText(credits).width, VIEW_H - 4, 0xe0b83c);
+    this.text(credits, VIEW_W - 4 - ctx.measureText(credits).width, VIEW_H - 4, RAMP.warm[4]);
+    const research = `${hud.research} ✦`;
+    this.text(research, VIEW_W - 4 - ctx.measureText(research).width, VIEW_H - 14, RAMP.blue[5]);
   }
 
   /** Диагностика поверх кадра. Включается F3 — иначе мешает оценивать картинку. */
@@ -477,15 +568,21 @@ export class Renderer {
     // Установка вслепую бесполезна: игрок обязан видеть, что именно поставит.
     if (material) lines.push(`Q/E: ${material}`);
 
-    lines.forEach((line, i) => this.text(line, 4, 4 + i * 10, 0x7cf07c));
+    lines.forEach((line, i) => this.text(line, 4, 4 + i * 10, RAMP.green[4]));
   }
 
-  /** Надпись с чёрной подложкой в один пиксель: без неё текст тонет в кадре. */
+  /**
+   * Надпись с подложкой в один пиксель: без неё текст тонет в кадре.
+   *
+   * Подложка — цвет неба, а не чистый чёрный: чёрного в гамме нет вовсе,
+   * и единственное место на экране с цветом вне набора не должно заводиться
+   * ради тени под буквами.
+   */
   private text(line: string, x: number, y: number, color: number): void {
     const ctx = this.display.ctx;
-    ctx.fillStyle = '#000000';
+    ctx.fillStyle = css(RAMP.gray[0]);
     ctx.fillText(line, x + 1, y + 1);
-    ctx.fillStyle = `#${color.toString(16).padStart(6, '0')}`;
+    ctx.fillStyle = css(color);
     ctx.fillText(line, x, y);
   }
 }

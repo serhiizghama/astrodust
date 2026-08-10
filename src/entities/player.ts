@@ -1,7 +1,9 @@
 import { PLAYER } from '../config';
 import { World } from '../world/world';
-import { Input } from '../core/input';
+import type { PlayerInput } from '../core/input';
+import { Tuning } from '../progress/tuning';
 import { MatterState, MAT_STATE, MAT_SOLID } from '../world/materials';
+import { RAMP } from '../render/palette';
 
 /**
  * Спрайт космонавта 8x12, заданный прямо в коде.
@@ -28,8 +30,34 @@ const SPRITE_ROWS = [
   '..4..4..',
 ];
 
-/** Тёмный контур обязателен: без него силуэт теряется на породе в пещере. */
-export const SPRITE_PALETTE = [0x000000, 0xe8e4dc, 0xb0aca4, 0x4fc3d9, 0x2a2830];
+/**
+ * Тёмный контур обязателен: без него силуэт теряется на породе в пещере.
+ *
+ * Контур выбран не по прежней яркости, а по ДВУМ границам сразу. Пещера
+ * посветлела до 41.8, и контур обязан быть темнее неё, иначе силуэт пропадает
+ * под землёй; небо стоит на 10.7, и контур обязан быть светлее его, иначе
+ * силуэт пропадает в полёте на ранце. `gray[2]` (27.7) держит обе: темнее
+ * пещеры на 14 и светлее неба на 17. Самый тёмный `gray[0]` не годится именно
+ * из-за второй границы — он совпал бы с небом, и обводка исчезла бы в полёте.
+ *
+ * Визор взял `blue[4]`, а не более светлую `blue[5]`: вторую бирюзу забрал
+ * лёд, и площадному веществу она нужнее, чем шести пикселям шлема. Разница
+ * со скафандром при этом даже выросла — 66 единиц против прежних 42.
+ *
+ * Ранец ушёл на `gray[6]`, хотя по яркости просился на `gray[7]` (177 против
+ * прежних 172). Причина не художественная: `gray[7]` — цвет бегущей полосы
+ * конвейера, а полосу СЧИТАЮТ пиксель в пиксель, чтобы убедиться, что лента
+ * идёт. Два пикселя ранца в том же кадре подмешивались в этот счёт. `gray[6]`
+ * делит ступень с паром, но пара не считает никто, и появляется он только
+ * ручной установкой.
+ */
+export const SPRITE_PALETTE = [
+  RAMP.gray[0], // 0 — прозрачно, рендером не читается
+  RAMP.gray[9], // 1 — светлый скафандр
+  RAMP.gray[6], // 2 — тень и ранец
+  RAMP.blue[4], // 3 — визор
+  RAMP.gray[2], // 4 — тёмный контур
+];
 
 export const SPRITE_W = 8;
 export const SPRITE_H = 12;
@@ -75,7 +103,19 @@ export class Player {
   /** Оставшееся время до следующей продавленной ячейки. */
   private pushTimer = 0;
 
-  constructor(x: number, y: number) {
+  /**
+   * Профиль настраиваемых параметров: отсюда читается предел скорости подъёма.
+   *
+   * Персонаж не знает, что существуют исследования, — он читает свой параметр
+   * из профиля, и откуда там взялось значение, его не касается. Умолчание
+   * равно базовому: партия без единой купленной технологии обязана вести себя
+   * ровно как прежде.
+   */
+  constructor(
+    x: number,
+    y: number,
+    private readonly tuning: Tuning = new Tuning(),
+  ) {
     this.x = Math.round(x);
     this.y = Math.round(y);
   }
@@ -88,7 +128,7 @@ export class Player {
     return this.y + PLAYER.hitboxH / 2;
   }
 
-  update(dt: number, input: Input, world: World): void {
+  update(dt: number, input: PlayerInput, world: World): void {
     // Флаг тяги живёт ровно один шаг: рендерер читает его сразу после update.
     this.thrusting = false;
 
@@ -109,7 +149,7 @@ export class Player {
   }
 
   /** Разгон и трение вместо мгновенной скорости; в воздухе контроль слабее. */
-  private applyHorizontalInput(dt: number, input: Input): void {
+  private applyHorizontalInput(dt: number, input: PlayerInput): void {
     const axis = input.moveAxis;
     const accel = this.onGround
       ? PLAYER.groundAccel
@@ -133,7 +173,7 @@ export class Player {
     if (this.vy > PLAYER.maxFallSpeed) this.vy = PLAYER.maxFallSpeed;
   }
 
-  private applyJump(dt: number, input: Input): void {
+  private applyJump(dt: number, input: PlayerInput): void {
     // Буфер: нажатие до приземления не теряется.
     if (input.jumpPressed) this.jumpBufferTimer = PLAYER.jumpBufferTime;
     else this.jumpBufferTimer = Math.max(0, this.jumpBufferTimer - dt);
@@ -176,13 +216,20 @@ export class Player {
    *
    * Тяга берётся множителем к гравитации мира — так ощущение управляемости
    * одинаково на Луне, Марсе и Европе без отдельной константы на каждый мир.
+   *
+   * Растёт от технологии именно ПРЕДЕЛ, а не ускорение: ускорение — множитель
+   * к гравитации мира, и правка множителя сломала бы переносимость ранца между
+   * мирами, ради которой он и введён. Предел при любом открытом значении обязан
+   * оставаться строго ниже импульса прыжка — иначе ранец подхватывает сразу
+   * после отрыва от земли и прыжок перестаёт отличаться от полёта.
    */
-  private applyThrust(dt: number, input: Input, world: World): void {
+  private applyThrust(dt: number, input: PlayerInput, world: World): void {
     if (!input.jumpHeld) return;
-    if (this.vy <= -PLAYER.maxRiseSpeed) return;
+    const limit = this.tuning.maxRiseSpeed;
+    if (this.vy <= -limit) return;
 
     this.vy -= world.profile.gravity * PLAYER.thrustGravityMultiplier * dt;
-    if (this.vy < -PLAYER.maxRiseSpeed) this.vy = -PLAYER.maxRiseSpeed;
+    if (this.vy < -limit) this.vy = -limit;
     this.thrusting = true;
 
     // Ранец принял управление — фаза прыжка закончилась. Без этого отпускание
@@ -301,7 +348,7 @@ export class Player {
    * Вниз не продавливаемся никогда — иначе персонаж медленно тонул бы
    * в куче, на которой стоит.
    */
-  private pushThroughLoose(dt: number, input: Input, world: World): void {
+  private pushThroughLoose(dt: number, input: PlayerInput, world: World): void {
     this.pushTimer = Math.max(0, this.pushTimer - dt);
     if (this.pushTimer > 0) return;
 

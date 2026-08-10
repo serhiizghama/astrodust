@@ -1,10 +1,13 @@
 import { VIEW_W, VIEW_H, CAMERA, WORLD_SEED, BUILD_AIM_DISTANCE } from './config';
 import { Display } from './core/display';
-import { Input, ToolModeState, aimDirection, actionTarget } from './core/input';
+import { Input, ToolModeState, aimDirection, actionTarget, NO_INPUT } from './core/input';
 import { GameLoop } from './core/loop';
 import { Camera } from './render/camera';
 import { Renderer } from './render/renderer';
 import type { HudState, GhostView } from './render/renderer';
+import type { OverlayView } from './render/overlay';
+import { Research, ResearchOverlay } from './progress/research';
+import { TECHNOLOGIES } from './progress/technologies';
 import { Player } from './entities/player';
 import { Inventory } from './entities/inventory';
 import { LandingModule } from './entities/landing-module';
@@ -30,7 +33,15 @@ const display = new Display(canvas);
 const input = new Input(display);
 
 const { world, spawn, surface, receiver } = generateLuna(WORLD_SEED);
-const player = new Player(spawn.x, spawn.y);
+
+// Исследования создаются ПЕРВЫМИ: профиль настроек, который они правят,
+// нужен всем, кто читает настраиваемые параметры, — персонажу и пылесосу.
+// Сами исследования при этом не знают о них ничего, а они — об исследованиях:
+// между ними стоит профиль, и через него проходит всё.
+const research = new Research();
+const overlay = new ResearchOverlay();
+
+const player = new Player(spawn.x, spawn.y, research.tuning);
 
 const camera = new Camera(world.width, world.height);
 camera.snapTo(player.centerX, player.centerY);
@@ -38,12 +49,12 @@ camera.snapTo(player.centerX, player.centerY);
 const renderer = new Renderer(display, world, surface, WORLD_SEED);
 const simulation = new Simulation();
 const digger = new Digger();
-const vacuum = new Vacuum();
+const vacuum = new Vacuum(research.tuning);
 const painter = new DebugPainter();
 const tool = new ToolModeState();
-const catalog = new BuildCatalogState();
+const catalog = new BuildCatalogState(research);
 const inventory = new Inventory();
-const landingModule = new LandingModule(receiver);
+const landingModule = new LandingModule(receiver, research);
 const buildings = new BuildingRegistry();
 
 // Звук — читатель, а не участник: он получает счётчики уже отработавшего шага
@@ -86,13 +97,77 @@ function placementIssueText(issue: PlacementIssue | null, cost: number): string 
       return 'место занято';
     case 'unsupported':
       return 'нет опоры';
+    case 'locked':
+      // Недостижимо по построению: перебор каталога закрытых видов не отдаёт,
+      // и выбранным закрытый вид оказаться не может. Ветка стоит здесь ради
+      // полноты разбора — молчаливое «» на неизвестной причине читалось бы
+      // игроком как «годно», а рамка при этом была бы красной.
+      return 'не открыто';
     default:
       return '';
   }
 }
 
+/**
+ * Шаг при открытом оверлее: ввод достаётся меню целиком, мир идёт дальше.
+ *
+ * Модальность здесь не украшение, а условие того, чтобы меню было безопасно
+ * открыть: без неё игрок бежит с обрыва, пока читает дерево, а нажатие
+ * «купить» одновременно копает дыру под ногами.
+ *
+ * Симуляция при этом НЕ останавливается. Паузы в модели нет: мир — автомат
+ * с фиксированным шагом, машины работают без игрока, и состояние «игра не идёт»
+ * пришлось бы завести специально ради меню. Наблюдаемое следствие честное:
+ * сепаратор выдаёт порции, пока игрок выбирает технологию.
+ */
+function stepOverlay(dt: number): void {
+  overlay.handle(input, research);
+
+  // Персонаж получает пустой ввод, но физику проходит: он не зависает
+  // в воздухе на время чтения дерева.
+  player.update(dt, NO_INPUT, world);
+  simulation.update(world, { x: player.x, y: player.y, w: PLAYER.hitboxW, h: PLAYER.hitboxH });
+  buildings.update(world, dt);
+  landingModule.update(world);
+  camera.follow(player.centerX, player.centerY, 0, 0);
+
+  // Мир идёт — значит и звучит. Сигналы собираются те же, просто без действий
+  // игрока: копания нет, осыпание есть.
+  resetSignals(signals);
+  signals.listenerX = player.centerX;
+  signals.listenerY = player.centerY;
+  const moves = simulation.lastPowderMoves;
+  signals.powderMoves = moves;
+  if (moves > 0) {
+    signals.powderX = simulation.lastPowderSumX / moves;
+    signals.powderY = simulation.lastPowderSumY / moves;
+  }
+  soundscape.update(dt, signals, input.hasInteracted);
+
+  ghost = null;
+  buildIssue = '';
+  input.endStep();
+}
+
 function step(dt: number): void {
   simTime += dt;
+
+  // Клавиша оверлея читается ПЕРВОЙ и в обоих состояниях: она единственная,
+  // которая работает и в мире, и в меню.
+  if (input.researchTogglePressed) {
+    // Сброс удерживаемого — ТЕМ ЖЕ способом, что и при потере фокуса окном.
+    // Клавиша, зажатая в момент открытия, иначе оставляла бы персонажа бегущим
+    // всё время, пока игрок читает дерево. На закрытии сбрасываем по той же
+    // причине: `T`, нажатая с зажатым бегом, не должна выпустить игрока
+    // в мир уже на ходу.
+    input.releaseAll();
+    overlay.toggle();
+  }
+  if (overlay.open) {
+    stepOverlay(dt);
+    return;
+  }
+
   if (input.debugTogglePressed) showDebug = !showDebug;
   if (showDebug && input.debugCycleMaterialPressed) painter.cycle();
 
@@ -245,7 +320,7 @@ function step(dt: number): void {
       // Дальность считается по цели ПОСТРОЙКИ, а не по курсору: с клавиатуры
       // цель берётся от персонажа, и курсор к ней отношения не имеет.
       const far = !Digger.inReach(player.centerX, player.centerY, buildAim.x, buildAim.y);
-      const issue = Builder.issueAt(world, kind, at.x, at.y, landingModule.credits);
+      const issue = Builder.issueAt(world, kind, at.x, at.y, landingModule.credits, research);
       buildIssue = far ? 'слишком далеко' : placementIssueText(issue, kind.cost);
       ghost = { x: at.x, y: at.y, w: kind.width, h: kind.height, ok: !far && issue === null };
     }
@@ -259,6 +334,7 @@ function step(dt: number): void {
         player.centerY,
         buildAim.x,
         buildAim.y,
+        research,
       );
     }
   } else {
@@ -342,10 +418,38 @@ function step(dt: number): void {
  * и дублировать их ради отрисовки означало бы завести второй источник правды,
  * который однажды разойдётся с первым.
  */
+/**
+ * Список технологий для оверлея.
+ *
+ * Собирается на кадр из таблицы и состояния, а не хранится: состояние —
+ * единственный источник правды о том, что открыто, и второй его слепок
+ * однажды разошёлся бы с ним.
+ *
+ * Причина недоступности пишется СЛОВАМИ, а не только цветом: «не хватает
+ * очков» лечится работой, «закрыта предпосылкой» — другой покупкой, и какой
+ * именно, из цвета не следует никак.
+ */
+function overlayView(): OverlayView | null {
+  if (!overlay.open) return null;
+  return {
+    points: research.points,
+    selected: overlay.selectedIndex,
+    rows: TECHNOLOGIES.map((tech) => {
+      const status = research.status(tech);
+      let note = '';
+      if (status === 'poor') note = `нужно ещё ${tech.cost - research.points} ✦`;
+      else if (status === 'blocked') note = `требует: ${research.missing(tech).join(', ')}`;
+      else if (status === 'available') note = tech.description;
+      return { name: tech.name, cost: tech.cost, status, note };
+    }),
+  };
+}
+
 function hudState(): HudState {
   return {
     mode: tool.name,
     collecting: tool.collecting,
+    collectRadius: research.tuning.collectRadius,
     carried: PORTABLE_MATERIALS.filter((id) => inventory.count(id) > 0).map((id) => ({
       name: MATERIALS[id]!.name,
       count: inventory.count(id),
@@ -354,6 +458,7 @@ function hudState(): HudState {
     capacity: inventory.capacity,
     selected: inventory.selectedName,
     credits: landingModule.credits,
+    research: research.points,
     buildKind: tool.building ? `${catalog.name} ${catalog.kind.cost} ₡` : '',
     buildIssue: tool.building ? buildIssue : '',
     ghost,
@@ -366,6 +471,7 @@ function hudState(): HudState {
       progress: b.progress,
     })),
     machineSummary: machineSummary(buildings),
+    overlay: overlayView(),
   };
 }
 

@@ -2,6 +2,7 @@ import { VACUUM } from '../config';
 import { World } from './world';
 import { MAT, MAT_PORTABLE } from './materials';
 import { Digger } from './digging';
+import { Tuning, TUNING_BASE } from '../progress/tuning';
 import type { Occupant } from './simulation';
 import type { Inventory } from '../entities/inventory';
 
@@ -16,10 +17,17 @@ import type { Inventory } from '../entities/inventory';
  * Веток по идентификатору вещества здесь нет и быть не должно: что переносимо,
  * читается из таблицы материалов. Новое переносимое вещество обязано быть
  * строкой таблицы, а не правкой этого файла.
+ *
+ * Радиус кисти читается ИЗ ПРОФИЛЯ, а не из конфига: он настраиваемый параметр,
+ * и апгрейд обязан быть строкой таблицы технологий, а не правкой всех мест,
+ * где радиус читается. Откуда в профиле взялось значение, пылесос не знает
+ * и знать не должен — исследования для него не существуют.
  */
 export class Vacuum {
   private suckCooldown = 0;
   private dumpCooldown = 0;
+
+  constructor(private readonly tuning: Tuning = new Tuning()) {}
 
   /**
    * Сбор в инвентарь.
@@ -44,7 +52,7 @@ export class Vacuum {
     if (!Digger.inReach(playerCX, playerCY, targetX, targetY)) return 0;
 
     this.suckCooldown = VACUUM.interval;
-    return Vacuum.collect(world, inventory, targetX, targetY);
+    return Vacuum.collect(world, inventory, targetX, targetY, this.tuning.collectRadius);
   }
 
   /**
@@ -69,7 +77,7 @@ export class Vacuum {
     if (!Digger.inReach(playerCX, playerCY, targetX, targetY)) return 0;
 
     this.dumpCooldown = VACUUM.interval;
-    return Vacuum.dump(world, inventory, targetX, targetY, occupant);
+    return Vacuum.dump(world, inventory, targetX, targetY, occupant, this.tuning.collectRadius);
   }
 
   /**
@@ -84,10 +92,21 @@ export class Vacuum {
    * Запись идёт через `world.set`, поэтому окрестность просыпается, как от
    * любого другого изменения: лежащее над собранным обязано осыпаться.
    *
+   * Радиус — АРГУМЕНТ, а не константа: он живёт в профиле настроек, и брать
+   * его здесь напрямую означало бы, что апгрейд кисти обходит статический
+   * вызов стороной. Умолчание равно базовому значению профиля и существует
+   * ради вызовов, которым апгрейды не интересны.
+   *
    * @returns сколько ячеек собрано
    */
-  static collect(world: World, inventory: Inventory, centerX: number, centerY: number): number {
-    const r = VACUUM.radius;
+  static collect(
+    world: World,
+    inventory: Inventory,
+    centerX: number,
+    centerY: number,
+    radius: number = TUNING_BASE.collectRadius,
+  ): number {
+    const r = radius;
     const rSq = r * r;
     let collected = 0;
 
@@ -133,8 +152,9 @@ export class Vacuum {
     centerX: number,
     centerY: number,
     occupant: Occupant | null = null,
+    radius: number = TUNING_BASE.collectRadius,
   ): number {
-    const r = VACUUM.radius;
+    const r = radius;
     const rSq = r * r;
     const material = inventory.selected;
     let placed = 0;

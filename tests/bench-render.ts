@@ -50,16 +50,19 @@ const player = new Player(spawn.x, spawn.y);
 const hud: HudState = {
   mode: 'Копание',
   collecting: false,
+  collectRadius: VACUUM.radius,
   carried: [],
   used: 0,
   capacity: VACUUM.capacity,
   selected: 'Реголит',
   credits: 0,
+  research: 0,
   buildKind: '',
   buildIssue: '',
   ghost: null,
   machines: [],
   machineSummary: '',
+  overlay: null,
 };
 
 /** Средняя стоимость кадра в миллисекундах для заданного положения камеры. */

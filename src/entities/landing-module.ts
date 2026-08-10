@@ -1,5 +1,6 @@
 import { World } from '../world/world';
-import { MAT, MAT_CREDITS } from '../world/materials';
+import { MAT, MAT_CREDIT_RATE, MAT_RESEARCH_RATE } from '../world/materials';
+import { Research } from '../progress/research';
 
 /** Прямоугольник в координатах сетки. */
 export interface Rect {
@@ -9,9 +10,15 @@ export interface Rect {
   readonly h: number;
 }
 
+/** Что начислено за один шаг зоны приёмника. */
+export interface Payout {
+  readonly credits: number;
+  readonly research: number;
+}
+
 /**
  * Посадочный модуль: единственное место в мире, где вещество превращается
- * в кредиты.
+ * в валюту.
  *
  * Корпус модуля живёт в СЕТКЕ и сюда не входит — его выкладывает генератор
  * мира. Сетка остаётся единственным источником правды о геометрии: модуль,
@@ -34,7 +41,18 @@ export class LandingModule {
    */
   credits = 0;
 
-  constructor(readonly receiver: Rect) {}
+  /**
+   * Второй счётчик живёт НЕ ЗДЕСЬ, а в состоянии исследований, и модуль только
+   * начисляет в него.
+   *
+   * Иначе счётчиков стало бы два: один принимает сдачу, другой платит
+   * за технологии, и однажды они разошлись бы. Приёмнику от исследований нужен
+   * ровно один глагол — «начислить», и никакой другой связи между ними нет.
+   */
+  constructor(
+    readonly receiver: Rect,
+    readonly research: Research = new Research(),
+  ) {}
 
   /**
    * Обход зоны приёмника — раз в шаг, по списку её ячеек.
@@ -44,27 +62,37 @@ export class LandingModule {
    * оповещения.
    *
    * Что принимается и почём, решает таблица материалов. Названий веществ
-   * приёмник не знает: ставка ноль означает «не принимается», и такое вещество
-   * остаётся в мире и ведёт себя как обычно — зона приёмник, а не
+   * приёмник не знает: ноль в ОБЕИХ ставках означает «не принимается», и такое
+   * вещество остаётся в мире и ведёт себя как обычно — зона приёмник, а не
    * мусоросжигатель.
    *
-   * @returns сколько кредитов начислено на этом шаге
+   * Валют две, а правило одно: обе ставки читаются из таблицы и складываются
+   * в свои счётчики. Ветки «а если это иридий» здесь нет и быть не может —
+   * ровно поэтому ставка и расщеплена на два поля, а не дополнена
+   * перечислением «какая валюта».
+   *
+   * @returns сколько начислено на этом шаге по каждой валюте
    */
-  update(world: World): number {
+  update(world: World): Payout {
     const { x, y, w, h } = this.receiver;
-    let earned = 0;
+    let credits = 0;
+    let research = 0;
 
     for (let cy = y; cy < y + h; cy++) {
       for (let cx = x; cx < x + w; cx++) {
-        const rate = MAT_CREDITS[world.get(cx, cy)]!;
-        if (rate === 0) continue;
+        const m = world.get(cx, cy);
+        const credit = MAT_CREDIT_RATE[m]!;
+        const point = MAT_RESEARCH_RATE[m]!;
+        if (credit === 0 && point === 0) continue;
         world.set(cx, cy, MAT.VACUUM);
-        earned += rate;
+        credits += credit;
+        research += point;
       }
     }
 
-    this.credits += earned;
-    return earned;
+    this.credits += credits;
+    this.research.earn(research);
+    return { credits, research };
   }
 
   /**

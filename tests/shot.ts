@@ -188,6 +188,7 @@ const hud: HudState = {
   // изменение мира или задника, а не смену формы крестика.
   mode: 'Копание',
   collecting: false,
+  collectRadius: VACUUM.radius,
   carried: [
     { name: 'Реголит', count: 210 },
     { name: 'Пульпа', count: 138 },
@@ -196,11 +197,13 @@ const hud: HudState = {
   capacity: VACUUM.capacity,
   selected: 'Пульпа',
   credits: 1234,
+  research: 7,
   buildKind: '',
   buildIssue: '',
   ghost: null,
   machines: [],
   machineSummary: '',
+  overlay: null,
 };
 
 for (const shot of SHOTS) {

@@ -1,5 +1,6 @@
 import { CONVEYOR } from '../config';
 import { MAT } from '../world/materials';
+import { CONTENT } from '../progress/technologies';
 import { sectionKind } from './buildings';
 import type { BuildingKind } from './buildings';
 
@@ -14,6 +15,12 @@ import type { BuildingKind } from './buildings';
  * Направления — ДВА ОТДЕЛЬНЫХ ВИДА, а не поворот уже выбранного. Поворота
  * и зеркалирования построек в модели нет ни у машин, ни у лент, и вводить их
  * ради объекта с двумя состояниями дороже, чем добавить строку.
+ *
+ * Оба ЗАКРЫТЫ до технологии, и оба указывают на ОДНО содержимое: лента — первая
+ * вещь, которую игрок хочет, увидев ходку «сепаратор — модуль», и потому лучшая
+ * первая цель, а лента, которую можно вести только вправо, не решает задачу,
+ * ради которой её открывают. Вторая покупка ради знака была бы налогом
+ * на планировку, а не выбором.
  */
 export const CONVEYOR_LEFT_KIND: BuildingKind = sectionKind(
   'conveyor-left',
@@ -21,6 +28,7 @@ export const CONVEYOR_LEFT_KIND: BuildingKind = sectionKind(
   MAT.CONVEYOR_LEFT,
   CONVEYOR.sectionCost,
   CONVEYOR.size,
+  CONTENT.CONVEYOR,
 );
 
 export const CONVEYOR_RIGHT_KIND: BuildingKind = sectionKind(
@@ -29,4 +37,5 @@ export const CONVEYOR_RIGHT_KIND: BuildingKind = sectionKind(
   MAT.CONVEYOR_RIGHT,
   CONVEYOR.sectionCost,
   CONVEYOR.size,
+  CONTENT.CONVEYOR,
 );

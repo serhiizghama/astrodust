@@ -56,12 +56,7 @@ export class DebugPainter {
   }
 
   /** Кисть меньше копательной: вещество ставится точечно, а не заливкой экрана. */
-  paint(
-    world: World,
-    centerX: number,
-    centerY: number,
-    occupant: Occupant | null = null,
-  ): number {
+  paint(world: World, centerX: number, centerY: number, occupant: Occupant | null = null): number {
     const r = Math.max(1, DIG.radius - 1);
     const rSq = r * r;
     const material = this.material;

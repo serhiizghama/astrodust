@@ -3,11 +3,18 @@ import { MAT, MAT_STATE, MatterState } from './materials';
 import { Digger } from './digging';
 import { stampKind } from '../entities/buildings';
 import type { Building, BuildingKind, BuildingRegistry } from '../entities/buildings';
-import { sectionKindByHull } from '../entities/catalog';
+import { sectionKindByHull, isKindOpen } from '../entities/catalog';
+import { NO_UNLOCKS } from '../progress/research';
+import type { ContentUnlocks } from '../progress/research';
 import type { LandingModule } from '../entities/landing-module';
 
-/** Почему место негодно. Ноль причин — годно. */
-export type PlacementIssue = 'occupied' | 'unsupported' | 'funds';
+/**
+ * Почему постановка невозможна. Ноль причин — годно.
+ *
+ * `locked` стоит особняком от прочих трёх: те — про место, эта — про сам вид,
+ * и лечится она не шагом в сторону, а покупкой в оверлее исследований.
+ */
+export type PlacementIssue = 'occupied' | 'unsupported' | 'funds' | 'locked';
 
 /**
  * Постановка и снос зданий.
@@ -71,7 +78,13 @@ export class Builder {
     x: number,
     y: number,
     credits: number,
+    unlocks: ContentUnlocks = NO_UNLOCKS,
   ): PlacementIssue | null {
+    // Первым, до всего остального: закрытый вид не ставится НИКАКИМ способом,
+    // и ни деньги, ни удачное место этого не меняют. Умолчание — состояние
+    // начала партии: забывчивость даёт отказ, а не тихое разрешение.
+    if (!isKindOpen(kind, unlocks)) return 'locked';
+
     if (credits < kind.cost) return 'funds';
 
     // Вся область пуста. Проверяется ОБЛАСТЬ, а не только ячейки корпуса:
@@ -122,6 +135,7 @@ export class Builder {
     playerCY: number,
     targetX: number,
     targetY: number,
+    unlocks: ContentUnlocks = NO_UNLOCKS,
   ): 'placed' | 'demolished' | 'rejected' {
     if (!Digger.inReach(playerCX, playerCY, targetX, targetY)) return 'rejected';
 
@@ -146,7 +160,7 @@ export class Builder {
     }
 
     const at = Builder.originFor(kind, targetX, targetY);
-    if (Builder.issueAt(world, kind, at.x, at.y, module.credits) !== null) {
+    if (Builder.issueAt(world, kind, at.x, at.y, module.credits, unlocks) !== null) {
       return 'rejected';
     }
 
