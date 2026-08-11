@@ -32,9 +32,17 @@ import {
   TECH_ROWS,
 } from './progress';
 import type { PointerTarget } from './progress';
-import { Player, NO_INPUT, Inventory, LandingModule, BuildCatalogState } from './entities';
+import {
+  Player,
+  NO_INPUT,
+  Inventory,
+  LandingModule,
+  BuildCatalogState,
+  kindLabel,
+} from './entities';
+import type { BuildingKind } from './entities';
 import { generateLuna, MATERIALS, PORTABLE_MATERIALS } from './world';
-import { Digger, Vacuum, Builder, DebugPainter } from './systems';
+import { Digger, Vacuum, Builder, BuildRun, DebugPainter } from './systems';
 import type { BuildPreview } from './systems';
 import { Game } from './app';
 import type { GameState, StepIntent } from './app';
@@ -102,6 +110,11 @@ let hoveredNode: number | null = null;
  * от хитбокса персонажа и счёта, а те живут по шагам симуляции.
  */
 let ghost: GhostView | null = null;
+/**
+ * Идущий жест протяжки. Единственное состояние строительства, живущее между
+ * шагами: остальное считается заново из мира и прицела.
+ */
+const run = new BuildRun();
 /** Почему место негодно, словами. Пустая строка — годно или не строим. */
 let buildIssue = '';
 /**
@@ -269,7 +282,8 @@ const playState: GameState = {
 /**
  * Строительство: контур и постановка. На НАЖАТИЕ, а не на удержание — иначе
  * одно здание ставится и сносится тридцать раз в секунду. Клавиатурная цель
- * СВОЯ и дальше копательной: при общей дистанции построить без мыши нельзя.
+ * СВОЯ и дальше копательной: при общей дистанции она не дотягивается до места
+ * под постройку, и клавиатурный путь строительства обрывается на первом шаге.
  */
 function applyBuilding(dir: { x: number; y: number }, cursorX: number, cursorY: number): void {
   if (!tool.building) {
@@ -300,6 +314,14 @@ function applyBuilding(dir: { x: number; y: number }, cursorX: number, cursorY: 
   }
 
   const kind = catalog.kind;
+  if (kind.create === null) {
+    applySectionGesture(kind, buildAim.x, buildAim.y);
+    return;
+  }
+
+  // Машина ставится разово, на нажатие: протяжённой конструкции из машин нет,
+  // а линия из сепараторов была бы промахом, а не намерением.
+  run.end();
   const preview = Builder.preview(
     world,
     buildings,
@@ -310,7 +332,7 @@ function applyBuilding(dir: { x: number; y: number }, cursorX: number, cursorY: 
     buildAim.y,
     research,
   );
-  ghost = preview;
+  ghost = { ...preview, side: 0 };
   buildIssue = placementIssueText(preview);
 
   if (input.toolPressed) {
@@ -325,6 +347,122 @@ function applyBuilding(dir: { x: number; y: number }, cursorX: number, cursorY: 
       research,
     );
   }
+}
+
+/**
+ * Подпись вида с его стороной переноса.
+ *
+ * Сторона берётся из контура, когда тот её знает, и из модификатора, когда
+ * нет: подпись обязана меняться вместе с нажатием `Shift`, а не после
+ * постановки.
+ */
+function buildKindLabel(): string {
+  const side = ghost !== null && ghost.side !== 0 ? ghost.side : input.buildSide;
+  return kindLabel(catalog.kind, side);
+}
+
+/**
+ * Жест протяжки: секции кладутся ПО ХОДУ удержания, а не на отпускании.
+ *
+ * Лента, появляющаяся только при отпускании, лишает игрока возможности
+ * остановиться, увидев, что кладётся не туда. Повторная укладка той же секции
+ * при этом безвредна: `applyLine` пропускает записи-пустышки и чанков не будит.
+ *
+ * Снос, наоборот, ждёт ОТПУСКАНИЯ и только если жест не сдвинулся с места.
+ * Снос на нажатии означал бы, что нажать на ленту, чтобы её продлить, нельзя:
+ * первый же шаг жеста её бы и убрал.
+ */
+function applySectionGesture(kind: BuildingKind, aimX: number, aimY: number): void {
+  if (input.toolPressed) {
+    const at = Builder.originFor(kind, aimX, aimY);
+    const standing =
+      buildings.findAt(aimX, aimY) !== null ||
+      Builder.sectionState(world, kind, at.x, at.y) !== 'free';
+    run.begin(aimX, aimY, standing);
+  }
+  const anchor = run.anchor;
+
+  // Жеста нет: контур показывает то же, что показывал бы одиночному нажатию.
+  if (anchor === null) {
+    const preview = Builder.preview(
+      world,
+      buildings,
+      kind,
+      player.centerX,
+      player.centerY,
+      aimX,
+      aimY,
+      research,
+    );
+    ghost = { ...preview, side: preview.issue === null ? input.buildSide : 0 };
+    buildIssue = placementIssueText(preview);
+    return;
+  }
+
+  run.note(aimX, aimY);
+
+  // Жест, начатый на постройке и никуда не поведший, — снос. Пока он не
+  // сдвинулся, класть нечего, и контур обводит то, что исчезнет.
+  if (run.isDemolishClick) {
+    const preview = Builder.preview(
+      world,
+      buildings,
+      kind,
+      player.centerX,
+      player.centerY,
+      anchor.x,
+      anchor.y,
+      research,
+    );
+    ghost = { ...preview, side: 0 };
+    buildIssue = placementIssueText(preview);
+    if (!input.toolHeld) {
+      Builder.apply(
+        world,
+        buildings,
+        kind,
+        player.centerX,
+        player.centerY,
+        anchor.x,
+        anchor.y,
+        research,
+      );
+      run.end();
+    }
+    return;
+  }
+
+  const line = Builder.line(
+    world,
+    kind,
+    anchor.x,
+    anchor.y,
+    aimX,
+    player.centerX,
+    player.centerY,
+    input.buildSide,
+    research,
+  );
+  ghost = {
+    x: line.x,
+    y: line.y,
+    w: Math.max(line.count, 1) * kind.width,
+    h: kind.height,
+    ok: line.count > 0,
+    side: line.count > 0 ? line.side : 0,
+  };
+  buildIssue = placementIssueText({
+    x: line.x,
+    y: line.y,
+    w: kind.width,
+    h: kind.height,
+    ok: line.count > 0,
+    issue: line.count > 0 ? null : line.issue,
+  });
+
+  Builder.applyLine(world, kind, line);
+
+  if (!input.toolHeld) run.end();
 }
 
 /**
@@ -482,7 +620,7 @@ function hudState(): HudState {
     capacity: inventory.capacity,
     selected: inventory.selectedName,
     credits: landingModule.credits,
-    buildKind: tool.building ? catalog.name : '',
+    buildKind: tool.building ? buildKindLabel() : '',
     buildIssue: tool.building ? buildIssue : '',
     ghost,
     machines: buildings.all.map((b) => ({

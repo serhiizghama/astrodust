@@ -1,8 +1,8 @@
-import { DIG, VACUUM, CONVEYOR, SIM_HZ, SHADING, UI } from '../config';
+import { DIG, VACUUM, CONVEYOR, BUILD_MODULE, SIM_HZ, SHADING, UI } from '../config';
 import { Display } from '../core';
 import { Camera } from './camera';
 import { World, MAT, MAT_CARRY } from '../world';
-import { SHADE_R, SHADE_G, SHADE_B, CONVEYOR_STRIPE_COLOR } from './material-colors';
+import { SHADE_R, SHADE_G, SHADE_B, CONVEYOR_ROLLER_COLOR } from './material-colors';
 import { GRAIN } from './grain';
 import { BAYER, DITHER_MASK, DITHER_LEVELS } from './dither';
 import { Lightmap, LIGHT_NEUTRAL } from './lightmap';
@@ -192,18 +192,27 @@ export const MACHINE_STATE_COLORS = {
   blocked: RAMP.rust[5],
 } as const;
 
-const STRIPE_R = (CONVEYOR_STRIPE_COLOR >> 16) & 0xff;
-const STRIPE_G = (CONVEYOR_STRIPE_COLOR >> 8) & 0xff;
-const STRIPE_B = CONVEYOR_STRIPE_COLOR & 0xff;
+const ROLLER_R = (CONVEYOR_ROLLER_COLOR >> 16) & 0xff;
+const ROLLER_G = (CONVEYOR_ROLLER_COLOR >> 8) & 0xff;
+const ROLLER_B = CONVEYOR_ROLLER_COLOR & 0xff;
 
 /**
- * Насколько полоса ушла вперёд к этому моменту игрового времени, в ячейках.
- * Считается ИЗ `stepsPerCell`: полоса, бегущая быстрее груза, — врущий прибор.
+ * Насколько ролики ушли вперёд к этому моменту игрового времени, в ячейках.
+ * Считается ИЗ `stepsPerCell`: ролик, бегущий быстрее груза, — врущий прибор.
  * Игровым временем, а не кадрами: на 144 Гц темп тот же, что и на 60.
  */
-export function stripeOffset(time: number): number {
+export function rollerOffset(time: number): number {
   return Math.floor((time * SIM_HZ) / CONVEYOR.stepsPerCell);
 }
+
+/**
+ * Маска ряда внутри секции. Модуль — степень двойки ровно ради этой маски:
+ * ряд берётся в горячем цикле на каждый пиксель ленты, и деление там дороже.
+ */
+const MODULE_MASK = BUILD_MODULE - 1;
+/** Ряды секции, занятые роликами: середина корпуса. */
+const ROLLER_FROM = CONVEYOR.rollerInset;
+const ROLLER_TO = BUILD_MODULE - CONVEYOR.rollerInset;
 
 /**
  * Что показать в интерфейсе и каким нарисовать прицел.
@@ -275,6 +284,13 @@ export interface GhostView {
   readonly w: number;
   readonly h: number;
   readonly ok: boolean;
+  /**
+   * Сторона переноса, которую задаст применение, или `0` — у вида её нет.
+   *
+   * В контуре, а не только в подписи: игрок обязан узнать, куда повезёт лента,
+   * ДО того, как она встанет, а смотрит он в место постановки, а не под панель.
+   */
+  readonly side: -1 | 0 | 1;
 }
 
 export interface MachineView {
@@ -374,7 +390,7 @@ export class Renderer {
     this.lightmap.update();
 
     this.backdrop.draw(this.display.pixels, camera.x, camera.y, time, maxSurface);
-    this.drawWorld(camera, maxSurface, stripeOffset(time));
+    this.drawWorld(camera, maxSurface, rollerOffset(time));
     this.drawMachines(camera, hud.machines);
     this.drawPlayer(camera, player);
     if (hud.ghost) this.drawGhost(camera, hud.ghost);
@@ -423,8 +439,8 @@ export class Renderer {
     const camX = camera.x;
     const camY = camera.y;
     const surface = this.surface;
-    const period = CONVEYOR.stripePeriod;
-    const stripe = CONVEYOR.stripeWidth;
+    const period = BUILD_MODULE;
+    const roller = CONVEYOR.rollerWidth;
     const caveR = this.caveR;
     const caveG = this.caveG;
     const caveB = this.caveB;
@@ -450,6 +466,9 @@ export class Renderer {
       const grainRow = (wy & GRAIN_MASK) * GRAIN_SIZE;
       const bayerRow = (wy & DITHER_MASK) << 2;
       const lightRow = (wy >> LIGHT_SHIFT) * lightCols;
+      // Ряд роликов внутри секции. Считается РАЗ НА СТРОКУ: `wy` на всю строку
+      // один, а условие проверяется на каждый пиксель ленты.
+      const rollerRow = (wy & MODULE_MASK) >= ROLLER_FROM && (wy & MODULE_MASK) < ROLLER_TO;
 
       const rowStart = rowBase + camX;
       let prev = cells[rowStart - 1];
@@ -463,10 +482,14 @@ export class Renderer {
 
         if (m !== MAT.VACUUM) {
           const carry = MAT_CARRY[m]!;
-          if (carry !== 0 && (((wx - carry * offset) % period) + period) % period < stripe) {
-            px[idx] = STRIPE_R;
-            px[idx + 1] = STRIPE_G;
-            px[idx + 2] = STRIPE_B;
+          if (
+            carry !== 0 &&
+            rollerRow &&
+            (((wx - carry * offset) % period) + period) % period < roller
+          ) {
+            px[idx] = ROLLER_R;
+            px[idx + 1] = ROLLER_G;
+            px[idx + 2] = ROLLER_B;
           } else {
             const at =
               (m << SHADE_BITS) |
@@ -511,6 +534,9 @@ export class Renderer {
       const grainRow = (wy & GRAIN_MASK) * GRAIN_SIZE;
       const bayerRow = (wy & DITHER_MASK) << 2;
       const lightRow = (wy >> LIGHT_SHIFT) * lightCols;
+      // Ряд роликов внутри секции. Считается РАЗ НА СТРОКУ: `wy` на всю строку
+      // один, а условие проверяется на каждый пиксель ленты.
+      const rollerRow = (wy & MODULE_MASK) >= ROLLER_FROM && (wy & MODULE_MASK) < ROLLER_TO;
 
       const rowStart = rowBase + camX;
       let prev = cells[rowStart - 1];
@@ -524,10 +550,14 @@ export class Renderer {
 
         if (m !== MAT.VACUUM) {
           const carry = MAT_CARRY[m]!;
-          if (carry !== 0 && (((wx - carry * offset) % period) + period) % period < stripe) {
-            px[idx] = STRIPE_R;
-            px[idx + 1] = STRIPE_G;
-            px[idx + 2] = STRIPE_B;
+          if (
+            carry !== 0 &&
+            rollerRow &&
+            (((wx - carry * offset) % period) + period) % period < roller
+          ) {
+            px[idx] = ROLLER_R;
+            px[idx + 1] = ROLLER_G;
+            px[idx + 2] = ROLLER_B;
           } else {
             const at =
               (m << SHADE_BITS) |
@@ -597,6 +627,7 @@ export class Renderer {
    * тот же язык, что у прицела, и второй учить не надо.
    */
   private drawGhost(camera: Camera, ghost: GhostView): void {
+    const color = ghost.ok ? MACHINE_STATE_COLORS.working : MACHINE_STATE_COLORS.blocked;
     strokeRect(
       this.display.pixels,
       this.display.width,
@@ -605,8 +636,39 @@ export class Renderer {
       ghost.y - camera.y,
       ghost.w,
       ghost.h,
-      ghost.ok ? MACHINE_STATE_COLORS.working : MACHINE_STATE_COLORS.blocked,
+      color,
     );
+    if (ghost.side !== 0) this.drawGhostSide(camera, ghost, color);
+  }
+
+  /**
+   * Сторона переноса — стрелкой у ТОГО КРАЯ контура, куда повезёт лента.
+   * Край, а не середина: середину линии длиной в двадцать секций игрок
+   * не разглядывает, а край — это то место, где груз с ленты сойдёт.
+   *
+   * Клин из пикселей, а не значок: контур рисуется в буфер мира, где всё
+   * измеряется ячейками, и половина секции — четыре ряда — не оставляет места
+   * ни на что сложнее.
+   */
+  private drawGhostSide(camera: Camera, ghost: GhostView, color: number): void {
+    const px = this.display.pixels;
+    const viewW = this.display.width;
+    const viewH = this.display.height;
+    const midY = ghost.y + (ghost.h >> 1) - camera.y;
+    const tipX = (ghost.side > 0 ? ghost.x + ghost.w : ghost.x - 1) - camera.x;
+    const half = ghost.h >> 1;
+    for (let k = 0; k < half; k++) {
+      const x = tipX - ghost.side * k;
+      for (let dy = -k; dy <= k; dy++) {
+        const y = midY + dy;
+        if (x < 0 || y < 0 || x >= viewW || y >= viewH) continue;
+        if (dy !== -k && dy !== k) continue;
+        const i = (y * viewW + x) << 2;
+        px[i] = (color >> 16) & 0xff;
+        px[i + 1] = (color >> 8) & 0xff;
+        px[i + 2] = color & 0xff;
+      }
+    }
   }
 
   private drawPlayer(camera: Camera, player: Player): void {

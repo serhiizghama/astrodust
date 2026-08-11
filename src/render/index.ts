@@ -12,7 +12,7 @@ export {
   BRUSH_OUTLINE,
   VACUUM_OUTLINE,
   vacuumOutline,
-  stripeOffset,
+  rollerOffset,
   MACHINE_STATE_COLORS,
 } from './renderer';
 export type { HudState, GhostView, FrameView } from './renderer';
@@ -80,7 +80,7 @@ export type {
  * дорогой, которой рисуются.
  */
 export { CREDITS_TONE, COIN_KEY, measureCredits, drawCredits } from './credits';
-export { CONVEYOR_STRIPE_COLOR, MAT_SHADES } from './material-colors';
+export { CONVEYOR_ROLLER_COLOR, MAT_SHADES } from './material-colors';
 export { BAYER, DITHER_LEVELS } from './dither';
 export { Lightmap, LIGHT_NEUTRAL } from './lightmap';
 /**

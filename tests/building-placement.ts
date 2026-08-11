@@ -6,7 +6,7 @@ import { Digger, Vacuum, Builder } from '../src/systems';
 import { Player, Inventory, LandingModule, BuildingRegistry } from '../src/entities';
 import {
   SEPARATOR_KIND,
-  CONVEYOR_RIGHT_KIND,
+  CONVEYOR_KIND,
   Separator,
   OUTLET_ROW,
   OUTLET_FROM,
@@ -20,7 +20,7 @@ import {
   BASE_VIEW_H,
   DIG,
   SEPARATOR,
-  CONVEYOR,
+  BUILD_MODULE,
   BUILD_AIM_DISTANCE,
 } from '../src/config';
 import {
@@ -80,11 +80,7 @@ const { spawn } = first;
     {
       const { world: w, module, registry } = scene();
       module.credits = 0;
-      const at = Builder.originFor(
-        SEPARATOR_KIND,
-        BX + (SEPARATOR.width >> 1),
-        BY + (SEPARATOR.height >> 1),
-      );
+      const at = Builder.originFor(SEPARATOR_KIND, BX, BY);
       const issue = Builder.issueAt(w, SEPARATOR_KIND, at.x, at.y, UNLOCKED);
       const r = build(w, registry);
       check(
@@ -98,7 +94,7 @@ const { spawn } = first;
     // возможность, а не экземпляр. Мир взят с запасом по ширине — иначе
     // проверка мерила бы его край, а не отсутствие ограничения.
     {
-      const size = CONVEYOR.size;
+      const size = BUILD_MODULE;
       const sections = 60;
       const w = ground(sections * size + 4 * size, 96);
       const registry = new BuildingRegistry();
@@ -106,16 +102,7 @@ const { spawn } = first;
       let laid = 0;
       for (let i = 0; i < sections; i++) {
         const x = 2 * size + i * size;
-        const r = Builder.apply(
-          w,
-          registry,
-          CONVEYOR_RIGHT_KIND,
-          x,
-          4 * size,
-          x,
-          4 * size,
-          UNLOCKED,
-        );
+        const r = Builder.apply(w, registry, CONVEYOR_KIND, x, 4 * size, x, 4 * size, UNLOCKED);
         if (r === 'placed') laid++;
       }
       check(
@@ -554,7 +541,7 @@ const { spawn } = first;
       crosshairX: 160,
       crosshairY: 90,
       crosshairInReach: true,
-      hud: hud({ ghost: { ...rect, ok: true } }),
+      hud: hud({ ghost: { ...rect, ok: true, side: 0 } }),
       fps: 0,
     });
     const okPixels = countPixels(MACHINE_STATE_COLORS.working);
@@ -565,7 +552,7 @@ const { spawn } = first;
       crosshairX: 160,
       crosshairY: 90,
       crosshairInReach: true,
-      hud: hud({ ghost: { ...rect, ok: false } }),
+      hud: hud({ ghost: { ...rect, ok: false, side: 0 } }),
       fps: 0,
     });
     const badPixels = countPixels(MACHINE_STATE_COLORS.blocked);

@@ -89,7 +89,7 @@ export const TECHNOLOGIES: readonly Technology[] = [
     id: 'conveyor-belt',
     name: 'Конвейерная лента',
     description: 'Открывает конвейер в каталоге построек',
-    usage: 'Режим стройки — 2, вид ленты — X. Тянет вещество к машине или модулю сама',
+    usage: 'Режим стройки — 2. Тяни, не отпуская: куда протянул, туда и везёт; Shift — обратно',
     icon: 'conveyor',
     cost: 600,
     requires: [],

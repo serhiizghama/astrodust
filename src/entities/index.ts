@@ -10,9 +10,9 @@
 export { Player, NO_INPUT } from './player';
 export type { PlayerInput } from './player';
 export { Inventory } from './inventory';
-export { Building, BuildingRegistry, stampKind } from './buildings';
+export { Building, BuildingRegistry, stampKind, hullForSide, kindLabel } from './buildings';
 export type { BuildingKind } from './buildings';
 export { BUILD_CATALOG, BuildCatalogState, isKindOpen, sectionKindByHull } from './catalog';
-export { CONVEYOR_LEFT_KIND, CONVEYOR_RIGHT_KIND } from './conveyor';
+export { CONVEYOR_KIND } from './conveyor';
 export { SEPARATOR_KIND, Separator, OUTLET_ROW, OUTLET_FROM, OUTLET_TO } from './separator';
 export { LandingModule } from './landing-module';

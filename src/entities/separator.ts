@@ -185,11 +185,9 @@ export const SEPARATOR_KIND: BuildingKind = {
   width: SEPARATOR.width,
   height: SEPARATOR.height,
   hull: MAT.SEPARATOR_HULL,
+  // Стороны у машины нет: она не переносит.
+  sideHulls: null,
   shape: SEPARATOR_SHAPE,
-  // Сетки нет: машина центрируется на цели. Выравнивание нужно там, где
-  // границы постройки приходится выводить из координат, — у машины они
-  // записаны в реестре.
-  grid: 0,
   // Машина без опоры читается как ошибка рендера — в отличие от ленты, которой
   // висеть над пустотой положено.
   needsSupport: true,

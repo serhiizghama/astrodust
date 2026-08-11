@@ -12,15 +12,22 @@ import { SEPARATOR } from '../../src/config';
 import { ground } from './world';
 
 /**
- * Сцена под машину: сепаратор 25 ячеек в стороне, лента под ним — секциями
- * по 8, и в песочнице 96×96 им уже негде развернуться.
+ * Сцена под машину: сепаратор 24 ячейки в стороне, лента под ним — секциями
+ * по модулю, и в песочнице 96×96 им уже негде развернуться.
  */
 const SCENE_W = 192;
 const SCENE_H = 192;
 
-/** Верхний левый угол здания, стоящего на полу сцены. */
-export const BX = 40;
-export const BY = SCENE_H - 2 - SEPARATOR.height;
+/**
+ * Верхний левый угол здания, стоящего на полу сцены.
+ *
+ * Выровнен по сетке модуля: постановка притягивает к ней цель, и с некратного
+ * угла корпус лёг бы не туда, куда его просили. Пол при этом на сетку
+ * не ложится — опора ищется в полосе глубиной в модуль, и просвет под ногами
+ * ожидаем.
+ */
+export const BX = Builder.snap(40);
+export const BY = Builder.snap(SCENE_H - 2 - SEPARATOR.height);
 
 export function scene(credits = 0): {
   world: World;
@@ -33,16 +40,19 @@ export function scene(credits = 0): {
   return { world: w, module, registry: new BuildingRegistry() };
 }
 
-/** Ставит сепаратор в известную точку и отдаёт его. */
+/**
+ * Ставит сепаратор в известную точку и отдаёт результат.
+ *
+ * Цель — УГОЛ, а не центр: все виды притягиваются к сетке модуля, и центр
+ * области больше ничего не значит.
+ */
 export function build(
   w: World,
   registry: BuildingRegistry,
   x = BX,
   y = BY,
 ): 'placed' | 'demolished' | 'rejected' {
-  const cx = x + (SEPARATOR_KIND.width >> 1);
-  const cy = y + (SEPARATOR_KIND.height >> 1);
-  return Builder.apply(w, registry, SEPARATOR_KIND, cx, cy, cx, cy);
+  return Builder.apply(w, registry, SEPARATOR_KIND, x, y, x, y);
 }
 
 /**

@@ -20,7 +20,7 @@ import {
 import type { HudState, HudLayout, UiOp, PanelStyle, OverlayView } from '../src/render';
 import type { Display } from '../src/core';
 import { ActionBarState, ToolMode } from '../src/core';
-import { Player } from '../src/entities';
+import { Player, kindLabel, CONVEYOR_KIND, SEPARATOR_KIND } from '../src/entities';
 import {
   BASE_VIEW_W,
   BASE_VIEW_H,
@@ -372,6 +372,36 @@ const { spawn } = first;
         !saysLike(building, 'нет опоры'),
       `вид на y=${kind?.y}, отказ на y=${issue?.y}`,
     );
+
+    // Сторона переноса — В ПОДПИСИ, а не в названии вида: вид один, и в каталоге
+    // стороне делать нечего, но игрок обязан знать, куда повезёт лента.
+    {
+      const right = kindLabel(CONVEYOR_KIND, 1);
+      const left = kindLabel(CONVEYOR_KIND, -1);
+      check(
+        'Кадр: у ленты в подписи виден знак стороны, и он переворачивается модификатором',
+        right !== left &&
+          right.startsWith(CONVEYOR_KIND.name) &&
+          left.startsWith(CONVEYOR_KIND.name) &&
+          right.includes('▶') &&
+          left.includes('◀'),
+        `${right} / ${left}`,
+      );
+      check(
+        'Кадр: у машины знака стороны нет — пустое место под него читалось бы пропуском',
+        kindLabel(SEPARATOR_KIND, 1) === SEPARATOR_KIND.name &&
+          kindLabel(SEPARATOR_KIND, -1) === SEPARATOR_KIND.name,
+        kindLabel(SEPARATOR_KIND, -1),
+      );
+
+      // Подпись со стороной доходит до кадра целиком, а не обрезается до вида.
+      const shown = shoot({ activeSlot: 1, buildKind: right });
+      check(
+        'Кадр: подпись со стороной попадает над панель целиком',
+        pick(shown, 'text').some((op) => op.text === right),
+        right,
+      );
+    }
 
     // Причина отказа различима ЦВЕТОМ от остальных надписей низа кадра.
     const others = pick(refused, 'text')

@@ -4,7 +4,7 @@ import { Digger, Builder } from '../src/systems';
 import {
   LandingModule,
   BuildingRegistry,
-  CONVEYOR_RIGHT_KIND,
+  CONVEYOR_KIND,
   BUILD_CATALOG,
   BuildCatalogState,
   Player,
@@ -19,7 +19,7 @@ import {
   MAX_VIEW_W,
   MAX_VIEW_H,
   DIG,
-  CONVEYOR,
+  BUILD_MODULE,
   FIXED_DT,
   SEPARATOR,
 } from '../src/config';
@@ -551,13 +551,13 @@ const { world } = first;
       if (input.buildKindPressed) catalog.cycle();
       up('KeyX');
       input.endStep();
-      if (catalog.kind === CONVEYOR_RIGHT_KIND) {
+      if (catalog.kind === CONVEYOR_KIND) {
         picked = true;
         break;
       }
     }
 
-    const size = CONVEYOR.size;
+    const size = BUILD_MODULE;
     const w = new World(64, 64, first.world.profile);
     const registry = new BuildingRegistry();
     let laid = 0;
@@ -594,6 +594,95 @@ const { world } = first;
       `вид ${catalog.name}, положено ${laid}, снято ${removed}`,
     );
     check('Ввод: цифра слота подавляет переключение вкладки браузером', digit.prevented);
+  }
+
+  // --- Модификатор стороны и жест протяжки ---
+  //
+  // Ввод о мире не знает: он различает начало применения и его продолжение,
+  // а точку, откуда тянуть, помнит тот, кто ставит. Второй признак того же
+  // состояния однажды разошёлся бы с первым.
+  {
+    const plain = input.buildSide;
+    const sh = down('ShiftLeft');
+    const shifted = input.buildSide;
+    const heldNextStep = (input.endStep(), input.buildSide);
+    up('ShiftLeft');
+    const released = input.buildSide;
+    input.endStep();
+    check(
+      'Ввод: Shift переворачивает сторону и читается как УДЕРЖАНИЕ, а не нажатие',
+      plain === 1 && shifted === -1 && heldNextStep === -1 && released === 1,
+      `без ${plain}, с ${shifted}, на следующем шаге ${heldNextStep}, после ${released}`,
+    );
+    check('Ввод: Shift не отбирается у браузера — он часть системных сочетаний', !sh.prevented);
+
+    // Начало жеста отличается от продолжения: без первого протяжённая
+    // постройка не знает, на каком шаге запомнить точку начала.
+    down('Space');
+    const began = input.toolPressed && input.toolHeld;
+    input.endStep();
+    const continues = !input.toolPressed && input.toolHeld;
+    input.endStep();
+    check(
+      'Ввод: начало жеста отличается от его продолжения',
+      began && continues,
+      `начало ${began}, продолжение ${continues}`,
+    );
+
+    // Сброс кончает жест сам: удержание снято, и отдельного «жест прерван»
+    // заводить незачем.
+    input.releaseAll();
+    const afterReset = !input.toolHeld && !input.toolPressed;
+    up('Space');
+    input.endStep();
+    check('Ввод: сброс кончает жест вместе с удержанием', afterReset);
+  }
+
+  // --- Прокладка ленты одним жестом ---
+  //
+  // Жест обязан быть ОДИН на оба ввода: действие, у которого мышь и клавиатура
+  // работают по разным правилам, приходится изучать дважды, и одно из двух
+  // правил всегда оказывается хуже проверено.
+  {
+    const w = new World(128, 64, first.world.profile);
+    const anchorX = 4 * BUILD_MODULE;
+    const anchorY = 4 * BUILD_MODULE;
+    const targetX = anchorX + 6 * BUILD_MODULE;
+
+    const byKeys = Builder.line(
+      w,
+      CONVEYOR_KIND,
+      anchorX,
+      anchorY,
+      targetX,
+      anchorX,
+      anchorY,
+      1,
+      UNLOCKED,
+    );
+    Builder.applyLine(w, CONVEYOR_KIND, byKeys);
+
+    const w2 = new World(128, 64, first.world.profile);
+    const byMouse = Builder.line(
+      w2,
+      CONVEYOR_KIND,
+      anchorX,
+      anchorY,
+      targetX,
+      anchorX,
+      anchorY,
+      1,
+      UNLOCKED,
+    );
+    Builder.applyLine(w2, CONVEYOR_KIND, byMouse);
+
+    let same = true;
+    for (let i = 0; i < w.cells.length; i++) if (w.cells[i] !== w2.cells[i]) same = false;
+    check(
+      'Ввод: жест протяжки одинаков на клавиатуре и на мыши',
+      byKeys.count === 7 && byMouse.count === 7 && same,
+      `клавиатурой ${byKeys.count}, мышью ${byMouse.count}, миры совпали ${same}`,
+    );
   }
 
   // --- Курсор над интерфейсом ---
@@ -923,23 +1012,30 @@ const { world } = first;
     const p = new Player(4, 94 - PLAYER.hitboxH, research.tuning);
     const g = new Game(w, p, new Camera(w.width, w.height), mod);
 
-    const bx = 40;
-    const by = 96 - 2 - SEPARATOR.height;
-    const cx = bx + (SEPARATOR_KIND.width >> 1);
-    const cy = by + (SEPARATOR_KIND.height >> 1);
-    Builder.apply(w, g.buildings, SEPARATOR_KIND, cx, cy, cx, cy, UNLOCKED);
-    const machine = g.buildings.all[0] as Separator;
-
-    // Пульпа на две ячейки выше приёмной грани: на грань её кладёт автомат.
-    w.set(bx + (SEPARATOR.width >> 1), by - 2, MAT.PULP);
-    const stored = machine.stored;
-    g.advanceWorld(FIXED_DT, { input: NO_INPUT, faceX: 0, dig: null });
-    g.advanceWorld(FIXED_DT, { input: NO_INPUT, faceX: 0, dig: null });
+    // Целимся в УГОЛ, а не в центр: все виды притягиваются к сетке модуля,
+    // и центрирования на прицеле больше нет ни у кого.
+    const bx = Builder.snap(40);
+    const by = Builder.snap(96 - 2 - SEPARATOR.height);
+    const placed = Builder.apply(w, g.buildings, SEPARATOR_KIND, bx, by, bx, by, UNLOCKED);
+    const machine = g.buildings.all[0] as Separator | undefined;
     check(
-      'Порядок шага: машина принимает сырьё на шаге его прибытия на грань',
-      machine.stored > stored,
-      `накопитель ${stored} → ${machine.stored}`,
+      'Порядок шага: машина для проверки вообще встала',
+      placed === 'placed' && machine !== undefined,
+      `постановка ${placed}`,
     );
+
+    if (machine !== undefined) {
+      // Пульпа на две ячейки выше приёмной грани: на грань её кладёт автомат.
+      w.set(bx + (SEPARATOR.width >> 1), by - 2, MAT.PULP);
+      const stored = machine.stored;
+      g.advanceWorld(FIXED_DT, { input: NO_INPUT, faceX: 0, dig: null });
+      g.advanceWorld(FIXED_DT, { input: NO_INPUT, faceX: 0, dig: null });
+      check(
+        'Порядок шага: машина принимает сырьё на шаге его прибытия на грань',
+        machine.stored > stored,
+        `накопитель ${stored} → ${machine.stored}`,
+      );
+    }
   }
 
   // Смена режима действует на ЭТОМ же шаге: переключатель читается до

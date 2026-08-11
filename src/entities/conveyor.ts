@@ -1,4 +1,3 @@
-import { CONVEYOR } from '../config';
 import { MAT } from '../world';
 import { CONTENT } from '../progress';
 import { sectionKind } from './buildings';
@@ -8,29 +7,16 @@ import type { BuildingKind } from './buildings';
  * Конвейер — первое соединение между зданиями и первая секционная постройка.
  *
  * Ни записи в реестре, ни состояния: сторона — это идентификатор материала,
- * а всё поведение живёт в таблице полем `carry`. Здесь остаётся каталожная
- * часть: подпись, корпус и размер секции.
+ * а всё поведение живёт в таблице веществ полем `carry`. Здесь остаётся
+ * каталожная часть: подпись и пара корпусов.
  *
- * Направления — ДВА ОТДЕЛЬНЫХ ВИДА, а не поворот: поворота построек в модели
- * нет, и вводить его ради объекта с двумя состояниями дороже строки.
- *
- * Оба указывают на ОДНО содержимое: лента, которую можно вести только вправо,
- * не решает задачу, ради которой её открывают, а вторая покупка ради знака
- * была бы налогом на планировку.
+ * Направление — ОДИН вид с двумя корпусами, а не два вида каталога. Каталог
+ * перечисляет, ЧТО строится, а не как оно повёрнуто; сторону задаёт жест
+ * укладки, и в переборе видов ей делать нечего.
  */
-
-export const CONVEYOR_LEFT_KIND: BuildingKind = sectionKind(
-  'conveyor-left',
-  'Конвейер ◀',
-  MAT.CONVEYOR_LEFT,
-  CONVEYOR.size,
-  CONTENT.CONVEYOR,
-);
-
-export const CONVEYOR_RIGHT_KIND: BuildingKind = sectionKind(
-  'conveyor-right',
-  'Конвейер ▶',
-  MAT.CONVEYOR_RIGHT,
-  CONVEYOR.size,
+export const CONVEYOR_KIND: BuildingKind = sectionKind(
+  'conveyor',
+  'Конвейер',
+  [MAT.CONVEYOR_LEFT, MAT.CONVEYOR_RIGHT],
   CONTENT.CONVEYOR,
 );

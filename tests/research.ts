@@ -22,8 +22,7 @@ import {
   LandingModule,
   BuildingRegistry,
   SEPARATOR_KIND,
-  CONVEYOR_LEFT_KIND,
-  CONVEYOR_RIGHT_KIND,
+  CONVEYOR_KIND,
   BUILD_CATALOG,
   BuildCatalogState,
 } from '../src/entities';
@@ -467,7 +466,7 @@ const first = luna();
     );
     check(
       'До покупки конвейер отсутствует в переборе каталога',
-      !closed.open.includes(CONVEYOR_LEFT_KIND) && !closed.open.includes(CONVEYOR_RIGHT_KIND),
+      !closed.open.includes(CONVEYOR_KIND) && !closed.open.includes(CONVEYOR_KIND),
       closed.open.map((k) => k.name).join(', '),
     );
 
@@ -476,7 +475,7 @@ const first = luna();
     let sawClosed = false;
     for (let i = 0; i < BUILD_CATALOG.length * 3; i++) {
       closed.cycle();
-      if (closed.kind === CONVEYOR_LEFT_KIND || closed.kind === CONVEYOR_RIGHT_KIND) {
+      if (closed.kind === CONVEYOR_KIND || closed.kind === CONVEYOR_KIND) {
         sawClosed = true;
       }
     }
@@ -488,13 +487,13 @@ const first = luna();
       const w = ground(64, 64);
       const money = wallet(10000);
       const registry = new BuildingRegistry();
-      const placed = Builder.apply(w, registry, CONVEYOR_RIGHT_KIND, 30, 30, 30, 30, r);
+      const placed = Builder.apply(w, registry, CONVEYOR_KIND, 30, 30, 30, 30, r);
       check(
         'Закрытый вид не ставится никаким способом',
         placed === 'rejected' &&
           count(w, MAT.CONVEYOR_RIGHT) === 0 &&
           money.credits === 10000 &&
-          Builder.issueAt(w, CONVEYOR_RIGHT_KIND, 30, 30, r) === 'locked',
+          Builder.issueAt(w, CONVEYOR_KIND, 30, 30, r) === 'locked',
         `${placed}, на счету ${money.credits}`,
       );
     }
@@ -504,21 +503,21 @@ const first = luna();
     r.buy(CONVEYOR_TECH, wallet(tech(CONVEYOR_TECH).cost));
     check(
       'Покупка технологии конвейера добавляет оба направления в перебор сразу',
-      closed.open.includes(CONVEYOR_LEFT_KIND) &&
-        closed.open.includes(CONVEYOR_RIGHT_KIND) &&
+      closed.open.includes(CONVEYOR_KIND) &&
+        closed.open.includes(CONVEYOR_KIND) &&
         r.has(CONTENT.CONVEYOR),
       closed.open.map((k) => k.name).join(', '),
     );
     check(
       'Оба направления открыты ОДНОЙ технологией: они ссылаются на одно содержимое',
-      CONVEYOR_LEFT_KIND.unlock === CONVEYOR_RIGHT_KIND.unlock &&
-        CONVEYOR_LEFT_KIND.unlock === CONTENT.CONVEYOR &&
+      CONVEYOR_KIND.unlock === CONVEYOR_KIND.unlock &&
+        CONVEYOR_KIND.unlock === CONTENT.CONVEYOR &&
         SEPARATOR_KIND.unlock === null,
     );
     {
       const w = ground(64, 64);
       const registry = new BuildingRegistry();
-      const placed = Builder.apply(w, registry, CONVEYOR_RIGHT_KIND, 30, 30, 30, 30, r);
+      const placed = Builder.apply(w, registry, CONVEYOR_KIND, 30, 30, 30, 30, r);
       check(
         'После покупки лента ставится',
         placed === 'placed' && count(w, MAT.CONVEYOR_RIGHT) > 0,
@@ -912,11 +911,10 @@ const first = luna();
     const r = new Research();
     const module = new LandingModule({ x: 0, y: 0, w: 1, h: 1 });
     const registry = new BuildingRegistry();
-    const bx = 40;
-    const by = 94 - SEPARATOR.height;
-    const cx = bx + (SEPARATOR.width >> 1);
-    const cy = by + (SEPARATOR.height >> 1);
-    const built = Builder.apply(w, registry, SEPARATOR_KIND, cx, cy, cx, cy, r);
+    // Цель — УГОЛ и по сетке модуля: центрирования на прицеле больше нет.
+    const bx = Builder.snap(40);
+    const by = Builder.snap(94 - SEPARATOR.height);
+    const built = Builder.apply(w, registry, SEPARATOR_KIND, bx, by, bx, by, r);
     for (let i = 0; i < SEPARATOR.batch; i++) w.set(bx + 3 + i, by - 1, MAT.PULP);
 
     const ov = new ResearchOverlay();

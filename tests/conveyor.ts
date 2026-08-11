@@ -3,13 +3,13 @@ import {
   Camera,
   Renderer,
   RecordingSurface,
-  stripeOffset,
-  CONVEYOR_STRIPE_COLOR,
+  rollerOffset,
+  CONVEYOR_ROLLER_COLOR,
 } from '../src/render';
 import type { Display } from '../src/core';
 import { MAT, MAT_SOLID, MAT_CREDIT_RATE, MAT_CARRY, MATERIALS } from '../src/world';
 import type { Rect } from '../src/geometry';
-import { Digger, Vacuum, Builder } from '../src/systems';
+import { Digger, Vacuum, Builder, BuildRun } from '../src/systems';
 import {
   Player,
   Inventory,
@@ -19,8 +19,7 @@ import {
   Separator,
   OUTLET_FROM,
   OUTLET_TO,
-  CONVEYOR_LEFT_KIND,
-  CONVEYOR_RIGHT_KIND,
+  CONVEYOR_KIND,
   BUILD_CATALOG,
   BuildCatalogState,
   sectionKindByHull,
@@ -33,6 +32,8 @@ import {
   BASE_VIEW_H,
   SEPARATOR,
   CONVEYOR,
+  BUILD_MODULE,
+  DIG,
   SIM_HZ,
 } from '../src/config';
 import { check, IDLE_HUD, UNLOCKED, luna } from './harness';
@@ -81,24 +82,24 @@ const first = luna();
     return null;
   }
 
-  const SZ = CONVEYOR.size;
+  const SZ = BUILD_MODULE;
   /**
    * Координаты клетки сетки секций, свободной от пола в песочнице.
    * Инвариант: кратны стороне секции — постановка выравнивает цель по сетке,
    * и с некратного угла лента ложится не туда, куда её просили.
    */
-  const SECTION_X0 = 3 * CONVEYOR.size;
-  const SECTION_Y = 3 * CONVEYOR.size;
+  const SECTION_X0 = 3 * BUILD_MODULE;
+  const SECTION_Y = 3 * BUILD_MODULE;
 
   /** Ставит секцию, целясь в её левый верхний угол. */
   function lay(
     w: World,
     registry: BuildingRegistry,
-    kind: typeof CONVEYOR_RIGHT_KIND,
+    side: -1 | 1,
     x: number,
     y: number,
   ): 'placed' | 'demolished' | 'rejected' {
-    return Builder.apply(w, registry, kind, x, y, x, y, UNLOCKED);
+    return Builder.apply(w, registry, CONVEYOR_KIND, x, y, x, y, UNLOCKED, side);
   }
 
   /** На сколько ячеек уедет одинокий груз за столько шагов. */
@@ -147,7 +148,7 @@ const first = luna();
   }
 
   // Цвет у обоих ОДИН и не совпадает ни с одним другим веществом: направление
-  // показывает бегущая полоса, а не оттенок — иначе игрок был бы обязан
+  // показывают бегущие ролики, а не оттенок — иначе игрок был бы обязан
   // запомнить, какой цвет куда везёт.
   {
     const beltColor = MATERIALS[MAT.CONVEYOR_LEFT]!.color;
@@ -164,9 +165,9 @@ const first = luna();
       `совпадает с: ${clashes.map((m) => m.name).join(', ') || 'ни с чем'}`,
     );
     check(
-      'Бегущая полоса — вторая ступень той же лестницы, а не чей-то чужой цвет',
-      CONVEYOR_STRIPE_COLOR !== beltColor &&
-        !MATERIALS.some((m) => m.id !== MAT.VACUUM && m.color === CONVEYOR_STRIPE_COLOR),
+      'Ролики — своя ступень той же лестницы, а не чей-то чужой цвет',
+      CONVEYOR_ROLLER_COLOR !== beltColor &&
+        !MATERIALS.some((m) => m.id !== MAT.VACUUM && m.color === CONVEYOR_ROLLER_COLOR),
     );
   }
 
@@ -304,7 +305,7 @@ const first = luna();
     const cargoRow = y0 - 1;
     const gapAt = 8 * SZ;
     for (let x = 2 * SZ; x < 13 * SZ; x += SZ) {
-      if (x !== gapAt) lay(w, registry, CONVEYOR_RIGHT_KIND, x, y0);
+      if (x !== gapAt) lay(w, registry, 1, x, y0);
     }
     for (let i = 0; i < 4; i++) w.set(3 * SZ + i * 3, cargoRow, MAT.REGOLITH_LOOSE);
     const total = count(w, MAT.REGOLITH_LOOSE);
@@ -330,7 +331,7 @@ const first = luna();
         if (w.get(x, y) === MAT.REGOLITH_LOOSE) w.set(x, y, MAT.VACUUM);
       }
     }
-    const placed = lay(w, registry, CONVEYOR_RIGHT_KIND, gapAt, y0);
+    const placed = lay(w, registry, 1, gapAt, y0);
     const fresh = 3;
     for (let i = 0; i < fresh; i++) w.set(3 * SZ + i * 3, cargoRow, MAT.REGOLITH_LOOSE);
 
@@ -476,69 +477,85 @@ const first = luna();
       `видов ${BUILD_CATALOG.length}`,
     );
     check(
-      'Конвейер влево и вправо — отдельные виды каталога, а не поворот выбранного',
-      BUILD_CATALOG.includes(CONVEYOR_LEFT_KIND) &&
-        BUILD_CATALOG.includes(CONVEYOR_RIGHT_KIND) &&
-        CONVEYOR_LEFT_KIND.hull !== CONVEYOR_RIGHT_KIND.hull,
+      'Конвейер занимает ОДНУ строку каталога: сторона — не вид',
+      BUILD_CATALOG.filter((k) => k.id.startsWith('conveyor')).length === 1 &&
+        BUILD_CATALOG.includes(CONVEYOR_KIND),
+      `строк конвейера ${BUILD_CATALOG.filter((k) => k.id.startsWith('conveyor')).length}`,
+    );
+    check(
+      'Сторона живёт в паре корпусов вида, а у машины её нет',
+      CONVEYOR_KIND.sideHulls !== null &&
+        CONVEYOR_KIND.sideHulls[0] !== CONVEYOR_KIND.sideHulls[1] &&
+        SEPARATOR_KIND.sideHulls === null,
+    );
+    check(
+      'Названия видов о стороне не говорят: её задаёт жест',
+      !BUILD_CATALOG.some((k) => k.name.includes('◀') || k.name.includes('▶')),
+      BUILD_CATALOG.map((k) => k.name).join(' | '),
     );
     check(
       'Пиксельная постройка не заводит записи в реестре, машина заводит',
-      CONVEYOR_LEFT_KIND.create === null &&
-        CONVEYOR_RIGHT_KIND.create === null &&
-        SEPARATOR_KIND.create !== null,
+      CONVEYOR_KIND.create === null && SEPARATOR_KIND.create !== null,
     );
     check(
       'Опора — свойство вида: машине обязательна, ленте нет',
-      SEPARATOR_KIND.needsSupport &&
-        !CONVEYOR_LEFT_KIND.needsSupport &&
-        !CONVEYOR_RIGHT_KIND.needsSupport,
+      SEPARATOR_KIND.needsSupport && !CONVEYOR_KIND.needsSupport,
     );
     check(
-      'Секция квадратная и равна заданному размеру',
-      CONVEYOR_LEFT_KIND.width === CONVEYOR.size &&
-        CONVEYOR_LEFT_KIND.height === CONVEYOR.size &&
-        CONVEYOR_LEFT_KIND.grid === CONVEYOR.size,
-      `${CONVEYOR_LEFT_KIND.width}×${CONVEYOR_LEFT_KIND.height}, сетка ${CONVEYOR_LEFT_KIND.grid}`,
+      'Секция квадратная и равна общему модулю',
+      CONVEYOR_KIND.width === BUILD_MODULE && CONVEYOR_KIND.height === BUILD_MODULE,
+      `${CONVEYOR_KIND.width}×${CONVEYOR_KIND.height}, модуль ${BUILD_MODULE}`,
     );
-    check('У машины сетки нет: она центрируется на цели', SEPARATOR_KIND.grid === 0);
+    check(
+      'Лента не выше половины персонажа и пролезает под окно машины',
+      CONVEYOR_KIND.height * 2 <= PLAYER.hitboxH && CONVEYOR_KIND.height < SEPARATOR.legs,
+      `секция ${CONVEYOR_KIND.height}, персонаж ${PLAYER.hitboxH}, просвет ${SEPARATOR.legs}`,
+    );
 
-    // Контур машины симметричен вокруг прицела: у чётной стороны середины нет,
-    // и рамка садилась бы на прицел косо.
+    // Все виды стоят по ОДНОЙ сетке модуля: центрирования на прицеле нет
+    // ни у кого, и соседние постройки стыкуются по построению.
     {
       const at = Builder.originFor(SEPARATOR_KIND, 100, 100);
-      const left = 100 - at.x;
-      const right = at.x + SEPARATOR_KIND.width - 1 - 100;
-      const up = 100 - at.y;
-      const down = at.y + SEPARATOR_KIND.height - 1 - 100;
       check(
-        'Контур машины симметричен вокруг прицела и квадратен',
-        left === right && up === down && SEPARATOR_KIND.width === SEPARATOR_KIND.height,
-        `слева ${left}/справа ${right}, сверху ${up}/снизу ${down}, ` +
-          `${SEPARATOR_KIND.width}×${SEPARATOR_KIND.height}`,
+        'Машина встаёт по сетке модуля, а не вокруг прицела',
+        at.x % BUILD_MODULE === 0 && at.y % BUILD_MODULE === 0,
+        `угол ${at.x},${at.y}`,
+      );
+      check(
+        'Стороны всех видов кратны модулю',
+        BUILD_CATALOG.every((k) => k.width % BUILD_MODULE === 0 && k.height % BUILD_MODULE === 0),
+        BUILD_CATALOG.map((k) => `${k.id} ${k.width}×${k.height}`).join(', '),
       );
       check(
         'Ноги машины по бокам окна одинаковой ширины',
         OUTLET_FROM === SEPARATOR.width - OUTLET_TO,
         `слева ${OUTLET_FROM}, справа ${SEPARATOR.width - OUTLET_TO}`,
       );
+      // Порция выходит ЦЕЛИКОМ или не выходит вовсе, и запаса здесь больше
+      // нет: 10 ≤ 12 − 2. Шаг окна вниз без шага порции запирает выдачу.
       check(
-        'Выпускное окно шире порции: выдача не впритык',
-        OUTLET_TO - OUTLET_FROM > SEPARATOR.batch,
+        'Порция влезает в выпускное окно',
+        SEPARATOR.batch <= OUTLET_TO - OUTLET_FROM - 2,
         `окно ${OUTLET_TO - OUTLET_FROM}, порция ${SEPARATOR.batch}`,
       );
     }
 
     // Боковой клавиатурный прицел ставит постройку на уровень ступней.
     // Без этого корпус выше девяти ячеек уходит нижним рядом под землю.
+    //
+    // С общей сеткой точное совпадение недостижимо: цель округляется вверх
+    // до границы модуля. Округление ВВЕРХ и проверяется — здание над ступнями
+    // годно, здание под ступнями отказывает «занято».
     {
       const playerY = 40;
       const y = Builder.groundedTargetY(SEPARATOR_KIND, playerY, PLAYER.hitboxH);
       const at = Builder.originFor(SEPARATOR_KIND, 100, y);
       const bottom = at.y + SEPARATOR_KIND.height - 1;
+      const feet = playerY + PLAYER.hitboxH - 1;
       check(
-        'Боковая клавиатурная цель ставит низ постройки на уровень ступней',
-        bottom === playerY + PLAYER.hitboxH - 1,
-        `низ корпуса ${bottom}, ступни ${playerY + PLAYER.hitboxH - 1}`,
+        'Боковая клавиатурная цель не загоняет постройку под ступни',
+        bottom <= feet && feet - bottom < BUILD_MODULE,
+        `низ корпуса ${bottom}, ступни ${feet}`,
       );
     }
     // Единственный след секционной постройки в мире — ячейки сетки, и снос
@@ -546,8 +563,8 @@ const first = luna();
     // и не считать постройкой ни породу, ни корпус машины.
     check(
       'Секционная постройка узнаётся по материалу корпуса, и только она',
-      sectionKindByHull(MAT.CONVEYOR_LEFT) === CONVEYOR_LEFT_KIND &&
-        sectionKindByHull(MAT.CONVEYOR_RIGHT) === CONVEYOR_RIGHT_KIND &&
+      sectionKindByHull(MAT.CONVEYOR_LEFT) === CONVEYOR_KIND &&
+        sectionKindByHull(MAT.CONVEYOR_RIGHT) === CONVEYOR_KIND &&
         sectionKindByHull(MAT.SEPARATOR_HULL) === null &&
         sectionKindByHull(MAT.ROCK) === null,
     );
@@ -587,7 +604,7 @@ const first = luna();
   {
     const w = sandbox();
     const registry = new BuildingRegistry();
-    for (let i = 0; i < 6; i++) lay(w, registry, CONVEYOR_RIGHT_KIND, 20 + i * SZ, 32);
+    for (let i = 0; i < 6; i++) lay(w, registry, 1, 20 + i * SZ, 32);
     w.set(21, 31, MAT.REGOLITH_LOOSE);
     run(w, STEP * 10);
     const at = findOne(w, MAT.REGOLITH_LOOSE);
@@ -603,7 +620,7 @@ const first = luna();
     const w = sandbox();
     const registry = new BuildingRegistry();
     const occupant: Rect = { x: 20, y: 30, w: PLAYER.hitboxW, h: PLAYER.hitboxH };
-    const on = lay(w, registry, CONVEYOR_RIGHT_KIND, occupant.x + 1, occupant.y + 1);
+    const on = lay(w, registry, 1, occupant.x + 1, occupant.y + 1);
     check(
       'Постройка ставится поверх хитбокса персонажа и не запирает его',
       on === 'placed' && !w.rectHitsSolid(occupant.x, occupant.y, occupant.w, occupant.h),
@@ -615,7 +632,7 @@ const first = luna();
     const w = sandbox();
     check(
       'Лента ставится над пустотой, машина без опоры — не ставится',
-      Builder.issueAt(w, CONVEYOR_RIGHT_KIND, 50, 20, UNLOCKED) === null &&
+      Builder.issueAt(w, CONVEYOR_KIND, 50, 20, UNLOCKED) === null &&
         Builder.issueAt(w, SEPARATOR_KIND, 50, 20, UNLOCKED) === 'unsupported',
     );
   }
@@ -629,7 +646,7 @@ const first = luna();
     let laid = 0;
     for (let i = 0; i < sections; i++) {
       const x = SECTION_X0 + i * SZ;
-      if (lay(w, registry, CONVEYOR_RIGHT_KIND, x, SECTION_Y) === 'placed') laid++;
+      if (lay(w, registry, 1, x, SECTION_Y) === 'placed') laid++;
     }
     check(
       'Лента из N секций кладётся целиком и ничего не стоит',
@@ -653,7 +670,7 @@ const first = luna();
     // Лента продолжается дальше при нулевом счёте: единственное, что её
     // ограничивает, — место в мире.
     const beyond = SECTION_X0 + sections * SZ;
-    const next = lay(w, registry, CONVEYOR_RIGHT_KIND, beyond, SECTION_Y);
+    const next = lay(w, registry, 1, beyond, SECTION_Y);
     check(
       'Лента продолжается при нулевом счёте: секция ничего не стоит',
       next === 'placed' && module.credits === 0 && w.get(beyond, SECTION_Y) === MAT.CONVEYOR_RIGHT,
@@ -672,7 +689,7 @@ const first = luna();
         [SECTION_X0 + SZ - 1, SECTION_Y + SZ - 1],
       ];
       const results = corners.map(([tx, ty]) =>
-        Builder.apply(w2, r2, CONVEYOR_RIGHT_KIND, tx!, ty!, tx!, ty!, UNLOCKED),
+        Builder.apply(w2, r2, CONVEYOR_KIND, tx!, ty!, tx!, ty!, UNLOCKED),
       );
       check(
         'Секция встаёт по сетке: прицел в любую точку клетки даёт одно и то же место',
@@ -689,7 +706,7 @@ const first = luna();
     const registry = new BuildingRegistry();
     // Три секции подряд; сносим среднюю.
     for (let i = 0; i < 3; i++) {
-      lay(w, registry, CONVEYOR_LEFT_KIND, SECTION_X0 + i * SZ, SECTION_Y);
+      lay(w, registry, -1, SECTION_X0 + i * SZ, SECTION_Y);
     }
     const mid = SECTION_X0 + SZ;
     // Груз лежит на верхнем ряду сносимой секции.
@@ -724,7 +741,7 @@ const first = luna();
     const other = Builder.apply(
       w,
       registry,
-      CONVEYOR_RIGHT_KIND,
+      CONVEYOR_KIND,
       SECTION_X0 + 1,
       SECTION_Y + 1,
       SECTION_X0 + 1,
@@ -750,27 +767,37 @@ const first = luna();
       present() {},
     } as unknown as Display;
 
+    // Ленты высотой в СЕКЦИЮ и по сетке модуля: ролики занимают середину
+    // корпуса, и лента в одну строку их не показала бы вовсе.
+    const BELT_RIGHT_Y = 100;
+    const BELT_LEFT_Y = 120;
     const w = new World(400, 240, first.world.profile);
     const surface = new Int16Array(400);
     for (let x = 10; x < 300; x++) {
-      w.set(x, 100, MAT.CONVEYOR_RIGHT);
-      w.set(x, 120, MAT.CONVEYOR_LEFT);
+      for (let dy = 0; dy < BUILD_MODULE; dy++) {
+        w.set(x, BELT_RIGHT_Y + dy, MAT.CONVEYOR_RIGHT);
+        w.set(x, BELT_LEFT_Y + dy, MAT.CONVEYOR_LEFT);
+      }
     }
     const renderer = new Renderer(display, w, surface, WORLD_SEED, new RecordingSurface());
     const camera = new Camera(400, 240);
     camera.snapTo(160, 120);
-    const rowRight = 100 - camera.y;
-    const rowLeft = 120 - camera.y;
+    // Ряд с роликами: середина секции.
+    const rowRight = BELT_RIGHT_Y + CONVEYOR.rollerInset - camera.y;
+    const rowLeft = BELT_LEFT_Y + CONVEYOR.rollerInset - camera.y;
+    // Край секции: роликов там нет — иначе ряд сливается с соседней секцией
+    // по вертикали и перестаёт читаться деталью механизма.
+    const rowEdge = BELT_RIGHT_Y - camera.y;
 
-    const stripeR = (CONVEYOR_STRIPE_COLOR >> 16) & 0xff;
-    const stripeG = (CONVEYOR_STRIPE_COLOR >> 8) & 0xff;
-    const stripeB = CONVEYOR_STRIPE_COLOR & 0xff;
+    const rollerR = (CONVEYOR_ROLLER_COLOR >> 16) & 0xff;
+    const rollerG = (CONVEYOR_ROLLER_COLOR >> 8) & 0xff;
+    const rollerB = CONVEYOR_ROLLER_COLOR & 0xff;
 
     function pattern(row: number): boolean[] {
       const out: boolean[] = [];
       for (let sx = 0; sx < BASE_VIEW_W; sx++) {
         const i = (row * BASE_VIEW_W + sx) * 4;
-        out.push(pixels[i] === stripeR && pixels[i + 1] === stripeG && pixels[i + 2] === stripeB);
+        out.push(pixels[i] === rollerR && pixels[i + 1] === rollerG && pixels[i + 2] === rollerB);
       }
       return out;
     }
@@ -799,9 +826,28 @@ const first = luna();
     }
     const stripes = right0.slice(20, 150).filter(Boolean).length;
     check(
-      'Полоса рисуется на ячейках с ненулевым переносом: есть и штрих, и корпус',
+      'Ролики рисуются на ячейках с ненулевым переносом: есть и ролик, и корпус',
       stripes > 0 && body > 0 && stripes + body === 130,
-      `штрих ${stripes}, корпус ${body} из 130`,
+      `ролик ${stripes}, корпус ${body} из 130`,
+    );
+    // Период, а не число: сколько роликов попало в окно, зависит от того,
+    // где окно началось, а вот шаг повтора обязан быть ровно секцией — иначе
+    // ряд разъезжается с её границами и читается узором поверх ленты.
+    {
+      let repeats = true;
+      for (let sx = 20; sx < 150 - BUILD_MODULE; sx++) {
+        if (right0[sx] !== right0[sx + BUILD_MODULE]) repeats = false;
+      }
+      check(
+        'Ряд роликов повторяется с шагом секции',
+        repeats && stripes * BUILD_MODULE >= 130 * CONVEYOR.rollerWidth - BUILD_MODULE,
+        `повтор ${repeats}, роликов ${stripes} из 130`,
+      );
+    }
+    check(
+      'На краю секции роликов нет: ряд занимает середину корпуса',
+      pattern(rowEdge).slice(20, 150).filter(Boolean).length === 0,
+      `на краю ${pattern(rowEdge).slice(20, 150).filter(Boolean).length}`,
     );
 
     frame(STEP / SIM_HZ);
@@ -814,16 +860,16 @@ const first = luna();
       if (left1[sx] !== left0[sx + 1]) leftOk = false;
     }
     check(
-      'Полоса бежит в сторону переноса своей ленты, а виды окрашены одинаково',
+      'Ролики бегут в сторону переноса своей ленты, а виды окрашены одинаково',
       rightOk && leftOk,
       `вправо ${rightOk}, влево ${leftOk}`,
     );
 
     const steps = STEP * 9;
     check(
-      'Скорость бегущей полосы совпадает со скоростью переноса',
-      stripeOffset(steps / SIM_HZ) === rideDistance(MAT.CONVEYOR_RIGHT, MAT.REGOLITH_LOOSE, steps),
-      `полоса ${stripeOffset(steps / SIM_HZ)}, груз ${rideDistance(MAT.CONVEYOR_RIGHT, MAT.REGOLITH_LOOSE, steps)}`,
+      'Скорость бегущих роликов совпадает со скоростью переноса',
+      rollerOffset(steps / SIM_HZ) === rideDistance(MAT.CONVEYOR_RIGHT, MAT.REGOLITH_LOOSE, steps),
+      `полоса ${rollerOffset(steps / SIM_HZ)}, груз ${rideDistance(MAT.CONVEYOR_RIGHT, MAT.REGOLITH_LOOSE, steps)}`,
     );
   }
 
@@ -834,11 +880,10 @@ const first = luna();
     // на любое попадание, и нового правила поглощения не понадобилось.
     const w = sandbox(160, 96);
     const registry = new BuildingRegistry();
-    const bx = 80;
-    const by = 96 - 2 - SEPARATOR.height;
-    const cx = bx + (SEPARATOR_KIND.width >> 1);
-    const cy = by + (SEPARATOR_KIND.height >> 1);
-    Builder.apply(w, registry, SEPARATOR_KIND, cx, cy, cx, cy);
+    // Цель — УГОЛ и по сетке модуля: центрирования на прицеле больше нет.
+    const bx = Builder.snap(80);
+    const by = Builder.snap(96 - 2 - SEPARATOR.height);
+    Builder.apply(w, registry, SEPARATOR_KIND, bx, by, bx, by);
     belt(w, by, bx - 30, bx - 1, MAT.CONVEYOR_RIGHT);
     w.set(bx - 30, by - 1, MAT.PULP);
 
@@ -907,12 +952,16 @@ const first = luna();
     const module = new LandingModule(ZONE);
 
     // Лента: секции по сетке, груз едет по строке над её верхним рядом.
-    const beltTop = 22 * SZ;
+    // Координаты МИРОВЫЕ, а не в числе секций: перегон обязан дотягиваться
+    // до зоны приёмника независимо от того, чему равен модуль.
+    const beltTop = Builder.snap(176);
     const cargoRow = beltTop - 1;
-    const beltFrom = 7 * SZ;
-    const beltTo = 48 * SZ;
+    const beltFrom = Builder.snap(56);
+    // Последняя секция обязана упираться в упор: незакрытый хвост означает,
+    // что груз сваливается с ленты, не доехав до зоны.
+    const beltTo = Builder.snap(ZONE.x + ZONE.w - BUILD_MODULE);
     for (let x = beltFrom; x <= beltTo; x += SZ) {
-      lay(w, registry, CONVEYOR_RIGHT_KIND, x, beltTop);
+      lay(w, registry, 1, x, beltTop);
     }
     // Упор в конце: очередь встаёт внутри зоны приёмника, а не сыплется мимо.
     const stopX = ZONE.x + ZONE.w;
@@ -921,15 +970,13 @@ const first = luna();
 
     // Машина: её ноги кончаются на ряд ВЫШЕ строки груза, иначе продукт упёрся
     // бы в собственную ногу и никуда не поехал.
-    const bx = 80;
-    const by = cargoRow - SEPARATOR.height;
+    const bx = Builder.snap(80);
+    const by = Builder.snap(cargoRow - SEPARATOR.height);
     // Пьедестал ровно под левой ногой: её ширина — половина того, что осталось
     // от корпуса за вычетом выпускного окна.
     const legW = (SEPARATOR.width - SEPARATOR.window) >> 1;
     for (let dx = 0; dx < legW; dx++) w.set(bx + dx, by + SEPARATOR.height, MAT.ROCK);
-    const cx = bx + (SEPARATOR_KIND.width >> 1);
-    const cy = by + (SEPARATOR_KIND.height >> 1);
-    const built = Builder.apply(w, registry, SEPARATOR_KIND, cx, cy, cx, cy);
+    const built = Builder.apply(w, registry, SEPARATOR_KIND, bx, by, bx, by);
     for (let i = 0; i < SEPARATOR.batch; i++) w.set(bx + 3 + i, by - 1, MAT.PULP);
 
     const before = module.credits;
@@ -960,6 +1007,193 @@ const first = luna();
       earnedAt > 0 && earnedAt < STEP * 400,
       `${(earnedAt / SIM_HZ).toFixed(1)} с на ${beltTo - bx} ячеек ленты`,
     );
+  }
+
+  // --- Состояние жеста ---
+  //
+  // Клик и протяжка начинаются ОДИНАКОВО — нажатием, — а кончаются
+  // противоположным: снос и укладка. Различает их движение прицела, поэтому
+  // решение откладывается до отпускания, и вся эта развилка живёт здесь.
+  {
+    const runState = new BuildRun();
+    check('Жест: пока не начат, начала нет', runState.anchor === null && !runState.stationary);
+
+    runState.begin(SECTION_X0, SECTION_Y, false);
+    check(
+      'Жест: начало запомнено, и он ещё считается неподвижным',
+      runState.anchor?.x === SECTION_X0 && runState.stationary,
+    );
+
+    // Сдвигом считается уход в ДРУГУЮ клетку модуля, а не любое движение
+    // курсора: внутри одной клетки жест кладёт ту же секцию, и дрожание руки
+    // не имеет права превратить клик в протяжку.
+    runState.note(SECTION_X0 + BUILD_MODULE - 1, SECTION_Y);
+    check('Жест: движение внутри клетки модуля сдвигом не считается', runState.stationary);
+    runState.note(SECTION_X0 + BUILD_MODULE, SECTION_Y);
+    check('Жест: уход в соседнюю клетку делает жест протяжкой', !runState.stationary);
+
+    // Клик по уже стоящему — снос, и только он. Протяжка от той же точки —
+    // наоборот, продление ленты, ради которого на неё и нажимают.
+    const onEmpty = new BuildRun();
+    onEmpty.begin(SECTION_X0, SECTION_Y, false);
+    const onBelt = new BuildRun();
+    onBelt.begin(SECTION_X0, SECTION_Y, true);
+    const dragged = new BuildRun();
+    dragged.begin(SECTION_X0, SECTION_Y, true);
+    dragged.note(SECTION_X0 + BUILD_MODULE, SECTION_Y);
+    check(
+      'Жест: сносом читается только неподвижное нажатие по стоящему',
+      !onEmpty.isDemolishClick && onBelt.isDemolishClick && !dragged.isDemolishClick,
+      `по пустому ${onEmpty.isDemolishClick}, по ленте ${onBelt.isDemolishClick},` +
+        ` протяжка по ленте ${dragged.isDemolishClick}`,
+    );
+
+    onBelt.end();
+    check(
+      'Жест: конец снимает и начало, и признак сноса',
+      onBelt.anchor === null && !onBelt.isDemolishClick,
+    );
+  }
+
+  // --- Протяжка ---
+  //
+  // Жест кладёт ленту непрерывной линией: перегон между машинами — это десятки
+  // секций, и постановка по нажатию на секцию делает всю прокладку повторением
+  // одного действия, в котором нельзя ошибиться ни в чём, кроме числа повторов.
+  {
+    const PCX = 200;
+    /**
+     * Линия от начала жеста до прицела, как её увидит и контур, и укладка.
+     * Персонаж стоит В НАЧАЛЕ жеста: дальность считается от него, и отодвинутый
+     * персонаж обрезал бы линию по причине, к самому жесту отношения не имеющей.
+     */
+    const drag = (w: World, ax: number, ay: number, tx: number, side: -1 | 1 = 1) =>
+      Builder.line(w, CONVEYOR_KIND, ax, ay, tx, ax, ay, side, UNLOCKED);
+
+    {
+      const w = sandbox(512, 64);
+      const line = drag(w, SECTION_X0, SECTION_Y, SECTION_X0 + 9 * SZ);
+      Builder.applyLine(w, CONVEYOR_KIND, line);
+      let solid = 0;
+      for (let k = 0; k < 10; k++) {
+        if (w.get(SECTION_X0 + k * SZ, SECTION_Y) === MAT.CONVEYOR_RIGHT) solid++;
+      }
+      check(
+        'Протяжка кладёт перегон целиком, одним жестом и без зазоров',
+        line.count === 10 && solid === 10,
+        `секций ${line.count}, сплошных ${solid}`,
+      );
+    }
+
+    {
+      // Строка берётся из НАЧАЛА жеста: лента переносит вбок, и дрожание руки
+      // не имеет права превратить ровный перегон в лесенку.
+      const w = sandbox(512, 64);
+      const line = drag(w, SECTION_X0, SECTION_Y, SECTION_X0 + 5 * SZ);
+      check(
+        'Протяжка горизонтальна: ряд не съезжает за прицелом',
+        line.y === SECTION_Y,
+        `ряд ${line.y}, начало ${SECTION_Y}`,
+      );
+    }
+
+    {
+      const w = sandbox(512, 64);
+      const right = drag(w, 200, SECTION_Y, 200 + 4 * SZ);
+      const left = drag(w, 200, SECTION_Y, 200 - 4 * SZ);
+      check(
+        'Сторона берётся из направления жеста',
+        right.side === 1 && left.side === -1,
+        `вправо ${right.side}, влево ${left.side}`,
+      );
+      // У жеста нулевой длины направления нет, и сторону называет модификатор.
+      const plain = drag(w, 200, SECTION_Y, 200, 1);
+      const shifted = drag(w, 200, SECTION_Y, 200, -1);
+      check(
+        'Жест нулевой длины берёт сторону у модификатора',
+        plain.side === 1 && shifted.side === -1 && plain.count === 1,
+        `без модификатора ${plain.side}, с ним ${shifted.side}`,
+      );
+    }
+
+    {
+      // Лента с пропуском посередине — это затор, то есть конструкция, которую
+      // игрок не задумывал; а секции за камнем он не увидел бы вовсе.
+      const w = sandbox(512, 64);
+      const rockAt = SECTION_X0 + 3 * SZ;
+      w.set(rockAt + 1, SECTION_Y + 1, MAT.ROCK);
+      const line = drag(w, SECTION_X0, SECTION_Y, SECTION_X0 + 9 * SZ);
+      Builder.applyLine(w, CONVEYOR_KIND, line);
+      let beyond = 0;
+      for (let x = rockAt; x < SECTION_X0 + 10 * SZ; x++) {
+        if (w.get(x, SECTION_Y) === MAT.CONVEYOR_RIGHT) beyond++;
+      }
+      check(
+        'Протяжка встаёт перед препятствием и за него не продолжается',
+        line.count === 3 && line.issue === 'occupied' && beyond === 0,
+        `секций ${line.count}, отказ ${line.issue}, за камнем ${beyond}`,
+      );
+    }
+
+    {
+      // Дальность руки за лентой сохраняется: длинный перегон прокладывается
+      // в несколько заходов с ходьбой между ними, как копается длинный туннель.
+      const w = sandbox(1024, 64);
+      const line = drag(w, PCX, SECTION_Y, PCX + 200);
+      const reachEnd = line.x + line.count * SZ;
+      check(
+        'Протяжка обрезается дальностью руки',
+        line.issue === 'far' && reachEnd - PCX <= DIG.reach + SZ,
+        `секций ${line.count}, отказ ${line.issue}, дотянулась до +${reachEnd - PCX}`,
+      );
+    }
+
+    {
+      // Разворот — тот же жест в обратную сторону. Прежний запрет опирался
+      // на то, что сторона была отдельным видом каталога; с единым видом
+      // требовать за ошибку в стороне полной перекладки перегона нечем.
+      const w = sandbox(512, 64);
+      const first = drag(w, SECTION_X0, SECTION_Y, SECTION_X0 + 5 * SZ, 1);
+      Builder.applyLine(w, CONVEYOR_KIND, first);
+      // Груз лежит НА ленте: перекладка корпуса до него не достаёт.
+      const cargoX = SECTION_X0 + 2 * SZ;
+      w.set(cargoX, SECTION_Y - 1, MAT.IRIDIUM);
+
+      const back = drag(w, SECTION_X0 + 5 * SZ, SECTION_Y, SECTION_X0);
+      Builder.applyLine(w, CONVEYOR_KIND, back);
+      let flipped = 0;
+      for (let k = 0; k <= 5; k++) {
+        if (w.get(SECTION_X0 + k * SZ, SECTION_Y) === MAT.CONVEYOR_LEFT) flipped++;
+      }
+      check(
+        'Протяжка поверх своей ленты разворачивает её, а не отвергает место',
+        back.count === 6 && back.issue === null && flipped === 6,
+        `секций ${back.count}, отказ ${back.issue}, развёрнуто ${flipped} из 6`,
+      );
+      check(
+        'Разворот не трогает груз: он остаётся на месте и едет в новую сторону',
+        w.get(cargoX, SECTION_Y - 1) === MAT.IRIDIUM && count(w, MAT.IRIDIUM) === 1,
+        `иридия в мире ${count(w, MAT.IRIDIUM)}`,
+      );
+    }
+
+    {
+      // Повторная укладка идёт каждый шаг, пока держат кнопку. Записи-пустышки
+      // обязаны пропускаться: `world.set` будит чанк, и без этого удержание
+      // жеста держало бы чанки всей ленты живыми — то есть ровно то, что
+      // запрещает правило «вставшая лента ничего не стоит».
+      const w = sandbox(512, 64);
+      const line = drag(w, SECTION_X0, SECTION_Y, SECTION_X0 + 9 * SZ);
+      Builder.applyLine(w, CONVEYOR_KIND, line);
+      run(w, 4);
+      const before = w.chunks.activeCount();
+      Builder.applyLine(w, CONVEYOR_KIND, line);
+      check(
+        'Повторная укладка той же линии не будит чанки',
+        w.chunks.activeCount() === before,
+        `активных чанков ${before} → ${w.chunks.activeCount()}`,
+      );
+    }
   }
 
   // --- Замеры ---
@@ -1035,9 +1269,11 @@ const first = luna();
     // которая не встала.
     const H = 96;
     const w = new World(200, H, first.world.profile);
-    // Пол кратен размеру секции: врезанная в него лента ложится ровно так,
-    // что её верхний ряд совпадает с подошвой кучи.
-    const floorTop = 10 * SZ;
+    // Пол кратен модулю: врезанная в него лента ложится ровно так, что её
+    // верхний ряд совпадает с подошвой кучи. Строка МИРОВАЯ, а не в числе
+    // секций: куча сыплется с фиксированной высоты, и пол обязан остаться
+    // под ней, чему бы ни равнялся модуль.
+    const floorTop = Builder.snap(80);
     for (let y = floorTop; y < H; y++) {
       for (let x = 0; x < 200; x++) w.set(x, y, MAT.ROCK);
     }
@@ -1074,7 +1310,7 @@ const first = luna();
       for (let y = floorTop; y < floorTop + SZ; y++) {
         for (let dx = 0; dx < SZ; dx++) w.set(x + dx, y, MAT.VACUUM);
       }
-      if (lay(w, registry, CONVEYOR_RIGHT_KIND, x, floorTop) === 'placed') laid++;
+      if (lay(w, registry, 1, x, floorTop) === 'placed') laid++;
     }
 
     const pastLine = (): { iridium: number; slag: number } => {

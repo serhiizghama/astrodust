@@ -1,9 +1,13 @@
+import { BUILD_MODULE } from '../config';
 import { World, MAT, MAT_STATE, MatterState } from '../world';
 import { Digger } from './digging';
-import { stampKind, sectionKindByHull, isKindOpen } from '../entities';
+import { stampKind, sectionKindByHull, isKindOpen, hullForSide } from '../entities';
 import type { Building, BuildingKind, BuildingRegistry } from '../entities';
 import { NO_UNLOCKS } from '../progress';
 import type { ContentUnlocks } from '../progress';
+
+/** Сторона переноса: -1 — влево, +1 — вправо. */
+export type BuildSide = -1 | 1;
 
 /**
  * Почему постановка невозможна. Ноль причин — годно.
@@ -44,28 +48,126 @@ export interface BuildPreview {
   readonly issue: PlacementIssue | 'far' | null;
 }
 
+/**
+ * Линия секций, которую положит текущий жест. Одна и та же для контура
+ * и для укладки: рамка, обещающая не то, что даст отпускание, — это тот же
+ * отказ, о котором узнают по результату.
+ */
+export interface BuildLine {
+  /** Выровненный ряд. Берётся из начала жеста и по ходу не меняется. */
+  readonly y: number;
+  /** Левый край линии целиком. */
+  readonly x: number;
+  /** Сколько секций встанет. Ноль — ни одной. */
+  readonly count: number;
+  readonly side: BuildSide;
+  /** Почему линия оборвалась или пуста. `null` — дошла до цели. */
+  readonly issue: PlacementIssue | 'far' | null;
+}
+
+/**
+ * Точка, с которой начат жест протяжки, в координатах МИРА.
+ *
+ * Живёт здесь, а не во вводе: ввод о мире не знает и знать не должен — он
+ * сообщает только, что применение началось и что оно длится. Где именно —
+ * помнит тот, кто ставит.
+ *
+ * Отдельного «жест прерван» нет: сброс ввода снимает удержание, и `end()`
+ * зовётся тем же кодом, что и при отпускании.
+ */
+export class BuildRun {
+  private start: { x: number; y: number } | null = null;
+  private moved = false;
+  private onExisting = false;
+
+  /**
+   * @param onExisting стояло ли что-то под началом жеста. Запоминается
+   * ИМЕННО ЗДЕСЬ, до первой укладки: после неё под началом стоит своя секция
+   * в любом случае, и отличить клик по ленте от клика по пустому месту уже
+   * нечем — а различаются они противоположными действиями, сносом и
+   * постановкой.
+   */
+  begin(x: number, y: number, onExisting: boolean): void {
+    this.start = { x, y };
+    this.moved = false;
+    this.onExisting = onExisting;
+  }
+
+  /**
+   * Отметить текущее положение прицела. Сдвигом считается уход в ДРУГУЮ клетку
+   * модуля, а не любое движение курсора: внутри одной клетки жест кладёт ту же
+   * секцию, и дрожание руки не имеет права превратить клик в протяжку.
+   */
+  note(x: number, y: number): void {
+    if (this.start === null || this.moved) return;
+    if (Builder.snap(x) !== Builder.snap(this.start.x)) this.moved = true;
+    else if (Builder.snap(y) !== Builder.snap(this.start.y)) this.moved = true;
+  }
+
+  end(): void {
+    this.start = null;
+    this.moved = false;
+    this.onExisting = false;
+  }
+
+  get anchor(): { x: number; y: number } | null {
+    return this.start;
+  }
+
+  /** Жест идёт, но прицел ни разу не покинул клетку начала — то есть это клик. */
+  get stationary(): boolean {
+    return this.start !== null && !this.moved;
+  }
+
+  /**
+   * Клик по уже стоящему: жест начат на постройке и никуда не повёл.
+   *
+   * Это СНОС, и только он: протяжка от той же точки — наоборот, продление
+   * ленты, ради которого на неё и нажимают. Различает их движение прицела,
+   * поэтому решение откладывается до отпускания.
+   */
+  get isDemolishClick(): boolean {
+    return this.stationary && this.onExisting;
+  }
+}
+
 export class Builder {
   /**
-   * Левый верхний угол области под целью. У постройки с сеткой цель
-   * ПРИТЯГИВАЕТСЯ к клетке: иначе снос не знает, что сносить, а соседние
-   * секции не стыкуются. Машина центрируется на цели.
+   * Левый верхний угол области под целью: цель ПРИТЯГИВАЕТСЯ к клетке общего
+   * модуля, одинаково для машины и для секции.
+   *
+   * Центрирования на прицеле нет ни у кого. Оно требовало нечётных сторон ради
+   * симметрии рамки вокруг точки, а с общей сеткой центра у рамки нет: видно,
+   * какие именно клетки будут заняты. Притяжка при этом НЕ сдвиг к ближайшему
+   * годному — она определяет, о каком месте вообще идёт речь, а годность
+   * считается уже для него.
    */
   static originFor(kind: BuildingKind, targetX: number, targetY: number): { x: number; y: number } {
-    if (kind.grid > 0) {
-      const g = kind.grid;
-      return { x: Math.floor(targetX / g) * g, y: Math.floor(targetY / g) * g };
-    }
-    return { x: targetX - (kind.width >> 1), y: targetY - (kind.height >> 1) };
+    void kind;
+    return { x: Builder.snap(targetX), y: Builder.snap(targetY) };
+  }
+
+  /** Ближайшая граница модуля не правее координаты. */
+  static snap(v: number): number {
+    return Math.floor(v / BUILD_MODULE) * BUILD_MODULE;
   }
 
   /**
    * Клавиатурная цель по вертикали: низ области встаёт на уровень ступней.
    * Нужна боковому прицелу — цель стоит на высоте ЦЕНТРА персонажа, и без
-   * поправки низ корпуса 13 уходит на четыре ячейки под землю («занято»).
-   * Без неё здание выше девяти ячеек с клавиатуры не ставится вовсе.
+   * поправки низ высокого корпуса уходит под землю («занято»). Без неё
+   * постройка выше девяти ячеек с клавиатуры не ставится вовсе.
+   *
+   * Возвращает УЖЕ ВЫРОВНЕННОЕ значение — флор от него в `originFor` даёт
+   * тождество, и угол по-прежнему считается в одном месте.
+   *
+   * Округление ВНИЗ, то есть корпус встаёт не ниже ступней. Вверх ошибаться
+   * можно: просвет меньше модуля опоре не мешает, и место остаётся годным.
+   * Вниз — нельзя: корпус уходит в грунт и отказывает «занято», а игрок видит
+   * под контуром чистый воздух.
    */
   static groundedTargetY(kind: BuildingKind, playerY: number, hitboxH: number): number {
-    return playerY + hitboxH - Math.ceil(kind.height / 2);
+    return Builder.snap(playerY + hitboxH - kind.height);
   }
 
   /**
@@ -118,6 +220,111 @@ export class Builder {
     };
   }
 
+  /**
+   * Линия секций от начала жеста до прицела.
+   *
+   * Считается целиком здесь, чтобы контур и укладка не могли разойтись:
+   * обе зовут эту функцию, и «докуда встанет» отвечает одно место.
+   *
+   * Стоимость — не больше `DIG.reach / BUILD_MODULE` секций за вызов; на фоне
+   * полумиллиона ячеек мира это шум, поэтому линия пересчитывается каждый шаг,
+   * а не кэшируется.
+   */
+  static line(
+    world: World,
+    kind: BuildingKind,
+    anchorX: number,
+    anchorY: number,
+    targetX: number,
+    playerCX: number,
+    playerCY: number,
+    modifierSide: BuildSide,
+    unlocks: ContentUnlocks = NO_UNLOCKS,
+  ): BuildLine {
+    // Ряд — из НАЧАЛА жеста: лента переносит вбок, а строка, ползущая
+    // за прицелом, превращала бы ровный перегон в лесенку.
+    const row = Builder.snap(anchorY);
+    const from = Builder.snap(anchorX);
+    const to = Builder.snap(targetX);
+    // Сторона — из жеста; у жеста нулевой длины её взять неоткуда, и тогда
+    // отвечает модификатор.
+    const side: BuildSide = to === from ? modifierSide : to > from ? 1 : -1;
+
+    if (!isKindOpen(kind, unlocks)) {
+      return { y: row, x: from, count: 0, side, issue: 'locked' };
+    }
+
+    const span = Math.abs(to - from) / BUILD_MODULE;
+    let count = 0;
+    let issue: PlacementIssue | 'far' | null = null;
+    for (let k = 0; k <= span; k++) {
+      const x = from + k * side * BUILD_MODULE;
+      if (!Digger.inReach(playerCX, playerCY, x, row)) {
+        issue = 'far';
+        break;
+      }
+      const state = Builder.sectionState(world, kind, x, row);
+      // Своя же секция на пути жеста — не «занято»: игрок ведёт по ней
+      // намеренно, и укладка перекладывает ей сторону.
+      if (state === 'blocked') {
+        issue = 'occupied';
+        break;
+      }
+      count++;
+    }
+
+    const left = side > 0 ? from : from - (count - 1) * BUILD_MODULE;
+    return { y: row, x: count > 0 ? left : from, count, side, issue };
+  }
+
+  /**
+   * Укладывает посчитанную линию.
+   *
+   * Записи-пустышки пропускаются: `world.set` будит чанк, а линия
+   * перекладывается каждый шаг, пока держат кнопку. Без этой проверки
+   * удержание жеста держало бы чанки всей ленты живыми — то есть ровно то,
+   * что запрещено правилом «вставшая лента ничего не стоит».
+   */
+  static applyLine(world: World, kind: BuildingKind, line: BuildLine): number {
+    const hull = hullForSide(kind, line.side);
+    for (let k = 0; k < line.count; k++) {
+      const x = line.x + k * BUILD_MODULE;
+      for (let dy = 0; dy < kind.height; dy++) {
+        for (let dx = 0; dx < kind.width; dx++) {
+          if (world.get(x + dx, line.y + dy) !== hull) world.set(x + dx, line.y + dy, hull);
+        }
+      }
+    }
+    return line.count;
+  }
+
+  /**
+   * Что стоит в клетке модуля: пусто, своя секция или чужое.
+   *
+   * «Своя» — любой из корпусов ЭТОГО вида: у ленты их два, и участок,
+   * идущий в другую сторону, обязан читаться своим, иначе разворот протяжкой
+   * упирался бы в «занято».
+   */
+  static sectionState(
+    world: World,
+    kind: BuildingKind,
+    x: number,
+    y: number,
+  ): 'free' | 'own' | 'blocked' {
+    const hulls = kind.sideHulls ?? [kind.hull];
+    let free = true;
+    let own = true;
+    for (let dy = 0; dy < kind.height; dy++) {
+      for (let dx = 0; dx < kind.width; dx++) {
+        const m = world.get(x + dx, y + dy);
+        if (m !== MAT.VACUUM) free = false;
+        if (!hulls.includes(m)) own = false;
+        if (!free && !own) return 'blocked';
+      }
+    }
+    return free ? 'free' : 'own';
+  }
+
   static issueAt(
     world: World,
     kind: BuildingKind,
@@ -139,16 +346,27 @@ export class Builder {
       }
     }
 
-    // Опора — хотя бы ОДНА твёрдая ячейка в ряду под областью, а не сплошной
-    // пол: сепаратор на краю уступа стоять должен, и это лучшее для него место —
+    // Опора — хотя бы ОДНА твёрдая ячейка под областью, а не сплошной пол:
+    // сепаратор на краю уступа стоять должен, и это лучшее для него место —
     // куча отхода уходит вниз сама.
+    //
+    // Ищется в полосе глубиной в МОДУЛЬ, а не в одном ряду под областью.
+    // Здание стоит по сетке модуля, а поверхность мира на неё не ложится:
+    // требование касаться грунта вплотную означало бы, что машина ставится
+    // только там, где рельеф случайно кратен модулю, то есть в среднем на одной
+    // клетке из четырёх. Просвет меньше модуля — это разрешение сетки,
+    // а не «здание висит в воздухе», от которого правило и защищает.
     //
     // Проверяется, только если вид её требует. Общее правило запрещало бы ленте
     // ровно то, ради чего её ставят, — перенос вещества над пустотой.
     if (kind.needsSupport) {
       let supported = false;
-      for (let dx = 0; dx < kind.width && !supported; dx++) {
-        if (MAT_STATE[world.get(x + dx, y + kind.height)] === MatterState.Solid) supported = true;
+      for (let dy = 0; dy < BUILD_MODULE && !supported; dy++) {
+        for (let dx = 0; dx < kind.width && !supported; dx++) {
+          if (MAT_STATE[world.get(x + dx, y + kind.height + dy)] === MatterState.Solid) {
+            supported = true;
+          }
+        }
       }
       if (!supported) return 'unsupported';
     }
@@ -157,10 +375,17 @@ export class Builder {
   }
 
   /**
-   * Применение инструмента в режиме строительства. Отдельного действия сноса
-   * нет: цель либо внутри стоящего здания, либо нет. Срабатывает на НАЖАТИЕ —
-   * при удержании игрок ставил бы и сносил одно здание тридцать раз в секунду.
+   * Разовое применение в точке: поставить или снести.
    *
+   * У машины это всё применение целиком и срабатывает на НАЖАТИЕ — при
+   * удержании игрок ставил бы и сносил одно здание тридцать раз в секунду.
+   *
+   * Из жеста протяжки сюда доходит только СНОС, и только на отпускании жеста,
+   * не сдвинувшегося с места: снос на нажатии означал бы, что нельзя нажать
+   * на ленту, чтобы её продлить, — первый же шаг жеста её бы и убрал.
+   *
+   * @param side сторона для секционной постройки; у вида без сторон не значит
+   * ничего
    * @returns что произошло
    */
   static apply(
@@ -172,6 +397,7 @@ export class Builder {
     targetX: number,
     targetY: number,
     unlocks: ContentUnlocks = NO_UNLOCKS,
+    side: BuildSide = 1,
   ): 'placed' | 'demolished' | 'rejected' {
     if (!Digger.inReach(playerCX, playerCY, targetX, targetY)) return 'rejected';
 
@@ -202,7 +428,7 @@ export class Builder {
     // Секционная постройка — та же маска, тот же корпус, но без записи
     // в реестре: состояния у неё нет, и обновлять ей нечего.
     if (kind.create === null) {
-      stampKind(world, kind, at.x, at.y, kind.hull);
+      stampKind(world, kind, at.x, at.y, hullForSide(kind, side));
       return 'placed';
     }
 
@@ -218,9 +444,11 @@ export class Builder {
    * Границы берутся из сетки: записи о секции нигде нет, и это единственный
    * способ снести именно её, а не прямоугольник поперёк двух соседних.
    *
-   * Стираются только ячейки ЭТОГО корпуса. Клетка сетки заведомо содержит
-   * одну секцию целиком, но проверка материала стоит одно сравнение и делает
-   * снос безвредным для всего, что могло оказаться в клетке помимо неё.
+   * Стираются ячейки ЛЮБОГО корпуса этого вида, а не только стороны
+   * по умолчанию: у ленты корпусов два, и снос, знающий один, оставлял бы
+   * половину лент неразрушимыми. Клетка сетки заведомо содержит одну секцию
+   * целиком, но проверка материала стоит одно сравнение и делает снос
+   * безвредным для всего, что могло оказаться в клетке помимо неё.
    */
   private static razeSection(
     world: World,
@@ -229,11 +457,12 @@ export class Builder {
     targetY: number,
   ): void {
     const at = Builder.originFor(kind, targetX, targetY);
+    const hulls = kind.sideHulls ?? [kind.hull];
     for (let dy = 0; dy < kind.height; dy++) {
       for (let dx = 0; dx < kind.width; dx++) {
         const x = at.x + dx;
         const y = at.y + dy;
-        if (world.get(x, y) === kind.hull) world.set(x, y, MAT.VACUUM);
+        if (hulls.includes(world.get(x, y))) world.set(x, y, MAT.VACUUM);
       }
     }
   }

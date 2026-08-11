@@ -9,6 +9,6 @@
  */
 export { Digger } from './digging';
 export { Vacuum } from './vacuum';
-export { Builder } from './builder';
-export type { PlacementIssue, BuildPreview } from './builder';
+export { Builder, BuildRun } from './builder';
+export type { PlacementIssue, BuildPreview, BuildLine, BuildSide } from './builder';
 export { DebugPainter } from './painter';

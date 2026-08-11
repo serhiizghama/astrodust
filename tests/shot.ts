@@ -16,7 +16,7 @@
 import { deflateSync } from 'node:zlib';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { generateLuna, Simulation, MAT, MATERIALS } from '../src/world';
-import { Camera, Renderer, RecordingSurface, CONVEYOR_STRIPE_COLOR } from '../src/render';
+import { Camera, Renderer, RecordingSurface, CONVEYOR_ROLLER_COLOR } from '../src/render';
 import { Player, LandingModule, BuildingRegistry, SEPARATOR_KIND } from '../src/entities';
 import { Builder } from '../src/systems';
 import type { HudState } from '../src/render';
@@ -30,6 +30,7 @@ import {
   PLAYER,
   FIXED_DT,
   CONVEYOR,
+  BUILD_MODULE,
   SIM_HZ,
 } from '../src/config';
 import type { Display } from '../src/core';
@@ -272,13 +273,14 @@ for (const shot of SHOTS) {
   // Правее выровненной площадки, на естественном рельефе. Верх области берётся
   // по САМОЙ ВЫСОКОЙ колонке пролёта: тогда область заведомо пуста, а опора
   // под ней есть хотя бы в одной колонке — ровно то, чего требует постановка.
-  const bx = MODULE.x + MODULE.width + 6;
+  // Угол по сетке модуля: все виды к ней притягиваются, центрирования
+  // на прицеле больше нет ни у кого.
+  const bx = Builder.snap(MODULE.x + MODULE.width + 6);
   let top = Number.POSITIVE_INFINITY;
   for (let dx = 0; dx < SEPARATOR.width; dx++) top = Math.min(top, surface[bx + dx]!);
-  const by = top - SEPARATOR.height;
+  const by = Builder.snap(top - SEPARATOR.height);
   const cx = bx + (SEPARATOR.width >> 1);
-  const cy = by + (SEPARATOR.height >> 1);
-  const placed = Builder.apply(world, registry, SEPARATOR_KIND, cx, cy, cx, cy);
+  const placed = Builder.apply(world, registry, SEPARATOR_KIND, bx, by, bx, by);
 
   // Гоняем машину, подсыпая пульпу на приёмную грань.
   for (let i = 0; i < 900; i++) {
@@ -369,7 +371,7 @@ for (const shot of SHOTS) {
   }
 
   // Ленты кладутся СЕКЦИЯМИ по сетке — так же, как их кладёт игрок.
-  const sz = CONVEYOR.size;
+  const sz = BUILD_MODULE;
   const rows = [
     { y: 204, kind: MAT.CONVEYOR_RIGHT, gapAt: -1 },
     { y: 192, kind: MAT.CONVEYOR_LEFT, gapAt: -1 },
@@ -416,7 +418,7 @@ for (const shot of SHOTS) {
     time: 3,
   });
   writeFileSync(`shots/conveyor${suffix}.png`, encodePng(pixels, 3, FULL));
-  const stripes = countColor(CONVEYOR_STRIPE_COLOR);
+  const stripes = countColor(CONVEYOR_ROLLER_COLOR);
   writeFileSync(
     `shots/zoom-conveyor${suffix}.png`,
     encodePng(pixels, 6, { x: 168 - camera.x, y: 176 - camera.y, w: 64, h: 34 }),

@@ -1,5 +1,5 @@
 import { SEPARATOR_KIND } from './separator';
-import { CONVEYOR_LEFT_KIND, CONVEYOR_RIGHT_KIND } from './conveyor';
+import { CONVEYOR_KIND } from './conveyor';
 import { NO_UNLOCKS } from '../progress';
 import type { ContentUnlocks } from '../progress';
 import type { BuildingKind } from './buildings';
@@ -8,19 +8,21 @@ import type { BuildingKind } from './buildings';
  * Каталог построек в порядке перебора. Один список: выбор вида, контур под
  * целью и постановка обязаны говорить об одном наборе.
  */
-export const BUILD_CATALOG: readonly BuildingKind[] = [
-  SEPARATOR_KIND,
-  CONVEYOR_LEFT_KIND,
-  CONVEYOR_RIGHT_KIND,
-];
+export const BUILD_CATALOG: readonly BuildingKind[] = [SEPARATOR_KIND, CONVEYOR_KIND];
 
 /**
- * Вид секционной постройки по материалу корпуса, или `null`. Нужен сносу:
- * у секционной постройки нет записи в реестре, и единственный её след — ячейки
- * сетки. Таблица, а не перебор: снос спрашивает на каждое применение.
+ * Вид секционной постройки по материалу корпуса, или `null`. Нужен сносу
+ * и перекладке стороны: у секционной постройки нет записи в реестре,
+ * и единственный её след — ячейки сетки. Таблица, а не перебор: снос
+ * спрашивает на каждое применение.
+ *
+ * В таблицу идут ВСЕ корпуса вида, а не один: у ленты их два, и лента,
+ * найденная только по одному из них, не сносилась бы в половине случаев.
  */
 const SECTION_BY_HULL = new Map<number, BuildingKind>(
-  BUILD_CATALOG.filter((k) => k.create === null).map((k) => [k.hull, k]),
+  BUILD_CATALOG.filter((k) => k.create === null).flatMap((k) =>
+    (k.sideHulls ?? [k.hull]).map((hull) => [hull, k] as [number, BuildingKind]),
+  ),
 );
 
 export function sectionKindByHull(hull: number): BuildingKind | null {
