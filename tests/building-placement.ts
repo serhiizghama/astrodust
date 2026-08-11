@@ -1,4 +1,4 @@
-import { Camera, Renderer, MACHINE_STATE_COLORS } from '../src/render';
+import { Camera, Renderer, RecordingSurface, MACHINE_STATE_COLORS } from '../src/render';
 import type { HudState } from '../src/render';
 import type { Display } from '../src/core';
 import { MAT, MAT_SOLID, Simulation } from '../src/world';
@@ -524,7 +524,13 @@ const { spawn } = first;
       present() {},
     } as unknown as Display;
 
-    const renderer = new Renderer(display, first.world, first.surface, WORLD_SEED);
+    const renderer = new Renderer(
+      display,
+      first.world,
+      first.surface,
+      WORLD_SEED,
+      new RecordingSurface(),
+    );
     const camera = new Camera(first.world.width, first.world.height);
     camera.snapTo(spawn.x, spawn.y);
 

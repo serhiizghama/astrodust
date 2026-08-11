@@ -13,6 +13,7 @@ import {
   DITHER_LEVELS,
   Camera,
   Renderer,
+  RecordingSurface,
   Lightmap,
   LIGHT_NEUTRAL,
   SPRITE_PALETTE,
@@ -278,7 +279,7 @@ check(
   }
 
   function frameOf(world: World, surface: Int16Array, cx: number, cy: number): Shot {
-    const renderer = new Renderer(display, world, surface, 1);
+    const renderer = new Renderer(display, world, surface, 1, new RecordingSurface());
     const camera = new Camera(W, H);
     camera.snapTo(cx, cy);
     renderer.render({
@@ -576,7 +577,7 @@ check(
     for (let y = 120; y < 136; y++) {
       for (let x = 120; x < 136; x++) world.setRaw(x, y, MAT.LAVA);
     }
-    const renderer = new Renderer(display, world, surface, 1);
+    const renderer = new Renderer(display, world, surface, 1, new RecordingSurface());
     const camera = new Camera(W, H);
     camera.snapTo(128, 128);
     renderer.render({
@@ -644,7 +645,7 @@ check(
     for (let y = 150; y < 158; y++) world.setRaw(x, y, MAT.VACUUM);
   }
 
-  const renderer = new Renderer(display, world, surface, 1);
+  const renderer = new Renderer(display, world, surface, 1, new RecordingSurface());
   const camera = new Camera(W, H);
   camera.snapTo(128, 154);
   renderer.render({

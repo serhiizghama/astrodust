@@ -26,6 +26,7 @@ import {
 import {
   Input,
   fitFrame,
+  screenFrame,
   aimDirection,
   aimTarget,
   actionTarget,
@@ -102,6 +103,39 @@ const { world } = first;
       'Кадр: разные окна дают разные множители при том же опорном кадре',
       a.scale !== b.scale && a.w === BASE_VIEW_W && b.w === BASE_VIEW_W,
       `×${a.scale} и ×${b.scale}`,
+    );
+  }
+
+  // Экранный буфер учитывает плотность экрана — ради слоя интерфейса: текст
+  // и подложки рисуются в нём, а не в буфере мира.
+  {
+    const fit = fitFrame(1920, 1080);
+    const one = screenFrame(fit, 1);
+    const two = screenFrame(fit, 2);
+    check(
+      'Кадр: экранный буфер растёт вместе с плотностью экрана',
+      one.w === fit.w * fit.scale &&
+        two.w === one.w * 2 &&
+        two.h === one.h * 2 &&
+        two.pixelScale === fit.scale * 2,
+      `${one.w}×${one.h} и ${two.w}×${two.h}`,
+    );
+
+    // Плотность НЕ меняет ни разрешение буфера мира, ни множитель: сколько
+    // видно мира, решает размер окна и только он.
+    check(
+      'Кадр: плотность экрана не меняет ни буфер мира, ни множитель',
+      fit.w === BASE_VIEW_W && fit.h === BASE_VIEW_H && fit.scale === 3,
+      `${fit.w}×${fit.h} ×${fit.scale}`,
+    );
+
+    // Потолок плотности: вдевятеро дороже опорного кадра не платим.
+    check(
+      'Кадр: плотность экрана ограничена сверху и снизу',
+      screenFrame(fit, 8).pixelScale === fit.scale * 3 &&
+        screenFrame(fit, 0).pixelScale === fit.scale &&
+        screenFrame(fit, 1.5).pixelScale === fit.scale * 1.5,
+      `×${screenFrame(fit, 8).pixelScale} при плотности 8`,
     );
   }
 }

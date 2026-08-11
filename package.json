@@ -11,6 +11,7 @@
     "test": "esbuild tests/run.ts --bundle --platform=node --format=esm --outfile=node_modules/.tmp/tests.mjs --log-level=error && node node_modules/.tmp/tests.mjs",
     "bench": "esbuild tests/bench-render.ts --bundle --platform=node --format=esm --outfile=node_modules/.tmp/bench.mjs --log-level=error && node node_modules/.tmp/bench.mjs",
     "shot": "esbuild tests/shot.ts --bundle --platform=node --format=esm --outfile=node_modules/.tmp/shot.mjs --log-level=error && node node_modules/.tmp/shot.mjs",
+    "shot:ui": "esbuild tests/shot-ui.ts --bundle --platform=node --format=esm --packages=external --outfile=node_modules/.tmp/shot-ui.mjs --log-level=error && node node_modules/.tmp/shot-ui.mjs",
     "verify:audio": "esbuild tests/audio-scene.ts --bundle --format=iife --global-name=AudioScene --outfile=node_modules/.tmp/audio-scene.js --log-level=error && esbuild tests/audio-verify.ts --bundle --platform=node --format=esm --packages=external --outfile=node_modules/.tmp/audio-verify.mjs --log-level=error && node node_modules/.tmp/audio-verify.mjs",
     "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\" \"*.{json,html}\""
   },

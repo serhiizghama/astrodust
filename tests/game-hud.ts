@@ -3,16 +3,25 @@
  * и кадр.
  *
  * Раскладка и попадание — чистые функции над размером буфера, поэтому
- * проверяются напрямую. Кадр проверяется пикселями: интерфейс рисуется в буфер
- * наравне с миром, и «нарисовано ли» вопрос только к пикселям.
+ * проверяются напрямую. Кадр интерфейса ВЕКТОРНЫЙ и в буфер не пишет, поэтому
+ * проверяется журнал поверхности: что нарисовано, где и чем одно состояние
+ * отличается от другого.
  */
-import { Camera, Renderer, hudLayout, slotAtPoint, overBar, GLYPH_H } from '../src/render';
-import type { HudState, HudLayout } from '../src/render';
+import { Camera, Renderer, RecordingSurface, hudLayout, slotAtPoint, overBar } from '../src/render';
+import type { HudState, HudLayout, UiOp, PanelStyle } from '../src/render';
 import type { Display } from '../src/core';
 import { ActionBarState, ToolMode } from '../src/core';
 import { Player } from '../src/entities';
-import { BASE_VIEW_W, BASE_VIEW_H, MAX_VIEW_W, MAX_VIEW_H, WORLD_SEED, HUD } from '../src/config';
-import { check, luna, IDLE_HUD } from './harness';
+import {
+  BASE_VIEW_W,
+  BASE_VIEW_H,
+  MAX_VIEW_W,
+  MAX_VIEW_H,
+  WORLD_SEED,
+  HUD,
+  UI,
+} from '../src/config';
+import { check, luna, IDLE_HUD, pick, said, saysLike } from './harness';
 
 const first = luna();
 const { spawn } = first;
@@ -50,9 +59,9 @@ const { spawn } = first;
     `размеров слота ${sizes.size}`,
   );
 
-  // Счётчики валют стоят в противоположном от панели углу и пересечься с ней
-  // не могут ни при каком буфере.
-  const counterBottom = HUD.counterMargin + GLYPH_H * 2 + 6;
+  // Счётчик валюты стоит в противоположном от панели углу и пересечься с ней
+  // не может ни при каком буфере.
+  const counterBottom = HUD.counterMargin + UI.line * 2;
   const overlaps = [
     [BASE_VIEW_W, BASE_VIEW_H],
     [MAX_VIEW_W, MAX_VIEW_H],
@@ -166,12 +175,13 @@ const { spawn } = first;
     present() {},
   } as unknown as Display;
 
-  const renderer = new Renderer(display, first.world, first.surface, WORLD_SEED);
+  const ui = new RecordingSurface();
+  const renderer = new Renderer(display, first.world, first.surface, WORLD_SEED, ui);
   const camera = new Camera(first.world.width, first.world.height);
   camera.snapTo(spawn.x, spawn.y);
   const layout = hudLayout(BASE_VIEW_W, BASE_VIEW_H);
 
-  function shoot(over: Partial<HudState> = {}, fps = 0): Uint8ClampedArray {
+  function shoot(over: Partial<HudState> = {}, fps = 0): UiOp[] {
     renderer.render({
       camera: camera,
       player: new Player(spawn.x, spawn.y),
@@ -181,58 +191,80 @@ const { spawn } = first;
       hud: { ...IDLE_HUD, ...over },
       fps,
     });
-    return pixels.slice();
+    return [...ui.ops];
   }
 
-  function colorAt(buf: Uint8ClampedArray, x: number, y: number): number {
-    const i = (y * BASE_VIEW_W + x) * 4;
-    return (buf[i]! << 16) | (buf[i + 1]! << 8) | buf[i + 2]!;
+  /** Подложка слота: она одна стоит в его углу, и по ней состояния и различаются. */
+  function slotStyle(ops: readonly UiOp[], i: number): PanelStyle | undefined {
+    const x = layout.slotX + i * layout.slotStep;
+    return pick(ops, 'panel').find((op) => op.x === x && op.y === layout.slotY)?.style;
   }
 
-  /** Цвет середины слота — по нему различаются обычный, активный и наведённый. */
-  function slotFill(buf: Uint8ClampedArray, i: number): number {
-    return colorAt(
-      buf,
-      layout.slotX + i * layout.slotStep + (layout.slotSize >> 1),
-      // Верхняя половина слота: ниже центра стоит значок.
-      layout.slotY + 2,
-    );
+  /** Чем два вида отличаются: заливка, обводка, свечение. */
+  function differences(a: PanelStyle, b: PanelStyle): number {
+    let n = 0;
+    if (a.fill !== b.fill || a.fillBottom !== b.fillBottom) n++;
+    if (a.stroke !== b.stroke || a.strokeWidth !== b.strokeWidth) n++;
+    if (a.glow !== b.glow) n++;
+    return n;
   }
+
+  const base = shoot();
 
   // Панель обязана быть в кадре при ВЫКЛЮЧЕННОЙ диагностике: она — состояние
   // игры, а не инструмент разработчика.
-  const base = shoot();
   {
-    const worldRow = layout.y - 1;
-    let painted = 0;
-    for (let x = layout.x; x < layout.x + layout.w; x++) {
-      if (colorAt(base, x, layout.slotY + 2) !== colorAt(base, x, worldRow)) painted++;
-    }
+    const plate = pick(base, 'panel').find((op) => op.x === layout.x && op.y === layout.y);
+    const slots = Array.from({ length: layout.slots }, (_, i) => slotStyle(base, i)).filter(
+      Boolean,
+    );
+    const keys = pick(base, 'text').filter(
+      (op) => op.y < layout.slotY + layout.slotSize && op.y >= layout.slotY,
+    );
     check(
-      'Кадр: панель нарисована при выключенной диагностике',
-      painted > layout.w / 2,
-      `отличается от мира ${painted} из ${layout.w}`,
+      'Кадр: панель, все её слоты и подписи клавиш нарисованы при выключенной диагностике',
+      plate !== undefined &&
+        plate.w === layout.w &&
+        plate.h === layout.h &&
+        slots.length === layout.slots &&
+        keys.length === layout.slots,
+      `подложка ${plate ? 'есть' : 'НЕТ'}, слотов ${slots.length}, подписей ${keys.length}`,
+    );
+
+    // Значок у каждого непустого слота: панель читается боковым зрением,
+    // а текст размером с ноготь не читается вовсе.
+    const icons = pick(base, 'icon').filter((op) => op.y >= layout.slotY);
+    check(
+      'Кадр: у каждого непустого слота свой значок',
+      icons.length === 3 && new Set(icons.map((op) => op.key)).size === 3,
+      icons.map((op) => op.key).join(' '),
     );
   }
 
-  // Активный, наведённый и обычный слоты различаются подложкой — одной рамки
-  // при беглом взгляде мало.
+  // Активный, наведённый, обычный и пустой слоты различаются не менее чем
+  // двумя средствами: одной заливки при беглом взгляде мало, одной обводки
+  // не видно на тёмном слоте.
   {
-    const hovered = shoot({ activeSlot: 0, hoveredSlot: 2 });
-    const active = slotFill(hovered, 0);
-    const hover = slotFill(hovered, 2);
-    const plain = slotFill(hovered, 1);
-    const empty = slotFill(hovered, 5);
+    const ops = shoot({ activeSlot: 0, hoveredSlot: 2 });
+    const active = slotStyle(ops, 0)!;
+    const plain = slotStyle(ops, 1)!;
+    const hover = slotStyle(ops, 2)!;
+    const empty = slotStyle(ops, 5)!;
     check(
-      'Кадр: активный, наведённый, обычный и пустой слоты различаются подложкой',
-      new Set([active, hover, plain, empty]).size === 4,
-      [active, hover, plain, empty].map((c) => c.toString(16)).join(' '),
+      'Кадр: активный, наведённый, обычный и пустой слоты различаются заливкой',
+      new Set([active.fill, hover.fill, plain.fill, empty.fill]).size === 4,
+      [active.fill, hover.fill, plain.fill, empty.fill].join(' '),
     );
-
-    // Рамка тоже своя: активный слот выделен и подложкой, и рамкой.
-    const edgeActive = colorAt(hovered, layout.slotX, layout.slotY);
-    const edgePlain = colorAt(hovered, layout.slotX + layout.slotStep, layout.slotY);
-    check('Кадр: рамка активного слота отличается от обычной', edgeActive !== edgePlain);
+    check(
+      'Кадр: активный слот отличается от прочих не менее чем двумя средствами',
+      differences(active, plain) >= 2 && differences(active, hover) >= 2,
+      `от обычного ${differences(active, plain)}, от наведённого ${differences(active, hover)}`,
+    );
+    check(
+      'Кадр: подсветка наведения отличается от выделения активного',
+      differences(hover, active) >= 2 && differences(hover, plain) >= 1,
+      `наведение против активного ${differences(hover, active)}`,
+    );
   }
 
   // Игрок без мыши: подсветки наведения в кадре нет вовсе.
@@ -240,50 +272,83 @@ const { spawn } = first;
     const hovered = shoot({ hoveredSlot: 4 });
     check(
       'Кадр: без мыши подсветки наведения нет, с мышью она появляется',
-      slotFill(base, 4) !== slotFill(hovered, 4),
+      JSON.stringify(slotStyle(base, 4)) !== JSON.stringify(slotStyle(hovered, 4)),
     );
   }
 
   // Строка инвентаря стоит НАД панелью и в неё не залезает.
   {
     const filled = shoot({ carried: [{ name: 'Пульпа', count: 138 }], used: 138 });
-    let changed = 0;
-    let inside = 0;
-    for (let y = 0; y < BASE_VIEW_H; y++) {
-      for (let x = 0; x < BASE_VIEW_W; x++) {
-        if (colorAt(base, x, y) === colorAt(filled, x, y)) continue;
-        changed++;
-        if (y >= layout.y) inside++;
-      }
-    }
+    const line = pick(filled, 'text').find((op) => op.text.includes('Пульпа'));
     check(
       'Кадр: строка инвентаря лежит над панелью и на неё не заходит',
-      changed > 0 && inside === 0,
-      `изменилось ${changed}, внутри панели ${inside}`,
+      line !== undefined && line.y + UI.line <= layout.y,
+      line ? `строка на y=${line.y}, панель с ${layout.y}` : 'строки нет',
     );
   }
 
   // Вид постройки и причина отказа — ТОЛЬКО в режиме строительства.
   {
-    const building = shoot({ activeSlot: 1, buildKind: 'Сепаратор 120 ₡' });
+    const building = shoot({ activeSlot: 1, buildKind: 'Сепаратор' });
     const refused = shoot({
       activeSlot: 1,
-      buildKind: 'Сепаратор 120 ₡',
+      buildKind: 'Сепаратор',
       buildIssue: 'нет опоры',
     });
-    let kindDrawn = 0;
-    let issueDrawn = 0;
-    const top = layout.y - HUD.lineGap - GLYPH_H;
-    for (let y = 0; y < BASE_VIEW_H; y++) {
-      for (let x = 0; x < BASE_VIEW_W; x++) {
-        if (colorAt(base, x, y) !== colorAt(building, x, y) && y < top) kindDrawn++;
-        if (colorAt(building, x, y) !== colorAt(refused, x, y) && y < top) issueDrawn++;
-      }
-    }
+    const kind = pick(building, 'text').find((op) => op.text === 'Сепаратор');
+    const issue = pick(refused, 'text').find((op) => op.text === 'нет опоры');
     check(
       'Кадр: вид постройки и причина отказа появляются над панелью только в строительстве',
-      kindDrawn > 0 && issueDrawn > 0,
-      `вид ${kindDrawn}, отказ ${issueDrawn}`,
+      kind !== undefined &&
+        issue !== undefined &&
+        kind.y + UI.line <= layout.y &&
+        issue.y < kind.y &&
+        !saysLike(base, 'Сепаратор') &&
+        !saysLike(building, 'нет опоры'),
+      `вид на y=${kind?.y}, отказ на y=${issue?.y}`,
+    );
+
+    // Причина отказа различима ЦВЕТОМ от остальных надписей низа кадра.
+    const others = pick(refused, 'text')
+      .filter((op) => op.y < layout.y && op !== issue)
+      .map((op) => op.style.color);
+    check(
+      'Кадр: причина отказа различима цветом от остальных надписей',
+      issue !== undefined && !others.includes(issue.style.color),
+      issue?.style.color ?? '',
+    );
+  }
+
+  // Панель не пишет в буфер мира ни пикселя: снимок мира от интерфейса
+  // не зависит, и это то, ради чего слои разделены.
+  {
+    const before = pixels.slice();
+    shoot({ activeSlot: 1, buildKind: 'Сепаратор', hoveredSlot: 3 }, 60);
+    const after = pixels.slice();
+    let changed = 0;
+    for (let i = 0; i < before.length; i += 4) {
+      if (
+        before[i] !== after[i] ||
+        before[i + 1] !== after[i + 1] ||
+        before[i + 2] !== after[i + 2]
+      )
+        changed++;
+    }
+    check(
+      'Кадр: интерфейс не оставляет следов в буфере мира',
+      changed === 0,
+      `изменившихся пикселей ${changed}`,
+    );
+  }
+
+  // Надписи кадра одни и те же при одном состоянии: журнал описывает кадр,
+  // а не накапливает его.
+  {
+    const again = shoot();
+    check(
+      'Кадр: журнал описывает один кадр, а не накапливает их',
+      said(again).join('|') === said(base).join('|') && again.length === base.length,
+      `${base.length} операций против ${again.length}`,
     );
   }
 }

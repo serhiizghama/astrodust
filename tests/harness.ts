@@ -5,7 +5,7 @@
  */
 import { generateLuna, MATERIALS, PORTABLE_MATERIALS } from '../src/world';
 import { WORLD_SEED, VACUUM } from '../src/config';
-import type { HudState, HudSlot } from '../src/render';
+import type { HudState, HudSlot, UiOp } from '../src/render';
 import type { Input } from '../src/core';
 import { HUD } from '../src/config';
 
@@ -24,6 +24,29 @@ export function report(): void {
     failures === 0 ? `\nВСЕ ПРОВЕРКИ ПРОЙДЕНЫ (${total})` : `\nПРОВАЛЕНО: ${failures} из ${total}`,
   );
   process.exit(failures === 0 ? 0 : 1);
+}
+
+/**
+ * Операции слоя интерфейса одного вида.
+ *
+ * Кадр интерфейса — векторный, и «что нарисовано» читается из журнала
+ * поверхности, а не из пикселей: канваса в прогоне нет.
+ */
+export function pick<K extends UiOp['kind']>(
+  ops: readonly UiOp[],
+  kind: K,
+): Extract<UiOp, { kind: K }>[] {
+  return ops.filter((op): op is Extract<UiOp, { kind: K }> => op.kind === kind);
+}
+
+/** Надписи кадра одной строкой — для сравнения «что написано» между кадрами. */
+export function said(ops: readonly UiOp[]): string[] {
+  return pick(ops, 'text').map((op) => op.text);
+}
+
+/** Есть ли в кадре надпись, содержащая подстроку. */
+export function saysLike(ops: readonly UiOp[], part: string): boolean {
+  return pick(ops, 'text').some((op) => op.text.includes(part));
 }
 
 /** Заглушка ввода с тем же контрактом, что у настоящего Input. */

@@ -1,18 +1,20 @@
-import { TECH_TREE } from '../config';
-import { RAMP } from '../palette';
-import { fillRect, strokeRect, blit, hLine, vLine } from './draw';
-import { drawText, textWidth, LINE_H } from './font';
-import { ICON_PALETTE, TECH_ICON, techIcon, POINTER, POINTER_W, POINTER_H } from './sprites/icons';
+import { TECH_TREE, UI } from '../config';
+import { RAMP, css } from '../palette';
+import { fitText, bodyText, smallText, titleText, OVERLAY_PLATE } from './ui';
+import type { PanelStyle, UiSurface } from './ui';
+import { TECH_ICON, techIcon, POINTER } from './sprites/icons';
 
 /**
- * Дерево технологий поверх кадра. Рисуется В БУФЕР теми же пикселями, что
- * и мир, — как и всё остальное в кадре. Отдельного слоя DOM быть не должно:
- * второй слой — это второй масштаб на экране, а целочисленный апскейл всего
- * кадра записан требованием оболочки.
+ * Дерево технологий поверх кадра. Рисуется в СЛОЕ ИНТЕРФЕЙСА — векторно и в
+ * разрешении устройства, а не в сетке мирового кадра: это экран, где текста
+ * больше всего, и рубленые буквы стоят здесь дороже всего.
  *
- * Подложка НЕПРОЗРАЧНАЯ: мир под оверлеем любой, и читаемость текста
- * на произвольном фоне ничем другим не обеспечивается. Поэтому же надписи
- * внутри панели идут БЕЗ тени — контраст даёт сама подложка.
+ * Раскладка при этом считается в ЯЧЕЙКАХ КАДРА, как и вся остальная геометрия
+ * интерфейса: дерево, помещавшееся в опорный кадр, обязано помещаться в любой.
+ *
+ * Подложка почти непрозрачна: под ней читают текст, и мир, просвечивающий
+ * сквозь неё, ложился бы на буквы узором. Поэтому же надписи внутри панели
+ * идут БЕЗ ореола — контраст даёт сама подложка.
  *
  * Дерево — ГРАФ, а не список: список отвечает «что можно купить сейчас»,
  * но не отвечает, что за чем стоит и куда ведёт развитие.
@@ -69,17 +71,17 @@ export interface OverlayView {
   /**
    * Курсор в координатах буфера кадра.
    *
-   * Поля ОБЯЗАТЕЛЬНЫЕ, а не с умолчанием: подложка оверлея непрозрачна
-   * и накрывает мировой прицел целиком, поэтому меню обязано рисовать курсор
-   * само. Забывчивость здесь стоит ровно того, чем она уже обошлась однажды, —
-   * меню без единого признака того, где мышь.
+   * Поля ОБЯЗАТЕЛЬНЫЕ, а не с умолчанием: подложка оверлея накрывает мировой
+   * прицел целиком, поэтому меню обязано рисовать курсор само. Забывчивость
+   * здесь стоит ровно того, чем она уже обошлась однажды, — меню без единого
+   * признака того, где мышь.
    */
   readonly pointerX: number;
   readonly pointerY: number;
 }
 
 /**
- * Подложка узла по состоянию покупки.
+ * Заливка узла по состоянию покупки.
  *
  * Ступени разведены не менее чем на две по серой лестнице, а «куплена» уходит
  * в другой тон: соседние ступени читаются как освещение, а не как разные
@@ -93,12 +95,12 @@ const NODE_FILL: Record<OverlayNodeStatus, number> = {
 };
 
 /**
- * Рамка узла по виду эффекта. ДРУГОЕ средство, чем подложка, потому что
+ * Обводка узла по виду эффекта. ДРУГОЕ средство, чем заливка, потому что
  * признак другой: закрытая предпосылкой постройка и закрытый предпосылкой
  * навык обязаны различаться, и различие должно выживать в любом состоянии
  * покупки.
  *
- * Ни земля, ни фиалка не совпадают с золотом счёта: рамка — не цена.
+ * Ни земля, ни фиалка не совпадают с золотом счёта: обводка — не цена.
  */
 const NODE_EDGE: Record<OverlayNodeKind, number> = {
   unlock: RAMP.earth[4],
@@ -118,12 +120,16 @@ const COST_COLOR: Record<OverlayNodeStatus, number> = {
 };
 
 /** Связь из открытой предпосылки светлее: путь к далёкому узлу виден по линиям. */
-const EDGE_DONE = RAMP.gray[7];
-const EDGE_PENDING = RAMP.gray[4];
+const EDGE_DONE = css(RAMP.gray[7]);
+const EDGE_PENDING = css(RAMP.gray[4], UI.alpha.edge);
 
-/** Кольцо выбора и кольцо наведения — РАЗНЫМИ цветами: они бывают на разных узлах. */
-const SELECT_RING = RAMP.gray[9];
-const HOVER_RING = RAMP.blue[5];
+/**
+ * Свечение выбора и свечение наведения — РАЗНЫМИ цветами: они бывают на разных
+ * узлах сразу. Свечением, а не обводкой: цвет обводки занят видом эффекта,
+ * и пометка поверх стирала бы признак типа у выбранного узла.
+ */
+const SELECT_GLOW = css(RAMP.gray[9], UI.alpha.glow);
+const HOVER_GLOW = css(RAMP.blue[5], UI.alpha.glow);
 
 /**
  * Отступы панели от краёв кадра. Длины, а не доли: дерево читается с одного
@@ -138,6 +144,8 @@ const MARGIN_Y = 14;
 const MARGIN_BOTTOM = 56;
 /** Внутреннее поле панели. */
 const PAD = 6;
+/** Просвет между подписями соседних колонок. */
+const LABEL_GAP = 6;
 
 export interface TechTreeLayout {
   /** Подложка оверлея. */
@@ -156,7 +164,7 @@ export interface TechTreeLayout {
   readonly fieldH: number;
 }
 
-/** Размер сетки в пикселях по её габаритам в узлах. */
+/** Размер сетки в ячейках по её габаритам в узлах. */
 export function techTreeSize(cols: number, rows: number): { w: number; h: number } {
   return {
     w: cols > 0 ? (cols - 1) * TECH_TREE.colStep + TECH_TREE.node : 0,
@@ -184,10 +192,10 @@ export function techTreeLayout(
   const w = viewW - 2 * MARGIN_X;
   const h = viewH - MARGIN_BOTTOM;
 
-  const headerH = LINE_H + 2;
+  const headerH = UI.line + 2;
   // Полоса сведений внизу панели: она заменила плавающую подсказку у узла,
   // поэтому место под неё отрезается от поля дерева, а не берётся поверх него.
-  const footerH = TECH_TREE.infoLines * LINE_H + 2;
+  const footerH = TECH_TREE.infoLines * UI.line + 2;
   const size = techTreeSize(cols, rows);
   const fieldX = x + PAD;
   const fieldY = y + PAD + headerH;
@@ -209,7 +217,7 @@ export function techTreeLayout(
   };
 }
 
-/** Левый верхний угол узла в пикселях. Одна формула на отрисовку и попадание. */
+/** Левый верхний угол узла в ячейках. Одна формула на отрисовку и попадание. */
 export function nodeOrigin(
   layout: TechTreeLayout,
   col: number,
@@ -253,11 +261,11 @@ export function gridOf(nodes: readonly { readonly col: number; readonly row: num
 }
 
 /**
- * @param px буфер кадра — тот же, в который нарисован мир
+ * @param ui поверхность слоя интерфейса — та же, на которой нарисована панель
  * @param viewW,viewH размер кадра: панель растянута по нему, а не по константе
  */
 export function drawResearchOverlay(
-  px: Uint8ClampedArray,
+  ui: UiSurface,
   viewW: number,
   viewH: number,
   view: OverlayView,
@@ -265,30 +273,19 @@ export function drawResearchOverlay(
   const { cols, rows } = gridOf(view.nodes);
   const layout = techTreeLayout(viewW, viewH, cols, rows);
 
-  fillRect(px, viewW, viewH, layout.x, layout.y, layout.w, layout.h, RAMP.gray[1]);
-  strokeRect(px, viewW, viewH, layout.x, layout.y, layout.w, layout.h, RAMP.gray[4]);
+  ui.panel(layout.x, layout.y, layout.w, layout.h, OVERLAY_PLATE);
 
   const left = layout.x + PAD;
   const right = layout.x + layout.w - PAD;
 
-  drawText(px, viewW, viewH, 'ИССЛЕДОВАНИЯ', left, layout.y + PAD, RAMP.gray[9], false);
+  ui.text('ИССЛЕДОВАНИЯ', left, layout.y + PAD, titleText(RAMP.gray[9]));
   // Счёт — тем же золотом, что и счётчик в углу кадра: одна валюта — один
   // цвет, где бы её ни показывали. Без счёта рядом цена узла не отвечает
   // на вопрос «могу ли я это купить».
-  const credits = `${view.credits} ₡`;
-  drawText(
-    px,
-    viewW,
-    viewH,
-    credits,
-    right - textWidth(credits),
-    layout.y + PAD,
-    RAMP.warm[4],
-    false,
-  );
+  ui.text(`${view.credits} ₡`, right, layout.y + PAD, titleText(RAMP.warm[4], { align: 'right' }));
 
-  drawEdges(px, viewW, viewH, layout, view);
-  drawNodes(px, viewW, viewH, layout, view);
+  drawEdges(ui, layout, view);
+  drawNodes(ui, layout, view);
 
   // Полоса сведений — в СВОЁМ месте внизу панели, а не коробкой у узла.
   // Плавающая коробка закрывала соседние узлы и висела над деревом постоянно:
@@ -297,66 +294,28 @@ export function drawResearchOverlay(
   //
   // Источник — наведённый узел, иначе выбранный: и мышь, и стрелки отвечают
   // на один вопрос и обязаны писать в одно место.
-  drawInfoBar(px, viewW, viewH, layout, view.nodes[view.hovered ?? view.selected]);
+  drawInfoBar(ui, layout, view.nodes[view.hovered ?? view.selected]);
 
   // Курсор — САМЫМ последним, поверх подсказки: он указатель, и заслонять его
   // не имеет права ничто. Мировой прицел сюда не доживает — подложка панели
-  // непрозрачна и накрывает его целиком.
-  drawPointer(px, viewW, viewH, view.pointerX, view.pointerY);
-}
-
-/**
- * Курсор меню — стрелка, а не крестик мира.
- *
- * Другая форма намеренно: крестик означает «инструмент ударит сюда», а в меню
- * инструмент не применяется вовсе. Одинаковая форма обещала бы действие,
- * которого нет.
- *
- * Своя палитра: самый светлый тон на самом тёмном контуре — курсор обязан
- * читаться и на подложке панели, и на светлой подложке доступного узла,
- * и поверх подсказки.
- */
-const POINTER_PALETTE = [RAMP.gray[0], RAMP.gray[9], RAMP.gray[0]];
-
-function drawPointer(
-  px: Uint8ClampedArray,
-  viewW: number,
-  viewH: number,
-  x: number,
-  y: number,
-): void {
+  // накрывает его целиком.
+  //
   // Остриё стрелки совпадает с точкой попадания: рисунок висит вправо-вниз
   // от неё, как и положено курсору, — иначе он указывал бы мимо того узла,
   // который считает `nodeAtPoint`.
-  blit(
-    px,
-    viewW,
-    viewH,
-    POINTER,
-    POINTER_W,
-    POINTER_H,
-    Math.round(x),
-    Math.round(y),
-    POINTER_PALETTE,
-  );
+  ui.icon(POINTER, Math.round(view.pointerX), Math.round(view.pointerY));
 }
 
 /**
  * Связи коленом: от правого края предпосылки до середины просвета, по вертикали
- * до строки цели, и до её левого края. Диагональ дала бы лесенку, которую нечем
- * сгладить, — сглаживание в проекте запрещено целиком.
+ * до строки цели, и до её левого края. Поворот СКРУГЛЁН, линия сглажена —
+ * лесенки на ней не бывает ни при каком размере окна.
  *
  * Рисуются ДО узлов: колено, прошедшее через чужой узел, окажется под ним,
  * а не поверх.
  */
-function drawEdges(
-  px: Uint8ClampedArray,
-  viewW: number,
-  viewH: number,
-  layout: TechTreeLayout,
-  view: OverlayView,
-): void {
-  const half = layout.node >> 1;
+function drawEdges(ui: UiSurface, layout: TechTreeLayout, view: OverlayView): void {
+  const half = layout.node / 2;
   for (const edge of view.edges) {
     const from = view.nodes[edge.from];
     const to = view.nodes[edge.to];
@@ -366,81 +325,82 @@ function drawEdges(
     const b = nodeOrigin(layout, to.col, to.row);
     const x0 = a.x + layout.node;
     const y0 = a.y + half;
-    const x1 = b.x - 1;
+    const x1 = b.x;
     const y1 = b.y + half;
-    const mid = (x0 + x1) >> 1;
+    const mid = (x0 + x1) / 2;
 
-    const color = from.status === 'open' ? EDGE_DONE : EDGE_PENDING;
-    hLine(px, viewW, viewH, x0, mid, y0, color);
-    vLine(px, viewW, viewH, mid, y0, y1, color);
-    hLine(px, viewW, viewH, mid, x1, y1, color);
+    ui.line(
+      [
+        { x: x0, y: y0 },
+        { x: mid, y: y0 },
+        { x: mid, y: y1 },
+        { x: x1, y: y1 },
+      ],
+      {
+        color: from.status === 'open' ? EDGE_DONE : EDGE_PENDING,
+        width: UI.stroke.thin,
+        radius: UI.radius.node,
+      },
+    );
   }
 }
 
-function drawNodes(
-  px: Uint8ClampedArray,
-  viewW: number,
-  viewH: number,
-  layout: TechTreeLayout,
-  view: OverlayView,
-): void {
+/**
+ * Вид узла: заливка — состояние покупки, обводка — вид эффекта, свечение —
+ * выбор или наведение. Три средства на три независимых признака.
+ */
+function nodeStyle(node: OverlayNode, selected: boolean, hovered: boolean): PanelStyle {
+  const glow = hovered ? HOVER_GLOW : selected ? SELECT_GLOW : undefined;
+  return {
+    fill: css(NODE_FILL[node.status]),
+    stroke: css(NODE_EDGE[node.kind]),
+    strokeWidth: glow ? UI.stroke.thick : UI.stroke.thin,
+    radius: UI.radius.node,
+    shadow: true,
+    ...(glow ? { glow } : {}),
+  };
+}
+
+function drawNodes(ui: UiSurface, layout: TechTreeLayout, view: OverlayView): void {
   const size = layout.node;
   for (let i = 0; i < view.nodes.length; i++) {
     const node = view.nodes[i]!;
     const at = nodeOrigin(layout, node.col, node.row);
 
-    fillRect(px, viewW, viewH, at.x, at.y, size, size, NODE_FILL[node.status]);
-    strokeRect(px, viewW, viewH, at.x, at.y, size, size, NODE_EDGE[node.kind]);
-    blit(
-      px,
-      viewW,
-      viewH,
+    ui.panel(at.x, at.y, size, size, nodeStyle(node, i === view.selected, i === view.hovered));
+    ui.icon(
       techIcon(node.icon),
-      TECH_ICON,
-      TECH_ICON,
       at.x + ((size - TECH_ICON) >> 1),
       at.y + ((size - TECH_ICON) >> 1),
-      ICON_PALETTE,
     );
 
     // Название и цена — у КАЖДОГО узла и без наведения. Значок отвечает «что
     // это» намёком, название — словами, цена — «на что мне хватает»; последний
     // вопрос задаётся ко всему дереву сразу, а не к одному узлу.
     //
-    // Подпись ШИРЕ узла и центрирована по нему: шаг колонки выведен из самого
-    // длинного имени таблицы, поэтому подписи соседей не сходятся.
-    const label = node.name;
-    drawText(
-      px,
-      viewW,
-      viewH,
-      label,
-      at.x + ((size - textWidth(label)) >> 1),
+    // Подпись ШИРЕ узла и центрирована по нему, но в шаг колонки обязана
+    // помещаться: не поместившаяся обрезается многоточием. Ширину задаёт
+    // системный шрифт, и заранее она не известна.
+    const center = at.x + size / 2;
+    const room = layout.colStep - LABEL_GAP;
+
+    const nameStyle = bodyText(i === view.selected ? RAMP.gray[9] : RAMP.gray[7], {
+      align: 'center',
+    });
+    ui.text(
+      fitText(ui, node.name, nameStyle, room),
+      center,
       at.y + size + TECH_TREE.labelGap,
-      i === view.selected ? RAMP.gray[9] : RAMP.gray[7],
-      false,
+      nameStyle,
     );
 
-    const cost = node.status === 'open' ? 'открыта' : `${node.cost} ₡`;
-    drawText(
-      px,
-      viewW,
-      viewH,
-      cost,
-      at.x + ((size - textWidth(cost)) >> 1),
-      at.y + size + TECH_TREE.labelGap + LINE_H,
-      COST_COLOR[node.status],
-      false,
+    const costStyle = smallText(COST_COLOR[node.status], { align: 'center' });
+    ui.text(
+      fitText(ui, node.status === 'open' ? 'открыта' : `${node.cost} ₡`, costStyle, room),
+      center,
+      at.y + size + TECH_TREE.labelGap + UI.line,
+      costStyle,
     );
-
-    // Кольца СНАРУЖИ узла: рамка внутри занята видом эффекта, и выделение
-    // поверх неё стирало бы признак типа у выбранного узла.
-    if (i === view.selected) {
-      strokeRect(px, viewW, viewH, at.x - 2, at.y - 2, size + 4, size + 4, SELECT_RING);
-    }
-    if (i === view.hovered) {
-      strokeRect(px, viewW, viewH, at.x - 1, at.y - 1, size + 2, size + 2, HOVER_RING);
-    }
   }
 }
 
@@ -457,41 +417,44 @@ function drawNodes(
  * Строка управления — часть полосы: она стоит на её последней строке, и место
  * под неё отведено тем же расчётом.
  */
-function drawInfoBar(
-  px: Uint8ClampedArray,
-  viewW: number,
-  viewH: number,
-  layout: TechTreeLayout,
-  node: OverlayNode | undefined,
-): void {
+function drawInfoBar(ui: UiSurface, layout: TechTreeLayout, node: OverlayNode | undefined): void {
   const left = layout.x + PAD;
   const right = layout.x + layout.w - PAD;
-  const top = layout.y + layout.h - PAD - TECH_TREE.infoLines * LINE_H;
+  const top = layout.y + layout.h - PAD - TECH_TREE.infoLines * UI.line;
+  const room = right - left;
 
   // Отбивка сверху: без неё подписи нижнего ряда узлов сливаются со сведениями.
-  hLine(px, viewW, viewH, left, right - 1, top - 3, RAMP.gray[3]);
+  ui.line(
+    [
+      { x: left, y: top - 3 },
+      { x: right, y: top - 3 },
+    ],
+    { color: css(RAMP.gray[3]), width: UI.stroke.thin },
+  );
 
   if (node) {
-    drawText(px, viewW, viewH, node.name, left, top, RAMP.gray[9], false);
+    ui.text(node.name, left, top, bodyText(RAMP.gray[9], { weight: 'bold' }));
     const cost = node.status === 'open' ? 'открыта' : `${node.cost} ₡`;
-    drawText(px, viewW, viewH, cost, right - textWidth(cost), top, COST_COLOR[node.status], false);
-    drawText(px, viewW, viewH, node.description, left, top + LINE_H, RAMP.gray[7], false);
+    ui.text(cost, right, top, bodyText(COST_COLOR[node.status], { align: 'right' }));
+
+    const description = bodyText(RAMP.gray[7]);
+    ui.text(fitText(ui, node.description, description, room), left, top + UI.line, description);
+
     // Применение — то, ради чего полоса и заведена: «что это» отвечает
     // название на узле, «что с этим делать» не отвечает ничто другое.
-    drawText(px, viewW, viewH, node.usage, left, top + 2 * LINE_H, RAMP.gray[6], false);
+    const usage = bodyText(RAMP.gray[6]);
+    ui.text(fitText(ui, node.usage, usage, room), left, top + 2 * UI.line, usage);
+
     if (node.note) {
-      drawText(px, viewW, viewH, node.note, left, top + 3 * LINE_H, COST_COLOR[node.status], false);
+      const note = bodyText(COST_COLOR[node.status]);
+      ui.text(fitText(ui, node.note, note, room), left, top + 3 * UI.line, note);
     }
   }
 
-  drawText(
-    px,
-    viewW,
-    viewH,
+  ui.text(
     'WASD — выбор   Space — купить   T — закрыть',
     left,
-    top + 4 * LINE_H,
-    RAMP.gray[5],
-    false,
+    top + 4 * UI.line,
+    smallText(RAMP.gray[5]),
   );
 }

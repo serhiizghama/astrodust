@@ -1,4 +1,4 @@
-import { Camera, Backdrop, Renderer } from '../src/render';
+import { Camera, Backdrop, Renderer, RecordingSurface } from '../src/render';
 import type { Display } from '../src/core';
 import { MATERIALS, LUNA } from '../src/world';
 import { Player } from '../src/entities';
@@ -27,7 +27,13 @@ const first = luna();
       present() {},
     } as unknown as Display;
 
-    const renderer = new Renderer(display, first.world, first.surface, WORLD_SEED);
+    const renderer = new Renderer(
+      display,
+      first.world,
+      first.surface,
+      WORLD_SEED,
+      new RecordingSurface(),
+    );
     const camera = new Camera(first.world.width, first.world.height);
     camera.snapTo(camX + BASE_VIEW_W / 2, camY + BASE_VIEW_H / 2);
     const offscreen = new Player(camera.x + BASE_VIEW_W / 2, camera.y + BASE_VIEW_H + 40);

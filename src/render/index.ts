@@ -1,8 +1,8 @@
 /**
- * Вывод кадра.
+ * Вывод кадра. Кадр двухслойный: мир — пиксели `ImageData`, интерфейс — вектор
+ * поверх выведенного мира.
  *
- * Пишет пиксели прямо в `ImageData`. Читает мир и снапшот состояния, не меняя
- * ни того, ни другого.
+ * Читает мир и снапшот состояния, не меняя ни того, ни другого.
  *
  * Это ЕДИНСТВЕННЫЙ вход в подсистему извне: снаружи импортируют отсюда,
  * внутри — напрямую друг у друга. Что не перечислено здесь — не публично.
@@ -46,8 +46,32 @@ export type {
  */
 export { hudLayout, slotAtPoint, overBar } from './hud';
 export type { HudLayout, HudSlot, SlotAction } from './hud';
-/** Шрифт интерфейса: им пишется весь текст игры, включая проверки полноты набора. */
-export { drawText, textWidth, hasGlyph, glyphChars, GLYPH_H, LINE_H, TEXT_SHADOW } from './font';
+/**
+ * Слой интерфейса: вектор поверх выведенного мира. Публичны поверхность
+ * рисования (в браузере — канвас, в проверке — журнал) и общий вид, потому что
+ * кадр интерфейса собирается снаружи и проверяется по журналу.
+ */
+export {
+  CanvasSurface,
+  RecordingSurface,
+  fitText,
+  SHADOW_INK,
+  BAR_PLATE,
+  OVERLAY_PLATE,
+  smallText,
+  bodyText,
+  titleText,
+} from './ui';
+export type {
+  UiSurface,
+  UiIcon,
+  UiPoint,
+  UiOp,
+  TextStyle,
+  PanelStyle,
+  LineStyle,
+  ScreenTarget,
+} from './ui';
 export { CONVEYOR_STRIPE_COLOR, MAT_SHADES } from './material-colors';
 export { BAYER, DITHER_LEVELS } from './dither';
 export { Lightmap, LIGHT_NEUTRAL } from './lightmap';

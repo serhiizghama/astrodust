@@ -2,16 +2,15 @@ import { World, MAT, MAT_CREDIT_RATE, Simulation } from '../src/world';
 import {
   VACUUM_OUTLINE,
   vacuumOutline,
-  textWidth,
-  LINE_H,
+  RecordingSurface,
   techTreeLayout,
   techTreeSize,
   nodeOrigin,
   nodeAtPoint,
   drawResearchOverlay,
 } from '../src/render';
-import type { OverlayView, OverlayNode } from '../src/render';
-import { RAMP } from '../src/palette';
+import type { OverlayView, OverlayNode, UiOp } from '../src/render';
+import { RAMP, css } from '../src/palette';
 import { Vacuum, Builder } from '../src/systems';
 import {
   Player,
@@ -40,7 +39,7 @@ import {
   CONTENT,
   maxTuned,
 } from '../src/progress';
-import { TECH_TREE } from '../src/config';
+import { TECH_TREE, UI } from '../src/config';
 import {
   PLAYER,
   FIXED_DT,
@@ -51,7 +50,7 @@ import {
   SEPARATOR,
   SIM_HZ,
 } from '../src/config';
-import { check, luna } from './harness';
+import { check, luna, pick, said, saysLike } from './harness';
 
 const first = luna();
 
@@ -846,29 +845,11 @@ const first = luna();
   // --- Отрисовка дерева ---
 
   {
-    /** Кадр под оверлей: тот же буфер пикселей, что и у мира, без канваса. */
-    function frame(): Uint8ClampedArray {
-      return new Uint8ClampedArray(BASE_VIEW_W * BASE_VIEW_H * 4);
-    }
-
-    function countColor(px: Uint8ClampedArray, color: number): number {
-      const r = (color >> 16) & 0xff;
-      const g = (color >> 8) & 0xff;
-      const b = color & 0xff;
-      let n = 0;
-      for (let i = 0; i < px.length; i += 4) {
-        if (px[i] === r && px[i + 1] === g && px[i + 2] === b) n++;
-      }
-      return n;
-    }
-
-    function diff(a: Uint8ClampedArray, b: Uint8ClampedArray): number {
-      let n = 0;
-      for (let i = 0; i < a.length; i += 4) {
-        if (a[i] !== b[i] || a[i + 1] !== b[i + 1] || a[i + 2] !== b[i + 2]) n++;
-      }
-      return n;
-    }
+    /**
+     * Кадр оверлея — ЖУРНАЛ поверхности слоя интерфейса: канваса в прогоне нет,
+     * и «что нарисовано, где и чем» читается отсюда.
+     */
+    const ui = new RecordingSurface();
 
     /** Снапшот дерева из настоящей раскладки: своей копии геометрии здесь нет. */
     function view(over: Partial<OverlayView> = {}): OverlayView {
@@ -892,107 +873,165 @@ const first = luna();
         edges: TECH_EDGES,
         selected: 0,
         hovered: null,
-        // По умолчанию курсор УВЕДЁН в угол панели: снимки сравниваются между
-        // собой, и стрелка посреди дерева попадала бы в каждый diff.
+        // По умолчанию курсор УВЕДЁН в угол панели: кадры сравниваются между
+        // собой, и стрелка посреди дерева попадала бы в каждое сравнение.
         pointerX: BASE_VIEW_W - 2,
         pointerY: BASE_VIEW_H - 2,
         ...over,
       };
     }
 
-    function shoot(over: Partial<OverlayView> = {}): Uint8ClampedArray {
-      const px = frame();
-      drawResearchOverlay(px, BASE_VIEW_W, BASE_VIEW_H, view(over));
-      return px;
+    function shoot(over: Partial<OverlayView> = {}): UiOp[] {
+      ui.begin();
+      drawResearchOverlay(ui, BASE_VIEW_W, BASE_VIEW_H, view(over));
+      ui.end();
+      return [...ui.ops];
+    }
+
+    const treeLayout = techTreeLayout(BASE_VIEW_W, BASE_VIEW_H, TECH_COLS, TECH_ROWS);
+
+    /** Подложка узла: она стоит ровно в его углу, второй такой в кадре нет. */
+    function nodePanel(ops: readonly UiOp[], i: number) {
+      const at = nodeOrigin(treeLayout, TECH_NODES[i]!.col, TECH_NODES[i]!.row);
+      return pick(ops, 'panel').find((op) => op.x === at.x && op.y === at.y);
+    }
+
+    /** Связи: у них четыре точки, у отбивки полосы сведений — две. */
+    function edgeLines(ops: readonly UiOp[]) {
+      return pick(ops, 'line').filter((op) => op.points.length === 4);
     }
 
     const base = shoot();
 
-    // Четыре состояния покупки — четыре подложки, и каждая обязана быть
+    // Четыре состояния покупки — четыре заливки, и каждая обязана быть
     // в кадре: иначе недоступное просто не показано.
     {
-      const fills = [RAMP.green[1], RAMP.gray[6], RAMP.gray[4], RAMP.gray[2]];
-      const missing = fills.filter((c) => countColor(base, c) === 0);
+      const fills = [0, 1, 2, 3].map((i) => nodePanel(base, i)?.style.fill);
       check(
-        'Все четыре состояния покупки видны в кадре разными подложками',
-        missing.length === 0 && new Set(fills).size === fills.length,
-        `подложек без пикселей ${missing.length}`,
+        'Все четыре состояния покупки видны в кадре разными заливками',
+        fills.every(Boolean) && new Set(fills).size === 4,
+        fills.join(' '),
       );
     }
 
-    // Вид эффекта разведён РАМКОЙ и выживает в любом состоянии покупки:
+    // Вид эффекта разведён ОБВОДКОЙ и выживает в любом состоянии покупки:
     // закрытая предпосылкой постройка и закрытый навык обязаны различаться.
     {
-      const edges = [RAMP.earth[4], RAMP.violet[4]];
-      const present = edges.every((c) => countColor(base, c) > 0);
-      const distinct = new Set(edges).size === edges.length;
-      const allOpen = shoot({
-        nodes: view().nodes.map((n) => ({ ...n, status: 'open' as const })),
-      });
-      const stillBoth = edges.every((c) => countColor(allOpen, c) > 0);
+      function strokesByKind(ops: readonly UiOp[]): Map<string, Set<string>> {
+        const out = new Map<string, Set<string>>();
+        TECHNOLOGIES.forEach((tc, i) => {
+          const stroke = nodePanel(ops, i)?.style.stroke ?? '';
+          const set = out.get(tc.effect.kind) ?? new Set<string>();
+          set.add(stroke);
+          out.set(tc.effect.kind, set);
+        });
+        return out;
+      }
+      const now = strokesByKind(base);
+      const allOpen = strokesByKind(
+        shoot({ nodes: view().nodes.map((n) => ({ ...n, status: 'open' as const })) }),
+      );
+      const distinct = (m: Map<string, Set<string>>): boolean => {
+        const kinds = [...m.values()].map((set) => [...set]);
+        return kinds.every((v) => v.length === 1) && new Set(kinds.flat()).size === kinds.length;
+      };
       check(
-        'Постройка и навык различаются рамкой в любом состоянии покупки',
-        present && stillBoth && distinct,
-        `земля ${countColor(base, edges[0]!)}, фиалка ${countColor(base, edges[1]!)}`,
+        'Постройка и навык различаются обводкой в любом состоянии покупки',
+        now.size === 2 && distinct(now) && distinct(allOpen),
+        [...now].map(([kind, set]) => `${kind}: ${[...set].join(',')}`).join('  '),
       );
     }
 
     // Причина отказа разведена ЦВЕТОМ ПОДПИСИ: «не хватает» золотом валюты,
     // «закрыто предпосылкой» — приглушённым серым.
     {
-      const poor = RAMP.warm[4];
-      const blocked = RAMP.gray[5];
+      // Подпись ищется по СВОЕМУ узлу, а не по строке: узлы одной строки стоят
+      // на одном y, и поиск по нему нашёл бы соседа.
+      function costColor(ops: readonly UiOp[], i: number): string | undefined {
+        const at = nodeOrigin(treeLayout, TECH_NODES[i]!.col, TECH_NODES[i]!.row);
+        const y = at.y + treeLayout.node + TECH_TREE.labelGap + UI.line;
+        const centre = at.x + treeLayout.node / 2;
+        return pick(ops, 'text').find(
+          (op) => op.y === y && Math.abs(op.x + op.width / 2 - centre) < 0.001,
+        )?.style.color;
+      }
+      const poor = costColor(base, 2);
+      const blocked = costColor(base, 3);
       check(
         'Нехватка кредитов и закрытая предпосылка различаются цветом подписи',
-        countColor(base, poor) > 0 &&
-          countColor(base, blocked) > 0 &&
-          new Set([poor, blocked]).size === 2,
-        `золота ${countColor(base, poor)}, серого ${countColor(base, blocked)}`,
+        poor === css(RAMP.warm[4]) && blocked === css(RAMP.gray[5]),
+        `нехватка ${poor}, закрыто ${blocked}`,
       );
     }
 
     // Цена видна у КАЖДОГО некупленного узла и без наведения: вопрос
     // «на что мне хватает» задаётся ко всему дереву сразу.
     {
-      const zeroed = shoot({
-        nodes: view().nodes.map((n) => ({ ...n, cost: 0 })),
-      });
+      const missing = view()
+        .nodes.filter((n) => n.status !== 'open')
+        .filter((n) => !saysLike(base, `${n.cost} ₡`));
+      const opened = view().nodes.filter((n) => n.status === 'open');
       check(
-        'Цена нарисована у некупленных узлов без наведения',
-        diff(base, zeroed) > 0,
-        'смена цены меняет пиксели кадра',
+        'Цена нарисована у некупленных узлов без наведения, у купленного — «открыта»',
+        missing.length === 0 && (opened.length === 0 || saysLike(base, 'открыта')),
+        `без цены ${missing.length}`,
       );
     }
 
-    // Связи: рёбра из открытой и неоткрытой предпосылки различаются на вид.
+    // Связи: рёбра из открытой и неоткрытой предпосылки различаются на вид,
+    // а поворот у них скруглён — лесенки на связи не бывает.
     {
-      const noEdges = shoot({ edges: [] });
-      check('Связи между узлами нарисованы', diff(base, noEdges) > 0);
-
+      const edges = edgeLines(base);
       const parent = TECH_EDGES[0]!.from;
-      const pending = shoot({
-        nodes: view().nodes.map((n, i) => (i === parent ? { ...n, status: 'poor' as const } : n)),
-      });
-      const done = shoot({
-        nodes: view().nodes.map((n, i) => (i === parent ? { ...n, status: 'open' as const } : n)),
-      });
+      const pending = edgeLines(
+        shoot({
+          nodes: view().nodes.map((n, i) => (i === parent ? { ...n, status: 'poor' as const } : n)),
+        }),
+      )[0];
+      const done = edgeLines(
+        shoot({
+          nodes: view().nodes.map((n, i) => (i === parent ? { ...n, status: 'open' as const } : n)),
+        }),
+      )[0];
+      check(
+        'Связи между узлами нарисованы и идут со скруглённым поворотом',
+        edges.length === TECH_EDGES.length && edges.every((op) => (op.style.radius ?? 0) > 0),
+        `связей ${edges.length} из ${TECH_EDGES.length}`,
+      );
       check(
         'Ребро из открытой предпосылки отличается от ребра из неоткрытой',
-        diff(pending, done) > 0 && countColor(done, RAMP.gray[7]) > 0,
-        `светлых пикселей связи ${countColor(done, RAMP.gray[7])}`,
+        pending !== undefined && done !== undefined && pending.style.color !== done.style.color,
+        `${pending?.style.color} против ${done?.style.color}`,
+      );
+      // Ребро идёт СЛЕВА НАПРАВО: направление читается из картинки, и стрелок
+      // ей не требуется.
+      check(
+        'Каждая связь идёт слева направо',
+        edges.every((op) => op.points[3]!.x > op.points[0]!.x),
       );
     }
 
     // Выбор и наведение — РАЗНЫЕ пометки: они бывают на разных узлах сразу.
     {
-      const selected = shoot({ selected: 1 });
-      check('Выбранный узел помечен', diff(base, selected) > 0);
-
       const both = shoot({ selected: 0, hovered: 2 });
+      const selected = nodePanel(both, 0)?.style;
+      const hovered = nodePanel(both, 2)?.style;
+      const plain = nodePanel(both, 1)?.style;
       check(
-        'Наведение помечено иначе, чем выбор, и не подменяет его',
-        countColor(both, RAMP.gray[9]) > 0 && countColor(both, RAMP.blue[5]) > 0,
-        `кольцо выбора ${countColor(both, RAMP.gray[9])}, наведения ${countColor(both, RAMP.blue[5])}`,
+        'Выбранный и наведённый узлы помечены, и помечены по-разному',
+        selected?.glow !== undefined &&
+          hovered?.glow !== undefined &&
+          selected.glow !== hovered.glow &&
+          plain?.glow === undefined,
+        `выбор ${selected?.glow}, наведение ${hovered?.glow}`,
+      );
+      // Пометка не съедает признак вида эффекта: у ОДНОГО И ТОГО ЖЕ узла цвет
+      // обводки одинаков и с пометкой, и без неё.
+      check(
+        'Пометка не подменяет обводку узла',
+        selected?.stroke === nodePanel(base, 0)?.style.stroke &&
+          hovered?.stroke === nodePanel(base, 2)?.style.stroke,
+        `${selected?.stroke} против ${nodePanel(base, 0)?.style.stroke}`,
       );
     }
 
@@ -1001,13 +1040,17 @@ const first = luna();
     // с этим делать» один, и два места для одного ответа читались бы как два
     // разных ответа.
     {
-      const noted = shoot({
-        nodes: view().nodes.map((n) => ({ ...n, note: 'нужно ещё 7 ₡' })),
-      });
+      const first = view().nodes[0]!;
+      check(
+        'Полоса сведений объясняет узел словами: пояснение и применение',
+        saysLike(base, first.description) && saysLike(base, first.usage),
+        `${said(base).length} надписей в кадре`,
+      );
+
+      const noted = shoot({ nodes: view().nodes.map((n) => ({ ...n, note: 'нужно ещё 7 ₡' })) });
       check(
         'Полоса сведений показывает причину словами, а не только цветом',
-        diff(base, noted) > 0,
-        'строка причины добавляет в кадр надпись',
+        saysLike(noted, 'нужно ещё 7 ₡') && !saysLike(base, 'нужно ещё'),
       );
 
       // Слова причины: недостающая СУММА, а не цена, и предпосылки поимённо.
@@ -1036,132 +1079,90 @@ const first = luna();
         );
       }
 
+      const third = view().nodes[3]!;
       const hovered = shoot({ selected: 0, hovered: 3 });
       const selectedOnly = shoot({ selected: 3, hovered: null });
       check(
         'Сведения идут за наведением, а без него описывают выбранный узел',
-        diff(base, hovered) > 0 && diff(base, selectedOnly) > 0,
+        saysLike(hovered, third.description) && saysLike(selectedOnly, third.description),
       );
 
-      // Применение — то, ради чего полоса и заведена: «что это» отвечает
-      // название на узле, «что с этим делать» не отвечает ничто другое.
-      const noUsage = shoot({
-        nodes: view().nodes.map((n) => ({ ...n, usage: '' })),
-      });
-      check(
-        'Применение технологии показано в полосе сведений',
-        diff(base, noUsage) > 0,
-        'строка применения добавляет в кадр надпись',
-      );
-
-      // Полоса стоит в СВОЁМ месте и не наезжает на дерево: смена выбранного
-      // узла меняет пиксели только в её полосе и в пометках самих узлов.
+      // Полоса стоит в СВОЁМ месте и не наезжает на дерево: смена наведения
+      // меняет только её строки и пометку самого узла.
       {
-        const layout = techTreeLayout(BASE_VIEW_W, BASE_VIEW_H, TECH_COLS, TECH_ROWS);
-        const barTop = layout.y + layout.h - 6 - TECH_TREE.infoLines * LINE_H - 3;
-        const a = shoot({ selected: 0, hovered: null });
+        const barTop = treeLayout.y + treeLayout.h - 6 - TECH_TREE.infoLines * UI.line - 3;
+        const at = nodeOrigin(treeLayout, TECH_NODES[3]!.col, TECH_NODES[3]!.row);
+        const near = (op: UiOp): boolean => {
+          const y = op.kind === 'line' ? op.points[0]!.y : op.y;
+          const x = op.kind === 'line' ? op.points[0]!.x : op.x;
+          if (y >= barTop) return true;
+          return (
+            x >= at.x - 2 &&
+            x < at.x + treeLayout.node + 2 &&
+            y >= at.y - 2 &&
+            y < at.y + treeLayout.node + 2
+          );
+        };
+        const a = shoot({ selected: 0, hovered: null }).map((op) => JSON.stringify(op));
         const b = shoot({ selected: 0, hovered: 3 });
-        let strayed = 0;
-        for (let p = 0; p < a.length; p += 4) {
-          if (a[p] === b[p] && a[p + 1] === b[p + 1] && a[p + 2] === b[p + 2]) continue;
-          const at = p >> 2;
-          const x = at % BASE_VIEW_W;
-          const y = (at / BASE_VIEW_W) | 0;
-          if (y >= barTop) continue;
-          // Кольцо наведения на самом узле — не «наезд»: это его пометка.
-          const node = TECH_NODES[3]!;
-          const org = nodeOrigin(layout, node.col, node.row);
-          const near =
-            x >= org.x - 2 &&
-            x < org.x + layout.node + 2 &&
-            y >= org.y - 2 &&
-            y < org.y + layout.node + 2;
-          if (!near) strayed++;
-        }
+        const strayed = b.filter((op, i) => JSON.stringify(op) !== a[i] && !near(op));
         check(
           'Сведения не наезжают на дерево: наведение меняет только полосу и сам узел',
-          strayed === 0,
-          `пикселей вне полосы и вне узла ${strayed}`,
+          strayed.length === 0,
+          `операций вне полосы и вне узла ${strayed.length}`,
         );
       }
 
-      // Строки полосы обязаны помещаться в ширину панели: обрезанная кромкой
-      // строка не читается ровно там, где нужнее всего. Новая технология
-      // с длинным текстом уронит прогон, а не молча уедет за край.
+      // Строки полосы обязаны помещаться в её ширину: обрезанная строка
+      // не читается ровно там, где нужнее всего. Обрезка — многоточием,
+      // и на эталонной метрике её быть не должно.
       {
-        const layout = techTreeLayout(BASE_VIEW_W, BASE_VIEW_H, TECH_COLS, TECH_ROWS);
-        const room = layout.w - 12;
-        const tooWide = TECHNOLOGIES.filter(
-          (tc) => textWidth(tc.description) > room || textWidth(tc.usage) > room,
-        );
+        const cut = pick(base, 'text').filter((op) => op.text.endsWith('…'));
         check(
           'Пояснение и применение помещаются в ширину полосы сведений',
-          tooWide.length === 0,
-          tooWide.map((tc) => tc.name).join(', ') ||
-            `запас ${room} пикселей, самая длинная ` +
-              `${Math.max(...TECHNOLOGIES.map((tc) => Math.max(textWidth(tc.description), textWidth(tc.usage))))}`,
+          cut.length === 0,
+          cut.map((op) => op.text).join(' | ') || `надписей ${said(base).length}`,
         );
       }
     }
 
-    // Шаг колонки ВЫВЕДЕН из самой длинной подписи: подписи соседних колонок
-    // не имеют права сойтись в одну строку. Имя длиннее уронит прогон.
+    // Подпись узла помещается в шаг колонки, а не помещающаяся ОБРЕЗАЕТСЯ:
+    // ширину задаёт системный шрифт, и уронить прогон за неё нельзя —
+    // уронится он у разработчика, а наедет подпись на соседа у игрока.
     {
-      const widest = Math.max(...TECHNOLOGIES.map((tc) => textWidth(tc.name)));
+      const long = 'Сверхдлинное название технологии, которого не бывает';
+      const ops = shoot({
+        nodes: view().nodes.map((n, i) => (i === 0 ? { ...n, name: long } : n)),
+      });
+      const at = nodeOrigin(treeLayout, TECH_NODES[0]!.col, TECH_NODES[0]!.row);
+      const label = pick(ops, 'text').find(
+        (op) => op.y === at.y + treeLayout.node + TECH_TREE.labelGap,
+      );
+      const names = view().nodes.map((n) => n.name);
       check(
-        'Название узла помещается в шаг колонки',
-        widest < TECH_TREE.colStep,
-        `самое длинное имя ${widest}, шаг колонки ${TECH_TREE.colStep}`,
+        'Название узла помещается в шаг колонки, а длинное обрезается многоточием',
+        label !== undefined &&
+          label.text.endsWith('…') &&
+          label.width <= TECH_TREE.colStep &&
+          names.every((name) => saysLike(base, name)),
+        label ? `«${label.text}» шириной ${label.width.toFixed(1)}` : 'подписи нет',
       );
     }
 
-    // Курсор меню рисуется САМ: подложка панели непрозрачна и накрывает
-    // мировой прицел целиком. Без этого меню не показывает, где мышь, вовсе.
+    // Курсор меню рисуется САМ: подложка панели накрывает мировой прицел
+    // целиком. Без этого меню не показывает, где мышь, вовсе.
     {
-      const layout = techTreeLayout(BASE_VIEW_W, BASE_VIEW_H, TECH_COLS, TECH_ROWS);
-      const at = nodeOrigin(layout, TECH_NODES[0]!.col, TECH_NODES[0]!.row);
-      const px = frame();
-      drawResearchOverlay(
-        px,
-        BASE_VIEW_W,
-        BASE_VIEW_H,
-        view({ pointerX: at.x + 40, pointerY: at.y + 40 }),
-      );
-      const moved = frame();
-      drawResearchOverlay(
-        moved,
-        BASE_VIEW_W,
-        BASE_VIEW_H,
-        view({ pointerX: at.x + 60, pointerY: at.y + 40 }),
-      );
+      const at = nodeOrigin(treeLayout, TECH_NODES[0]!.col, TECH_NODES[0]!.row);
+      const ops = shoot({ pointerX: at.x + 40, pointerY: at.y + 40 });
+      const pointer = pick(ops, 'icon').find((op) => op.key === 'pointer');
       check(
-        'Курсор нарисован в меню и следует за мышью',
-        diff(px, moved) > 0,
-        `сдвиг курсора меняет ${diff(px, moved)} пикселей`,
+        'Курсор нарисован в меню и стоит там, где мышь',
+        pointer !== undefined && pointer.x === at.x + 40 && pointer.y === at.y + 40,
+        pointer ? `курсор в (${pointer.x}, ${pointer.y})` : 'курсора нет',
       );
-
-      // Курсор — поверх ВСЕГО, включая подсказку: он указатель, и заслонять
-      // его не имеет права ничто.
-      const overTip = frame();
-      const tipAt = nodeOrigin(layout, TECH_NODES[0]!.col, TECH_NODES[0]!.row);
-      drawResearchOverlay(
-        overTip,
-        BASE_VIEW_W,
-        BASE_VIEW_H,
-        view({ selected: 0, pointerX: tipAt.x + layout.node + 8, pointerY: tipAt.y + 4 }),
-      );
-      const noPointer = frame();
-      drawResearchOverlay(
-        noPointer,
-        BASE_VIEW_W,
-        BASE_VIEW_H,
-        view({ selected: 0, pointerX: BASE_VIEW_W - 2, pointerY: BASE_VIEW_H - 2 }),
-      );
-      check(
-        'Курсор виден поверх подсказки, а не под ней',
-        diff(overTip, noPointer) > 0,
-        'курсор на месте подсказки меняет кадр',
-      );
+      // Поверх ВСЕГО, включая полосу сведений: он указатель, и заслонять его
+      // не имеет права ничто.
+      check('Курсор нарисован последним, поверх всего остального', ops[ops.length - 1] === pointer);
     }
 
     // Попадание курсора считается по ТОЙ ЖЕ раскладке, что и отрисовка:

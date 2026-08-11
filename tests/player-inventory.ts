@@ -1,8 +1,15 @@
 import { World } from '../src/world';
-import { Camera, Renderer, BRUSH_OUTLINE, VACUUM_OUTLINE, hudLayout, GLYPH_H } from '../src/render';
-import type { HudState } from '../src/render';
+import {
+  Camera,
+  Renderer,
+  RecordingSurface,
+  BRUSH_OUTLINE,
+  VACUUM_OUTLINE,
+  hudLayout,
+} from '../src/render';
+import type { HudState, UiOp } from '../src/render';
 import type { Display } from '../src/core';
-import { RAMP } from '../src/palette';
+import { RAMP, css } from '../src/palette';
 import {
   MAT,
   MAT_STATE,
@@ -26,10 +33,10 @@ import {
   BASE_VIEW_H,
   DIG,
   VACUUM,
-  HUD,
+  UI,
 } from '../src/config';
 import { aimDirection, actionTarget, ActionBarState } from '../src/core';
-import { check, luna, IDLE_SLOTS } from './harness';
+import { check, luna, IDLE_SLOTS, pick, said } from './harness';
 import { box, count, settle, pending, quiet } from './fixtures/world';
 
 const first = luna();
@@ -508,8 +515,9 @@ const { spawn } = first;
 
   // --- Состояние игры в кадре ---
   //
-  // Текст рисуется ПИКСЕЛЯМИ буфера, поэтому проверяется кадр, а не список
-  // выведенных строк: что нарисовано, где и меняется ли оно вместе со значением.
+  // Интерфейс рисуется в СВОЁМ слое, поэтому проверяется журнал поверхности,
+  // а не пиксели буфера: что нарисовано, где, каким цветом и меняется ли оно
+  // вместе со значением.
   {
     const pixels = new Uint8ClampedArray(BASE_VIEW_W * BASE_VIEW_H * 4);
     const display = {
@@ -521,7 +529,8 @@ const { spawn } = first;
       present() {},
     } as unknown as Display;
 
-    const renderer = new Renderer(display, first.world, first.surface, WORLD_SEED);
+    const ui = new RecordingSurface();
+    const renderer = new Renderer(display, first.world, first.surface, WORLD_SEED, ui);
     const camera = new Camera(first.world.width, first.world.height);
     camera.snapTo(spawn.x, spawn.y);
     const layout = hudLayout(BASE_VIEW_W, BASE_VIEW_H);
@@ -544,8 +553,8 @@ const { spawn } = first;
       overlay: null,
     };
 
-    /** Кадр с изменённым снапшотом. Возвращает КОПИЮ буфера: их сравнивают. */
-    function shoot(over: Partial<HudState> = {}, fps = 0): Uint8ClampedArray {
+    /** Кадр с изменённым снапшотом. Возвращает КОПИЮ журнала: их сравнивают. */
+    function shoot(over: Partial<HudState> = {}, fps = 0): UiOp[] {
       renderer.render({
         camera: camera,
         player: new Player(spawn.x, spawn.y),
@@ -555,99 +564,93 @@ const { spawn } = first;
         hud: { ...hud, ...over },
         fps,
       });
-      return pixels.slice();
-    }
-
-    /** Пиксели, которыми два кадра различаются. */
-    function diff(a: Uint8ClampedArray, b: Uint8ClampedArray): Array<{ x: number; y: number }> {
-      const out: Array<{ x: number; y: number }> = [];
-      for (let i = 0; i < a.length; i += 4) {
-        if (a[i] === b[i] && a[i + 1] === b[i + 1] && a[i + 2] === b[i + 2]) continue;
-        const p = i / 4;
-        out.push({ x: p % BASE_VIEW_W, y: (p / BASE_VIEW_W) | 0 });
-      }
-      return out;
-    }
-
-    function countColor(buf: Uint8ClampedArray, color: number): number {
-      const r = (color >> 16) & 0xff;
-      const g = (color >> 8) & 0xff;
-      const b = color & 0xff;
-      let n = 0;
-      for (let i = 0; i < buf.length; i += 4) {
-        if (buf[i] === r && buf[i + 1] === g && buf[i + 2] === b) n++;
-      }
-      return n;
+      return [...ui.ops];
     }
 
     const base = shoot();
 
-    // Счётчики обновляются в ТОМ ЖЕ кадре и стоят в правом верхнем углу —
-    // вне полосы панели и вне угла с диагностикой.
+    /** Надпись, целиком совпадающая с текстом. */
+    function textOf(ops: readonly UiOp[], text: string) {
+      return pick(ops, 'text').find((op) => op.text === text);
+    }
+
+    // Счётчик стоит в правом верхнем углу — вне полосы панели и вне угла
+    // с диагностикой — и обновляется в ТОМ ЖЕ кадре.
     {
-      const richer = shoot({ credits: 1235 });
-      const changed = diff(base, richer);
-      const strayed = changed.filter((p) => p.x < BASE_VIEW_W / 2 || p.y > BASE_VIEW_H / 4);
+      const credits = textOf(base, '1234');
+      const richer = textOf(shoot({ credits: 1235 }), '1235');
       check(
         'Счётчик кредитов стоит в правом верхнем углу и меняется в том же кадре',
-        changed.length > 0 && strayed.length === 0,
-        `изменилось ${changed.length}, вне угла ${strayed.length}`,
+        credits !== undefined &&
+          richer !== undefined &&
+          credits.x > BASE_VIEW_W / 2 &&
+          credits.y < BASE_VIEW_H / 4 &&
+          credits.y + UI.line < layout.y,
+        credits ? `x=${credits.x.toFixed(1)} y=${credits.y}` : 'счётчика нет',
+      );
+
+      // Правый край на месте: счёт растёт по ходу партии, и счётчик,
+      // прыгающий по углу на каждой сотне, читается хуже неподвижного.
+      const wider = textOf(shoot({ credits: 123456 }), '123456');
+      check(
+        'Правый край счёта не двигается при смене числа знаков',
+        credits !== undefined &&
+          wider !== undefined &&
+          Math.abs(credits.x + credits.width - (wider.x + wider.width)) < 0.001,
+        credits && wider
+          ? `${(credits.x + credits.width).toFixed(2)} против ${(wider.x + wider.width).toFixed(2)}`
+          : '',
       );
     }
 
     // Валюта видна без оверлея: это ответ на вопрос «что я могу открыть»,
     // и валюта, которую видно только в меню, из этого решения выпадает.
     check(
-      'Счёт кредитов виден в кадре своим золотом',
-      countColor(base, RAMP.warm[4]) > 0,
-      `золота ${countColor(base, RAMP.warm[4])}`,
+      'Счёт кредитов написан своим золотом',
+      textOf(base, '1234')?.style.color === css(RAMP.warm[4]),
+      textOf(base, '1234')?.style.color ?? 'счётчика нет',
     );
 
     // Инвентарь виден при ВЫКЛЮЧЕННОЙ диагностике: это состояние игры, а не
     // инструмент разработчика.
     {
-      const empty = shoot({ carried: [], used: 0 });
-      const changed = diff(base, empty);
-      const top = layout.y - HUD.lineGap - GLYPH_H;
-      const strayed = changed.filter((p) => p.y < top || p.y >= layout.y);
+      const line = pick(base, 'text').find((op) => op.text.includes('138'));
+      const cleared = pick(shoot({ carried: [], used: 0 }), 'text').find((op) =>
+        op.text.includes('пусто'),
+      );
       check(
         'Строка инвентаря стоит над панелью и меняется вместе с содержимым',
-        changed.length > 0 && strayed.length === 0,
-        `изменилось ${changed.length}, вне строки ${strayed.length}`,
+        line !== undefined &&
+          cleared !== undefined &&
+          line.y + UI.line <= layout.y &&
+          cleared.text !== line.text,
+        line ? `строка на y=${line.y}: «${line.text}»` : 'строки инвентаря нет',
       );
     }
 
-    // Режим показан ВЫДЕЛЕННЫМ СЛОТОМ, а не подписью: смена режима не имеет
-    // права менять ни одного пикселя за пределами панели.
+    // Режим показан ВЫДЕЛЕННЫМ СЛОТОМ, а не подписью: смена режима не меняет
+    // ни одной надписи кадра.
     {
       const other = shoot({ activeSlot: 0, collecting: false });
-      const changed = diff(base, other);
-      const outsideBar = changed.filter(
-        (p) =>
-          p.x < layout.x ||
-          p.x >= layout.x + layout.w ||
-          p.y < layout.y ||
-          p.y >= layout.y + layout.h,
-      );
-      // Прицел меняет форму вместе с режимом и в счёт не идёт: он стоит
-      // под курсором, а не в интерфейсе.
-      const aimed = outsideBar.filter((p) => Math.abs(p.x - 160) > 12 || Math.abs(p.y - 90) > 12);
       check(
         'Режим не дублируется текстом: смена режима меняет только панель',
-        changed.length > 0 && aimed.length === 0,
-        `изменилось ${changed.length}, вне панели и прицела ${aimed.length}`,
+        said(other).join('|') === said(base).join('|'),
+        `${said(base).length} надписей против ${said(other).length}`,
       );
     }
 
     // Диагностика включается отдельно и на состояние игры не влияет.
     {
       const debugOn = shoot({}, 60);
-      const changed = diff(base, debugOn);
-      const strayed = changed.filter((p) => p.x > BASE_VIEW_W / 2 || p.y > BASE_VIEW_H / 4);
+      const fps = pick(debugOn, 'text').find((op) => op.text.includes('FPS'));
+      const added = said(debugOn).filter((t) => !said(base).includes(t));
       check(
         'Диагностика живёт в своём углу и инвентарь с валютами не трогает',
-        changed.length > 0 && strayed.length === 0,
-        `изменилось ${changed.length}, вне угла ${strayed.length}`,
+        fps !== undefined &&
+          fps.x < BASE_VIEW_W / 2 &&
+          fps.y < BASE_VIEW_H / 4 &&
+          added.length === 1,
+        `добавлено надписей ${added.length}: ${added.join(', ')}`,
       );
     }
   }

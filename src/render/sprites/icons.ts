@@ -4,10 +4,15 @@
  * Набраны строками с индексами палитры — тем же форматом, что и спрайт
  * космонавта. Ассет-пайплайна нет, и правка пикселя видна в git-дифе.
  *
+ * Значки ПИКСЕЛЬНЫЕ и в слое интерфейса: они часть языка игры, а не
+ * типографики. Слой выводит их ячейка в пиксель спрайта и растягивает вместе
+ * с миром, поэтому значок остаётся квадратным пикселем там, где текст сглажен.
+ *
  * Значки действий 12×12, значок валюты 7×7.
  */
 import { RAMP } from '../../palette';
 import { parseSprite } from '../draw';
+import type { UiIcon } from '../ui';
 
 /**
  * Общая палитра значков. 0 — прозрачно; светлое и тёмное разведены на четыре
@@ -23,6 +28,19 @@ export const ICON_PALETTE = [
 
 export const ACTION_ICON = 12;
 export const CURRENCY_ICON = 7;
+
+/**
+ * Значок для слоя интерфейса. Ключ — не украшение: по нему значок опознаётся
+ * в кэше растеризации и в журнале проверки, поэтому он обязан быть уникальным.
+ */
+function icon(
+  key: string,
+  rows: readonly string[],
+  size: number,
+  palette: readonly number[] = ICON_PALETTE,
+): UiIcon {
+  return { key, data: parseSprite(rows, size), w: size, h: rows.length, palette };
+}
 
 const DIG_ROWS = [
   '............',
@@ -71,10 +89,10 @@ const COLLECT_ROWS = [
 
 const COIN_ROWS = ['..444..', '.43334.', '4333334', '4333334', '4333334', '.43334.', '..444..'];
 
-export const DIG_ICON = parseSprite(DIG_ROWS, ACTION_ICON);
-export const BUILD_ICON = parseSprite(BUILD_ROWS, ACTION_ICON);
-export const COLLECT_ICON = parseSprite(COLLECT_ROWS, ACTION_ICON);
-export const COIN_ICON = parseSprite(COIN_ROWS, CURRENCY_ICON);
+export const DIG_ICON = icon('dig', DIG_ROWS, ACTION_ICON);
+export const BUILD_ICON = icon('build', BUILD_ROWS, ACTION_ICON);
+export const COLLECT_ICON = icon('collect', COLLECT_ROWS, ACTION_ICON);
+export const COIN_ICON = icon('coin', COIN_ROWS, CURRENCY_ICON);
 
 /**
  * Значки технологий. Того же размера, что и значки действий: второго размера
@@ -167,16 +185,16 @@ const TECH_FALLBACK_ROWS = [
  * технология обязана оставаться строкой таблицы и без своей картинки, а пустое
  * место в узле читалось бы как поломка отрисовки.
  */
-const TECH_ICONS: Record<string, Uint8Array> = {
-  conveyor: parseSprite(TECH_CONVEYOR_ROWS, TECH_ICON),
-  nozzle: parseSprite(TECH_NOZZLE_ROWS, TECH_ICON),
-  'nozzle-heavy': parseSprite(TECH_NOZZLE_HEAVY_ROWS, TECH_ICON),
-  thruster: parseSprite(TECH_THRUSTER_ROWS, TECH_ICON),
+const TECH_ICONS: Record<string, UiIcon> = {
+  conveyor: icon('tech-conveyor', TECH_CONVEYOR_ROWS, TECH_ICON),
+  nozzle: icon('tech-nozzle', TECH_NOZZLE_ROWS, TECH_ICON),
+  'nozzle-heavy': icon('tech-nozzle-heavy', TECH_NOZZLE_HEAVY_ROWS, TECH_ICON),
+  thruster: icon('tech-thruster', TECH_THRUSTER_ROWS, TECH_ICON),
 };
 
-export const TECH_ICON_FALLBACK = parseSprite(TECH_FALLBACK_ROWS, TECH_ICON);
+export const TECH_ICON_FALLBACK = icon('tech-fallback', TECH_FALLBACK_ROWS, TECH_ICON);
 
-export function techIcon(key: string): Uint8Array {
+export function techIcon(key: string): UiIcon {
   return TECH_ICONS[key] ?? TECH_ICON_FALLBACK;
 }
 
@@ -188,9 +206,12 @@ export const TECH_ICON_KEYS: readonly string[] = Object.keys(TECH_ICONS);
  * стрелки обязаны совпадать, иначе курсор указывает мимо того, что считает
  * попаданием.
  *
- * Индекс 1 — тело, 2 — контур; палитру подставляет вызывающий, потому что
- * курсору нужны крайние ступени серой лестницы, а не тона значков.
+ * Индекс 1 — тело, 2 — контур. Палитра своя, а не общая с значками: самый
+ * светлый тон на самом тёмном контуре — курсор обязан читаться и на подложке
+ * панели, и на светлой подложке доступного узла, и поверх полосы сведений.
  */
+const POINTER_PALETTE = [RAMP.gray[0], RAMP.gray[9], RAMP.gray[0]];
+
 const POINTER_ROWS = [
   '2.......',
   '22......',
@@ -208,4 +229,4 @@ const POINTER_ROWS = [
 
 export const POINTER_W = 8;
 export const POINTER_H = POINTER_ROWS.length;
-export const POINTER = parseSprite(POINTER_ROWS, POINTER_W);
+export const POINTER = icon('pointer', POINTER_ROWS, POINTER_W, POINTER_PALETTE);

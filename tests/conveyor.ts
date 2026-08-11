@@ -1,5 +1,11 @@
 import { World, Simulation } from '../src/world';
-import { Camera, Renderer, stripeOffset, CONVEYOR_STRIPE_COLOR } from '../src/render';
+import {
+  Camera,
+  Renderer,
+  RecordingSurface,
+  stripeOffset,
+  CONVEYOR_STRIPE_COLOR,
+} from '../src/render';
 import type { Display } from '../src/core';
 import { MAT, MAT_SOLID, MAT_CREDIT_RATE, MAT_CARRY, MATERIALS } from '../src/world';
 import type { Rect } from '../src/geometry';
@@ -750,7 +756,7 @@ const first = luna();
       w.set(x, 100, MAT.CONVEYOR_RIGHT);
       w.set(x, 120, MAT.CONVEYOR_LEFT);
     }
-    const renderer = new Renderer(display, w, surface, WORLD_SEED);
+    const renderer = new Renderer(display, w, surface, WORLD_SEED, new RecordingSurface());
     const camera = new Camera(400, 240);
     camera.snapTo(160, 120);
     const rowRight = 100 - camera.y;

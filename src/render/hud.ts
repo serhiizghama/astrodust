@@ -1,20 +1,20 @@
 /**
- * Постоянный интерфейс поверх кадра: панель действий, счётчики валют, строки
+ * Постоянный интерфейс поверх кадра: панель действий, счётчик валюты, строки
  * состояния внизу.
  *
  * Геометрия панели считается ОДИН РАЗ на кадр и служит обоим читателям —
  * отрисовке и попаданию курсора. Две записи одной геометрии дают интерфейс,
  * который выглядит нажатым не там, где нажимается.
  *
- * Всё рисуется в буфер пикселей, поэтому проверяется в Node без канваса.
- * Держит `tests/game-hud.ts`.
+ * Всё рисуется через поверхность слоя интерфейса и в ЯЧЕЙКАХ КАДРА: раскладка
+ * не знает ни экранного множителя, ни плотности экрана, и поэтому проверяется
+ * в Node без канваса. Держит `tests/game-hud.ts`.
  */
-import { HUD } from '../config';
-import { RAMP } from '../palette';
-import { fillRect, strokeRect, blit } from './draw';
-import { drawText, textWidth, GLYPH_H, LINE_H } from './font';
+import { HUD, UI } from '../config';
+import { RAMP, css } from '../palette';
+import { fitText, bodyText, smallText, BAR_PLATE } from './ui';
+import type { PanelStyle, UiIcon, UiSurface } from './ui';
 import {
-  ICON_PALETTE,
   ACTION_ICON,
   CURRENCY_ICON,
   DIG_ICON,
@@ -33,7 +33,7 @@ export interface HudSlot {
   readonly action: SlotAction | null;
 }
 
-/** Раскладка панели действий в пикселях кадра. */
+/** Раскладка панели действий в ячейках кадра. */
 export interface HudLayout {
   /** Подложка панели: ряд слотов плюс поля. */
   readonly x: number;
@@ -49,26 +49,49 @@ export interface HudLayout {
   readonly slots: number;
 }
 
-const ACTION_ICONS: Record<SlotAction, Uint8Array> = {
+const ACTION_ICONS: Record<SlotAction, UiIcon> = {
   dig: DIG_ICON,
   build: BUILD_ICON,
   collect: COLLECT_ICON,
 };
 
 /**
- * Цвета слотов. Обычный, пустой, наведённый и активный обязаны различаться
- * подложкой: рамка одна отвечает на вопрос «где курсор», но при беглом взгляде
- * не читается вовсе.
+ * Вид слота по состоянию. Каждое состояние разведено НЕ МЕНЕЕ ЧЕМ ДВУМЯ
+ * средствами из набора «заливка, обводка, свечение»: одна заливка при беглом
+ * взгляде не читается, одна обводка не читается на тёмном слоте.
  */
-const SLOT_FILL = RAMP.gray[3];
-const SLOT_EMPTY_FILL = RAMP.gray[2];
-const SLOT_HOVER_FILL = RAMP.gray[4];
-const SLOT_ACTIVE_FILL = RAMP.gray[6];
-const SLOT_EDGE = RAMP.gray[1];
-const SLOT_HOVER_EDGE = RAMP.gray[7];
-const SLOT_ACTIVE_EDGE = RAMP.gray[9];
-const BAR_PLATE = RAMP.gray[1];
-const BAR_EDGE = RAMP.gray[3];
+const SLOT_PLAIN: PanelStyle = {
+  fill: css(RAMP.gray[3], UI.alpha.slot),
+  stroke: css(RAMP.gray[1]),
+  strokeWidth: UI.stroke.thin,
+  radius: UI.radius.slot,
+};
+
+/** Пустой слот темнее и обведён приглушённо: место под будущее, не инструмент. */
+const SLOT_EMPTY: PanelStyle = {
+  fill: css(RAMP.gray[2], UI.alpha.slot),
+  stroke: css(RAMP.gray[1], UI.alpha.edge),
+  strokeWidth: UI.stroke.thin,
+  radius: UI.radius.slot,
+};
+
+const SLOT_HOVER: PanelStyle = {
+  fill: css(RAMP.gray[5], UI.alpha.slot),
+  stroke: css(RAMP.gray[7]),
+  strokeWidth: UI.stroke.thin,
+  radius: UI.radius.slot,
+};
+
+/** Активный: своя заливка, толстая светлая обводка и свечение вокруг неё. */
+const SLOT_ACTIVE: PanelStyle = {
+  fill: css(RAMP.gray[6], UI.alpha.slot),
+  fillBottom: css(RAMP.gray[4], UI.alpha.slot),
+  stroke: css(RAMP.gray[9]),
+  strokeWidth: UI.stroke.thick,
+  radius: UI.radius.slot,
+  glow: css(RAMP.blue[4], UI.alpha.glow),
+};
+
 const KEY_LABEL = RAMP.gray[7];
 const KEY_LABEL_ACTIVE = RAMP.gray[9];
 
@@ -126,16 +149,13 @@ export function overBar(x: number, y: number, layout: HudLayout): boolean {
 
 /** Панель действий: подложка, слоты, подписи клавиш, значки, выделения. */
 export function drawActionBar(
-  px: Uint8ClampedArray,
-  w: number,
-  h: number,
+  ui: UiSurface,
   layout: HudLayout,
   slots: readonly HudSlot[],
   activeSlot: number,
   hoveredSlot: number | null,
 ): void {
-  fillRect(px, w, h, layout.x, layout.y, layout.w, layout.h, BAR_PLATE);
-  strokeRect(px, w, h, layout.x, layout.y, layout.w, layout.h, BAR_EDGE);
+  ui.panel(layout.x, layout.y, layout.w, layout.h, BAR_PLATE);
 
   for (let i = 0; i < layout.slots; i++) {
     const slot = slots[i];
@@ -146,42 +166,26 @@ export function drawActionBar(
     const active = i === activeSlot;
     const hovered = i === hoveredSlot;
 
-    const fill = active
-      ? SLOT_ACTIVE_FILL
+    const style = active
+      ? SLOT_ACTIVE
       : hovered
-        ? SLOT_HOVER_FILL
+        ? SLOT_HOVER
         : action === null
-          ? SLOT_EMPTY_FILL
-          : SLOT_FILL;
-    fillRect(px, w, h, x, y, size, size, fill);
-    strokeRect(
-      px,
-      w,
-      h,
-      x,
-      y,
-      size,
-      size,
-      active ? SLOT_ACTIVE_EDGE : hovered ? SLOT_HOVER_EDGE : SLOT_EDGE,
-    );
+          ? SLOT_EMPTY
+          : SLOT_PLAIN;
+    ui.panel(x, y, size, size, style);
 
     if (action !== null) {
-      blit(
-        px,
-        w,
-        h,
+      ui.icon(
         ACTION_ICONS[action],
-        ACTION_ICON,
-        ACTION_ICON,
         x + ((size - ACTION_ICON) >> 1),
         y + ((size - ACTION_ICON) >> 1) + HUD.iconDropY,
-        ICON_PALETTE,
       );
     }
 
-    // Подпись клавиши — без подложки: фон слота непрозрачен и контраст даёт он.
+    // Подпись клавиши — без ореола: подложка слота своя, и контраст даёт она.
     if (slot) {
-      drawText(px, w, h, slot.key, x + 2, y + 1, active ? KEY_LABEL_ACTIVE : KEY_LABEL, false);
+      ui.text(slot.key, x + 2, y + 1, smallText(active ? KEY_LABEL_ACTIVE : KEY_LABEL));
     }
   }
 }
@@ -193,17 +197,20 @@ export function drawActionBar(
  * вместо знака валюты: в углу число стоит без предложения, и форма читается
  * быстрее символа размером с букву.
  *
+ * Число прижато к ПРАВОМУ краю: счёт растёт по ходу партии, и счётчик,
+ * прыгающий по углу на каждой сотне, читается хуже неподвижного. Ореол под
+ * надписью обязателен — счёт лежит прямо на мире, а мир под ним любой.
+ *
  * Счётчик ОДИН: валюта в игре одна, и второй, который никогда не меняется,
  * читался бы поломкой.
  */
-export function drawCredits(px: Uint8ClampedArray, w: number, h: number, credits: number): void {
+export function drawCredits(ui: UiSurface, viewW: number, credits: number): void {
   const value = `${credits}`;
-  const textW = textWidth(value);
-  const total = CURRENCY_ICON + HUD.counterGap + textW;
-  const x = w - HUD.counterMargin - total;
-  const y = HUD.counterMargin;
-  blit(px, w, h, COIN_ICON, CURRENCY_ICON, CURRENCY_ICON, x, y, ICON_PALETTE);
-  drawText(px, w, h, value, x + CURRENCY_ICON + HUD.counterGap, y, CREDITS_COLOR);
+  const style = bodyText(CREDITS_COLOR, { align: 'right', weight: 'bold', shadow: true });
+  const right = viewW - HUD.counterMargin;
+  ui.text(value, right, HUD.counterMargin, style);
+  const width = ui.measure(value, style);
+  ui.icon(COIN_ICON, right - width - HUD.counterGap - CURRENCY_ICON, HUD.counterMargin + 1);
 }
 
 /**
@@ -212,18 +219,19 @@ export function drawCredits(px: Uint8ClampedArray, w: number, h: number, credits
  *
  * Центрирование, а не левый край кадра: строки читаются как одна группа
  * с панелью, а на узком буфере левый край увёл бы длинную строку за кадр.
+ * Строка шире кадра обрезается многоточием: своей подложки у неё нет, и край
+ * кадра срезал бы конец молча.
  */
 export function drawBarLine(
-  px: Uint8ClampedArray,
-  w: number,
-  h: number,
+  ui: UiSurface,
+  viewW: number,
   layout: HudLayout,
   row: number,
   text: string,
   color: number,
 ): void {
   if (text === '') return;
-  const x = Math.max(1, Math.round((w - textWidth(text)) / 2));
-  const y = layout.y - HUD.lineGap - GLYPH_H - row * LINE_H;
-  drawText(px, w, h, text, x, y, color);
+  const style = bodyText(color, { align: 'center', shadow: true });
+  const y = layout.y - HUD.lineGap - (row + 1) * UI.line;
+  ui.text(fitText(ui, text, style, viewW - 2 * HUD.counterMargin), viewW / 2, y, style);
 }

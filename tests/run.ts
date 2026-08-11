@@ -14,7 +14,7 @@ import { report } from './harness';
 const SUITES: Record<string, () => Promise<unknown>> = {
   architecture: () => import('./architecture'),
   'pixel-world': () => import('./pixel-world'),
-  'pixel-text': () => import('./pixel-text'),
+  'ui-layer': () => import('./ui-layer'),
   'game-hud': () => import('./game-hud'),
   'player-movement': () => import('./player-movement'),
   'game-shell': () => import('./game-shell'),

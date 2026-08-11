@@ -12,6 +12,7 @@ import {
 import {
   Camera,
   Renderer,
+  CanvasSurface,
   hudLayout,
   slotAtPoint,
   overBar,
@@ -65,7 +66,7 @@ const landingModule = new LandingModule(receiver);
 const game = new Game(world, player, camera, landingModule);
 const buildings = game.buildings;
 
-const renderer = new Renderer(display, world, surface, WORLD_SEED);
+const renderer = new Renderer(display, world, surface, WORLD_SEED, new CanvasSurface(display));
 const digger = new Digger();
 const vacuum = new Vacuum(research.tuning);
 const painter = new DebugPainter();

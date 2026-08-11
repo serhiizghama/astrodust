@@ -1,4 +1,4 @@
-import { DIG, VACUUM, CONVEYOR, SIM_HZ, SHADING } from '../config';
+import { DIG, VACUUM, CONVEYOR, SIM_HZ, SHADING, UI } from '../config';
 import { Display } from '../core';
 import { Camera } from './camera';
 import { World, MAT, MAT_CARRY } from '../world';
@@ -9,7 +9,8 @@ import { Lightmap, LIGHT_NEUTRAL } from './lightmap';
 import { Backdrop } from './backdrop';
 import { RAMP } from '../palette';
 import { setPixel, fillRect, strokeRect, blit } from './draw';
-import { drawText, LINE_H } from './font';
+import { smallText } from './ui';
+import type { UiSurface } from './ui';
 import { hudLayout, drawActionBar, drawCredits, drawBarLine } from './hud';
 import type { HudSlot } from './hud';
 import { drawResearchOverlay } from './overlay';
@@ -334,6 +335,12 @@ export class Renderer {
     private readonly world: World,
     private readonly surface: Int16Array,
     seed: number,
+    /**
+     * Поверхность слоя интерфейса. Подставляется снаружи, а не создаётся здесь:
+     * в браузере это канвас, в проверке — журнал, и кадр интерфейса проверяется
+     * без канваса ровно поэтому.
+     */
+    private readonly ui: UiSurface,
   ) {
     const p = world.profile;
     const cave = [p.caveColor, p.caveDeepColor];
@@ -372,23 +379,22 @@ export class Renderer {
     this.drawPlayer(camera, player);
     if (hud.ghost) this.drawGhost(camera, hud.ghost);
     this.drawAim(crosshairX, crosshairY, crosshairInReach, hud.collecting, hud.collectRadius);
+
+    // Мир — на экран, и только потом интерфейс. Порядок обратный сломал бы
+    // не картинку, а сам замысел: интерфейс лёг бы под вывод буфера и исчез.
+    // Всё, что нарисовано в буфер после этой строки, на экран уже не попадёт.
+    this.display.present();
+
+    this.ui.begin();
     this.drawHud(hud);
     this.drawDebug(fps, debugMaterial);
     // Оверлей — последним из РИСУЮЩИХ: он перекрывает и мир, и интерфейс, и это
     // правильный порядок. Пока он открыт, низ кадра всё равно не описывает того,
     // чем игрок сейчас занят.
     if (hud.overlay) {
-      drawResearchOverlay(
-        this.display.pixels,
-        this.display.width,
-        this.display.height,
-        hud.overlay,
-      );
+      drawResearchOverlay(this.ui, this.display.width, this.display.height, hud.overlay);
     }
-    // `present()` — ПОСЛЕДНИМ действием кадра: всё, что нарисовано после него,
-    // в буфер попасть не может по построению, а весь текст игры рисуется
-    // пикселями буфера.
-    this.display.present();
+    this.ui.end();
   }
 
   /**
@@ -707,20 +713,18 @@ export class Renderer {
    * и вторая запись того же состояния однажды разошлась бы с первой.
    */
   private drawHud(hud: HudState): void {
-    const px = this.display.pixels;
     const viewW = this.display.width;
     const viewH = this.display.height;
     const layout = hudLayout(viewW, viewH);
 
-    drawActionBar(px, viewW, viewH, layout, hud.slots, hud.activeSlot, hud.hoveredSlot);
-    drawCredits(px, viewW, viewH, hud.credits);
+    drawActionBar(this.ui, layout, hud.slots, hud.activeSlot, hud.hoveredSlot);
+    drawCredits(this.ui, viewW, hud.credits);
 
     const carried =
       hud.carried.length > 0 ? hud.carried.map((c) => `${c.name} ${c.count}`).join('  ') : 'пусто';
     drawBarLine(
-      px,
+      this.ui,
       viewW,
-      viewH,
       layout,
       0,
       `${hud.used}/${hud.capacity}   ${carried}   Высыпать: ${hud.selected}`,
@@ -730,27 +734,34 @@ export class Renderer {
     // Вид постройки и причина отказа — ТОЛЬКО в режиме строительства и над
     // панелью, туда, куда игрок смотрит, выбирая место. Вне режима этих строк
     // в кадре нет вовсе.
-    if (hud.buildKind) drawBarLine(px, viewW, viewH, layout, 1, hud.buildKind, RAMP.gray[9]);
+    if (hud.buildKind) drawBarLine(this.ui, viewW, layout, 1, hud.buildKind, RAMP.gray[9]);
     // Причина отказа — тем же цветом, что и негодный контур: связь между
     // красной рамкой и надписью не должна требовать догадки.
     if (hud.buildIssue) {
-      drawBarLine(px, viewW, viewH, layout, 2, hud.buildIssue, MACHINE_STATE_COLORS.blocked);
+      drawBarLine(this.ui, viewW, layout, 2, hud.buildIssue, MACHINE_STATE_COLORS.blocked);
     }
   }
 
-  /** Диагностика поверх кадра. Включается F3 — иначе мешает оценивать картинку. */
+  /**
+   * Диагностика поверх кадра. Включается F3 — иначе мешает оценивать картинку.
+   *
+   * В слое интерфейса, а не в буфере мира: это текст, а весь текст игры живёт
+   * там. Заодно снимок мира перестал зависеть от того, включена ли она.
+   */
   private drawDebug(fps: number, material: string): void {
     if (fps <= 0) return;
-    const px = this.display.pixels;
-    const viewW = this.display.width;
-    const viewH = this.display.height;
 
     const lines = [`${fps.toFixed(0)} FPS`];
     // Установка вслепую бесполезна: игрок обязан видеть, что именно поставит.
     if (material) lines.push(`Q/E: ${material}`);
 
     lines.forEach((line, i) =>
-      drawText(px, viewW, viewH, line, DEBUG_MARGIN, DEBUG_MARGIN + i * LINE_H, RAMP.green[4]),
+      this.ui.text(
+        line,
+        DEBUG_MARGIN,
+        DEBUG_MARGIN + i * UI.line,
+        smallText(RAMP.green[4], { shadow: true }),
+      ),
     );
   }
 }

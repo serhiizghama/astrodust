@@ -1,7 +1,11 @@
 /**
- * Замер стоимости кадра без браузера.
+ * Замер стоимости кадра МИРА без браузера.
  *
  * Запуск: npm run bench
+ *
+ * Слой интерфейса сюда не входит и войти не может: он рисуется канвасом,
+ * которого в Node нет, а поверхность-журнал стоит ноль. Цена интерфейса
+ * меряется в браузере — `npm run shot:ui`.
  *
  * Зачем не счётчик FPS в игре: цикл висит на requestAnimationFrame и упирается
  * в вертикальную синхронизацию. На мониторе 60 Гц и «дорогой», и «дешёвый»
@@ -13,7 +17,7 @@
  * а вывод на канвас к стоимости расчёта отношения не имеет.
  */
 import { generateLuna } from '../src/world';
-import { Camera, Renderer } from '../src/render';
+import { Camera, Renderer, RecordingSurface } from '../src/render';
 import type { HudState, OverlayView } from '../src/render';
 import { TECHNOLOGIES, TECH_NODES, TECH_EDGES } from '../src/progress';
 import { Player } from '../src/entities';
@@ -47,7 +51,7 @@ const view = fakeDisplay as unknown as { width: number; height: number };
 for (let i = 3; i < fakeDisplay.pixels.length; i += 4) fakeDisplay.pixels[i] = 255;
 
 const { world, spawn, surface } = generateLuna(WORLD_SEED);
-const renderer = new Renderer(fakeDisplay, world, surface, WORLD_SEED);
+const renderer = new Renderer(fakeDisplay, world, surface, WORLD_SEED, new RecordingSurface());
 const player = new Player(spawn.x, spawn.y);
 
 /**
@@ -160,6 +164,9 @@ for (const [w, h, name] of [
   measure('  Максимум неба', 1000, 0);
   measure('  Поверхность (точка старта)', spawn.x, spawn.y);
   measure('  Лавовая трубка', 1400, 620);
+  // Открытое дерево мир НЕ удешевляет: оверлей рисуется поверх, а не вместо.
+  // Строка остаётся ради этого — расхождение с предыдущей означало бы, что
+  // интерфейс снова полез в буфер мира.
   measure('  Поверхность + дерево', spawn.x, spawn.y, true);
   console.log('');
 }

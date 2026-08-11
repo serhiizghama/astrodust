@@ -1,29 +1,23 @@
 /**
- * Снимок кадра в PNG без браузера.
+ * Снимок МИРА в PNG без браузера.
  *
  * Запуск: npm run shot [суффикс]
  * Результат: shots/<позиция>-<суффикс>.png
  *
  * Задник — визуальная работа, и судить о ней по описанию нельзя. Браузер для
- * этого не нужен: рендер пишет в обычный буфер пикселей, который остаётся
+ * этого не нужен: рендер пишет мир в обычный буфер пикселей, который остаётся
  * закодировать в PNG. Заодно снимок воспроизводим — одна и та же камера на
  * одном и том же зерне всегда даёт один и тот же файл, поэтому сравнение
  * «до/после» показывает изменения рендера, а не разное положение персонажа.
+ *
+ * Интерфейса здесь НЕТ и быть не может: он векторный и живёт в канвасе.
+ * Его снимает `npm run shot:ui` — в браузере.
  */
 import { deflateSync } from 'node:zlib';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { generateLuna, Simulation, MAT, MATERIALS } from '../src/world';
-import {
-  Camera,
-  Renderer,
-  CONVEYOR_STRIPE_COLOR,
-  hudLayout,
-  GLYPH_H,
-  techTreeLayout,
-  nodeOrigin,
-} from '../src/render';
+import { Camera, Renderer, RecordingSurface, CONVEYOR_STRIPE_COLOR } from '../src/render';
 import { Player, LandingModule, BuildingRegistry, SEPARATOR_KIND } from '../src/entities';
-import { TECHNOLOGIES, TECH_NODES, TECH_EDGES, TECH_COLS, TECH_ROWS } from '../src/progress';
 import { Builder } from '../src/systems';
 import type { HudState } from '../src/render';
 import {
@@ -126,7 +120,7 @@ const fakeDisplay = {
 } as unknown as Display;
 
 const { world, spawn, surface, receiver } = generateLuna(WORLD_SEED);
-const renderer = new Renderer(fakeDisplay, world, surface, WORLD_SEED);
+const renderer = new Renderer(fakeDisplay, world, surface, WORLD_SEED, new RecordingSurface());
 
 const suffix = process.argv[2] ? `-${process.argv[2]}` : '';
 mkdirSync('shots', { recursive: true });
@@ -203,9 +197,11 @@ function countMaterial(camera: Camera, material: number): number {
 const bd = world.profile.backdrop;
 
 /**
- * Интерфейс с непустым инвентарём. Теперь он ВИДЕН на снимке: панель, счётчики
- * и строка инвентаря рисуются пикселями буфера, из которого кодируется PNG, —
- * значит, читаемость шрифта и панели судится тем же способом, что и мир.
+ * Интерфейс с непустым инвентарём. На снимке его НЕТ: панель, счётчик и строки
+ * рисуются в слое интерфейса, а он векторный и вне браузера не существует.
+ * Снимок здесь — снимок мира; интерфейс снимает `npm run shot:ui`.
+ *
+ * Снапшот всё равно нужен: от режима зависит вид прицела, а он мировой.
  */
 const hud: HudState = {
   // Режим копания — тот, с которого начинается партия. Он же оставляет прицел
@@ -258,106 +254,6 @@ for (const shot of SHOTS) {
     `${path.padEnd(28)} камера=(${camera.x},${camera.y})  ` +
       `звёзд ${stars}  кромок ${rims}  свечения ${glow}  слои ${fills.join('/')}`,
   );
-}
-
-// --- Интерфейс ---
-//
-// Панель, счётчики и строки внизу судятся только глазом: числа не говорят
-// ни о читаемости шрифта, ни о том, узнаётся ли действие по значку. Снимается
-// поверх поверхности — самого светлого фона в игре: если подложка текста
-// держит контраст здесь, она держит его везде.
-{
-  const camera = new Camera(world.width, world.height);
-  camera.snapTo(spawn.x, spawn.y);
-  const player = new Player(camera.x + BASE_VIEW_W / 2, camera.y + BASE_VIEW_H / 2);
-  const layout = hudLayout(BASE_VIEW_W, BASE_VIEW_H);
-
-  renderer.render({
-    camera: camera,
-    player: player,
-    crosshairX: BASE_VIEW_W / 2 + 20,
-    crosshairY: BASE_VIEW_H / 2,
-    crosshairInReach: true,
-    // Строительство с негодным местом: в кадре разом активный слот, наведённый
-    // слот, вид постройки с ценой и причина отказа — всё, что панель показывает.
-    hud: {
-      ...hud,
-      activeSlot: 1,
-      hoveredSlot: 2,
-      buildKind: SEPARATOR_KIND.name,
-      buildIssue: 'нет опоры',
-    },
-    fps: 60,
-    time: 3,
-  });
-
-  writeFileSync(`shots/hud${suffix}.png`, encodePng(pixels, 3, FULL));
-  writeFileSync(
-    `shots/zoom-action-bar${suffix}.png`,
-    encodePng(pixels, 8, {
-      x: layout.x - 2,
-      y: layout.y - 26,
-      w: layout.w + 4,
-      h: layout.h + 28,
-    }),
-  );
-  writeFileSync(
-    `shots/zoom-counters${suffix}.png`,
-    encodePng(pixels, 10, { x: BASE_VIEW_W - 64, y: 0, w: 64, h: 28 }),
-  );
-  console.log(
-    `shots/hud${suffix}.png`.padEnd(28) +
-      ` панель x=${layout.x} y=${layout.y} ${layout.w}×${layout.h}, ` +
-      `слот ${layout.slotSize}, кегль ${GLYPH_H}`,
-  );
-
-  // Курсор стоит НА наведённом узле: снимок, где стрелка в стороне от того,
-  // что подсвечено, показывал бы состояние, которого в игре не бывает.
-  const treeLayout = techTreeLayout(BASE_VIEW_W, BASE_VIEW_H, TECH_COLS, TECH_ROWS);
-  const hoveredNode = TECH_NODES[2]!;
-  const hoveredAt = nodeOrigin(treeLayout, hoveredNode.col, hoveredNode.row);
-  const pointer = {
-    x: hoveredAt.x + (treeLayout.node >> 1),
-    y: hoveredAt.y + (treeLayout.node >> 1),
-  };
-
-  // Дерево технологий — тем же шрифтом и поверх интерфейса. Своя сцена, потому
-  // что регресс читаемости узлов, связей и подсказки иначе виден только в игре.
-  // Наведение и выбор стоят на РАЗНЫХ узлах: их пометки обязаны различаться.
-  renderer.render({
-    camera: camera,
-    player: player,
-    crosshairX: BASE_VIEW_W / 2 + 20,
-    crosshairY: BASE_VIEW_H / 2,
-    crosshairInReach: true,
-    hud: {
-      ...hud,
-      overlay: {
-        credits: 1234,
-        selected: 1,
-        hovered: 2,
-        pointerX: pointer.x,
-        pointerY: pointer.y,
-        edges: TECH_EDGES,
-        nodes: TECHNOLOGIES.map((tech, i) => ({
-          name: tech.name,
-          description: tech.description,
-          cost: tech.cost,
-          usage: tech.usage,
-          status: (['open', 'poor', 'blocked', 'available'] as const)[i % 4]!,
-          kind: tech.effect.kind,
-          icon: tech.icon,
-          col: TECH_NODES[i]!.col,
-          row: TECH_NODES[i]!.row,
-          note:
-            i === 1 ? `нужно ещё ${tech.cost - 1234} ₡` : i === 2 ? 'требует: Широкий раструб' : '',
-        })),
-      },
-    },
-    fps: 0,
-    time: 3,
-  });
-  writeFileSync(`shots/research${suffix}.png`, encodePng(pixels, 3, FULL));
 }
 
 // --- Работающий сепаратор ---
