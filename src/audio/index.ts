@@ -25,3 +25,4 @@ export {
 } from './model';
 export { createDigState, createDigParams, digParams, mergeStrike } from './voices/dig';
 export { createDustState, createDustParams, dustParams, dustIntensity } from './voices/dust';
+export { createGrabState, createGrabParams, grabParams, mergeRustle } from './voices/grab';

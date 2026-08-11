@@ -4,20 +4,24 @@
  * Инструмент чистый — мир, буфер и цель на входе, изменения на выходе, —
  * поэтому проверяется напрямую, без кадра и без бутстрапа.
  *
- * Темп задан интервалом, и один вызов `update` с `dt` меньше интервала делает
- * ровно одно применение. Везде ниже `dt = FIXED_DT`, как в игре.
+ * Жест: удержание набирает, отпускание выбрасывает. Темп набора задан
+ * интервалом, и `hold` подряд берёт не чаще него; везде ниже `dt = FIXED_DT`,
+ * как в игре.
  */
 import { World, MAT, MATERIALS, MAT_PORTABLE } from '../src/world';
 import { GRAB, GRAB_CAPACITY, DIG, PLAYER, FIXED_DT } from '../src/config';
+import { actionTarget } from '../src/core';
 import { Grab, LandingModule } from '../src/entities';
-import { Grabber } from '../src/systems';
+import { Grabber, aimLabel } from '../src/systems';
 import { check } from './harness';
 import { box, count, settle } from './fixtures/world';
 
 const HALF = (GRAB.side - 1) >> 1;
 
-/** Персонаж далеко от цели: хитбокс не должен мешать выбросу. */
-const AWAY = { cx: 4, cy: 4 };
+/** Сколько шагов удержания гарантированно даёт очередное применение. */
+const STEPS_PER_TAKE = Math.ceil(GRAB.interval / FIXED_DT) + 1;
+
+type Occupant = Parameters<Grabber['update']>[7];
 
 /** Заливка прямоугольника одним веществом. */
 function fill(w: World, x0: number, y0: number, x1: number, y1: number, m: number): void {
@@ -26,18 +30,41 @@ function fill(w: World, x0: number, y0: number, x1: number, y1: number, m: numbe
   }
 }
 
-/** Одно применение инструмента: нажатие плюс удержание того же шага. */
-function press(
+/** Шаг удержания над целью. */
+function hold(
   g: Grabber,
   w: World,
   grab: Grab,
   tx: number,
   ty: number,
-  cx = AWAY.cx,
-  cy = AWAY.cy,
-  occupant: Parameters<Grabber['update']>[9] = null,
+  occupant: Occupant = null,
 ): number {
-  return g.update(FIXED_DT, w, grab, true, true, cx, cy, tx, ty, occupant);
+  return g.update(FIXED_DT, w, grab, true, false, tx, ty, occupant);
+}
+
+/** Отпускание над целью: выброс. */
+function release(
+  g: Grabber,
+  w: World,
+  grab: Grab,
+  tx: number,
+  ty: number,
+  occupant: Occupant = null,
+): number {
+  return g.update(FIXED_DT, w, grab, false, false, tx, ty, occupant);
+}
+
+/** Полный жест над одной точкой: зажал, набрал, отпустил. */
+function gesture(
+  g: Grabber,
+  w: World,
+  grab: Grab,
+  tx: number,
+  ty: number,
+  occupant: Occupant = null,
+): void {
+  hold(g, w, grab, tx, ty, occupant);
+  release(g, w, grab, tx, ty, occupant);
 }
 
 // --- Форма кисти и инварианты стороны ---
@@ -81,7 +108,7 @@ function press(
   fill(w, 20, 20, 60, 60, MAT.REGOLITH_LOOSE);
   const tx = 40;
   const ty = 40;
-  press(g, w, grab, tx, ty);
+  hold(g, w, grab, tx, ty);
 
   // Предел обхода — сторона квадрата: за неё выемка выйти не может, а цикл
   // без предела на краю мира ушёл бы в бесконечность вместо провала проверки.
@@ -114,6 +141,27 @@ function press(
   );
 }
 
+{
+  // Дальности у захвата нет: набор и выброс на другом конце кадра работают
+  // так же, как вплотную. Персонажа здесь вовсе нет — инструменту нечем
+  // мерить расстояние до него.
+  const far = 20 + DIG.reach * 2;
+  const w = box(far + 20, far + 20);
+  const grab = new Grab();
+  const g = new Grabber();
+  fill(w, far - 5, far - 5, far + 5, far + 5, MAT.REGOLITH_LOOSE);
+
+  hold(g, w, grab, far, far);
+  const taken = grab.used;
+  release(g, w, grab, 20, 20);
+
+  check(
+    'Дальности нет: далёкая цель набирается и принимает комок',
+    taken > 0 && grab.used === 0 && count(w, MAT.REGOLITH_LOOSE) === taken,
+    `набрано ${taken}, в мире ${count(w, MAT.REGOLITH_LOOSE)}`,
+  );
+}
+
 // --- Что берётся ---
 
 {
@@ -122,13 +170,13 @@ function press(
   const g = new Grabber();
   fill(w, 20, 20, 60, 60, MAT.REGOLITH_LOOSE);
   const before = count(w, MAT.REGOLITH_LOOSE);
-  const taken = press(g, w, grab, 40, 40);
+  const taken = hold(g, w, grab, 40, 40);
   const after = count(w, MAT.REGOLITH_LOOSE);
 
   check(
     'Сколько исчезло из мира, столько прибавилось в буфере',
-    before - after === taken && grab.count(MAT.REGOLITH_LOOSE) === taken && taken > 0,
-    `из мира ${before - after}, в буфер ${grab.count(MAT.REGOLITH_LOOSE)}`,
+    before - after === taken && grab.countOf(MAT.REGOLITH_LOOSE) === taken && taken > 0,
+    `из мира ${before - after}, в буфер ${grab.countOf(MAT.REGOLITH_LOOSE)}`,
   );
 }
 
@@ -149,7 +197,7 @@ function press(
     const g = new Grabber();
     fill(w, 30, 30, 50, 50, m);
     const before = count(w, m);
-    press(g, w, grab, 40, 40);
+    hold(g, w, grab, 40, 40);
     if (count(w, m) !== before || grab.used !== 0) wrong += `${name} `;
   }
   check('Порода, вода, лава, пар и лёд захватом не берутся', wrong === '', wrong);
@@ -161,31 +209,75 @@ function press(
     const grab = new Grab();
     const g = new Grabber();
     fill(w, 35, 35, 45, 45, m.id);
-    press(g, w, grab, 40, 40);
+    hold(g, w, grab, 40, 40);
     const grabbed = grab.used > 0;
     if (grabbed !== portable.includes(m.id)) mismatch += `${m.name} `;
   }
   check('Списки переносимого у захвата и таблицы материалов совпадают', mismatch === '', mismatch);
 }
 
+// --- Комок из одного вещества ---
+
 {
-  // Смешанный комок: счётчики раздельные, предел общий.
+  // Тип задаёт ячейка ПОД ПЕРЕКРЕСТИЕМ: она единственная, куда игрок целился
+  // точно, тогда как остальной квадрат он накрыл заодно.
+  const w = box();
+  const grab = new Grab();
+  const g = new Grabber();
+  fill(w, 30, 30, 50, 50, MAT.REGOLITH_LOOSE);
+  fill(w, 40, 40, 44, 44, MAT.IRIDIUM);
+  const regolith = count(w, MAT.REGOLITH_LOOSE);
+
+  hold(g, w, grab, 42, 42);
+
+  check(
+    'Тип комка задаёт ячейка под перекрестием',
+    grab.material === MAT.IRIDIUM &&
+      count(w, MAT.IRIDIUM) === 0 &&
+      count(w, MAT.REGOLITH_LOOSE) === regolith,
+    `вещество ${grab.material}, реголита в мире ${count(w, MAT.REGOLITH_LOOSE)}`,
+  );
+}
+
+{
+  // Пока буфер не пуст, добирается только его вещество: смешанного комка
+  // не бывает.
   const w = box();
   const grab = new Grab();
   const g = new Grabber();
   fill(w, 20, 20, 30, 30, MAT.REGOLITH_LOOSE);
   fill(w, 50, 50, 60, 60, MAT.IRIDIUM);
-  press(g, w, grab, 25, 25);
-  const regolith = grab.count(MAT.REGOLITH_LOOSE);
-  g.update(FIXED_DT, w, grab, false, false, AWAY.cx, AWAY.cy, 25, 25); // отпустили
-  press(g, w, grab, 55, 55);
+
+  hold(g, w, grab, 25, 25);
+  const regolith = grab.used;
+  const iridium = count(w, MAT.IRIDIUM);
+  for (let i = 0; i < STEPS_PER_TAKE; i++) hold(g, w, grab, 55, 55);
 
   check(
-    'Комок бывает смешанным: счётчики раздельные, предел общий',
-    grab.count(MAT.REGOLITH_LOOSE) === regolith &&
-      grab.count(MAT.IRIDIUM) > 0 &&
-      grab.used === regolith + grab.count(MAT.IRIDIUM),
-    `реголит ${regolith}, иридий ${grab.count(MAT.IRIDIUM)}, всего ${grab.used}`,
+    'Комок остаётся однородным: чужое вещество не добирается',
+    grab.material === MAT.REGOLITH_LOOSE &&
+      grab.used === regolith &&
+      count(w, MAT.IRIDIUM) === iridium,
+    `вещество ${grab.material}, в буфере ${grab.used}, иридия в мире ${count(w, MAT.IRIDIUM)}`,
+  );
+}
+
+{
+  // Перекрестие мимо вещества не начинает набор, даже если квадрат накрывает
+  // кучу: выбирать вещество за игрока нечем.
+  const w = box();
+  const grab = new Grab();
+  const g = new Grabber();
+  fill(w, 30, 30, 50, 50, MAT.ROCK);
+  fill(w, 44, 44, 48, 48, MAT.REGOLITH_LOOSE);
+  const before = count(w, MAT.REGOLITH_LOOSE);
+
+  hold(g, w, grab, 40, 40);
+
+  check(
+    'Перекрестие мимо вещества не берёт ничего',
+    grab.used === 0 && count(w, MAT.REGOLITH_LOOSE) === before,
+    `в буфере ${grab.used}`,
   );
 }
 
@@ -194,17 +286,15 @@ function press(
   const w = box();
   const grab = new Grab();
   const g = new Grabber();
-  grab.add(MAT.PULP, GRAB_CAPACITY - 3);
+  grab.add(MAT.REGOLITH_LOOSE, GRAB_CAPACITY - 3);
   fill(w, 30, 30, 50, 50, MAT.REGOLITH_LOOSE);
   const before = count(w, MAT.REGOLITH_LOOSE);
-  press(g, w, grab, 40, 40);
+  hold(g, w, grab, 40, 40);
 
   check(
     'На границе ёмкости берётся ровно то, что влезает',
-    grab.count(MAT.REGOLITH_LOOSE) === 3 &&
-      before - count(w, MAT.REGOLITH_LOOSE) === 3 &&
-      grab.used === GRAB_CAPACITY,
-    `взято ${grab.count(MAT.REGOLITH_LOOSE)}, в буфере ${grab.used}`,
+    before - count(w, MAT.REGOLITH_LOOSE) === 3 && grab.used === GRAB_CAPACITY,
+    `взято ${before - count(w, MAT.REGOLITH_LOOSE)}, в буфере ${grab.used}`,
   );
 }
 
@@ -215,7 +305,7 @@ function press(
   const g = new Grabber();
   fill(w, 40, 40, 50, 80, MAT.REGOLITH_LOOSE);
   const topBefore = w.get(45, 40);
-  press(g, w, grab, 45, 70);
+  hold(g, w, grab, 45, 70);
   settle(w, 400);
 
   check(
@@ -225,7 +315,7 @@ function press(
   );
 }
 
-// --- Решение по цели ---
+// --- Жест: зажал, набрал, перенёс, отпустил ---
 
 {
   const w = box();
@@ -233,121 +323,150 @@ function press(
   const g = new Grabber();
   fill(w, 30, 30, 50, 50, MAT.REGOLITH_LOOSE);
 
-  press(g, w, grab, 40, 40);
-  check('Нажатие по веществу берёт', grab.used > 0);
+  hold(g, w, grab, 40, 40);
+  check('Зажатие набирает', grab.used > 0, `в буфере ${grab.used}`);
 }
 
 {
-  // Нажатие по пустоте кладёт: игрок донёс комок и высыпал его.
+  // Ведение цели при удержании добирает: игрок собирает рассыпанное, не
+  // отпуская кнопку.
   const w = box();
   const grab = new Grab();
   const g = new Grabber();
-  grab.add(MAT.REGOLITH_LOOSE, 20);
-  press(g, w, grab, 40, 40);
+  fill(w, 20, 20, 24, 24, MAT.REGOLITH_LOOSE);
+  fill(w, 60, 60, 64, 64, MAT.REGOLITH_LOOSE);
+
+  hold(g, w, grab, 22, 22);
+  const first = grab.used;
+  for (let i = 0; i < STEPS_PER_TAKE; i++) hold(g, w, grab, 62, 62);
 
   check(
-    'Нажатие по пустоте кладёт комок',
-    grab.used === 0 && count(w, MAT.REGOLITH_LOOSE) === 20,
-    `в буфере ${grab.used}, в мире ${count(w, MAT.REGOLITH_LOOSE)}`,
+    'Ведение при удержании добирает со второй кучи',
+    first > 0 && grab.used > first && count(w, MAT.REGOLITH_LOOSE) === 0,
+    `сначала ${first}, потом ${grab.used}`,
   );
 }
 
 {
-  // Полный буфер кладёт даже над веществом: иначе инструмент замирает.
+  // Отпускание выбрасывает комок под целью — и это единственный способ его
+  // выбросить.
   const w = box();
   const grab = new Grab();
   const g = new Grabber();
-  grab.add(MAT.IRIDIUM, GRAB_CAPACITY);
-  // Куча пониже цели, чтобы в квадрате остались свободные ячейки.
-  fill(w, 30, 44, 50, 50, MAT.REGOLITH_LOOSE);
-  press(g, w, grab, 40, 40);
+  fill(w, 20, 20, 24, 24, MAT.REGOLITH_LOOSE);
+
+  hold(g, w, grab, 22, 22);
+  const carried = grab.used;
+  const midair = count(w, MAT.REGOLITH_LOOSE);
+  release(g, w, grab, 60, 60);
 
   check(
-    'Полный буфер кладёт даже над веществом',
-    grab.used < GRAB_CAPACITY && count(w, MAT.IRIDIUM) > 0,
-    `в буфере ${grab.used}, иридия в мире ${count(w, MAT.IRIDIUM)}`,
+    'Отпускание выбрасывает комок под целью',
+    carried > 0 && midair === 0 && grab.used === 0 && count(w, MAT.REGOLITH_LOOSE) === carried,
+    `несли ${carried}, в мире ${count(w, MAT.REGOLITH_LOOSE)}`,
   );
 }
 
 {
-  // Решение штриха держится до отпускания: проводка, добравшая буфер до полного,
-  // тем же удержанием не вываливает его обратно.
+  // Полный буфер жест не прерывает: удержание продолжает переносить, а не
+  // начинает вываливать.
   const w = box();
   const grab = new Grab();
   const g = new Grabber();
   fill(w, 20, 20, 70, 70, MAT.REGOLITH_LOOSE);
 
-  g.update(FIXED_DT, w, grab, true, true, AWAY.cx, AWAY.cy, 40, 40);
-  let placed = 0;
-  // Дальше только удержание, много шагов, целью не двигаем.
+  hold(g, w, grab, 40, 40);
+  let dropped = false;
   for (let i = 0; i < 60; i++) {
-    g.update(FIXED_DT, w, grab, false, true, AWAY.cx, AWAY.cy, 40, 40);
-    if (grab.used < GRAB_CAPACITY && grab.used > 0) placed = -1;
+    hold(g, w, grab, 40, 40);
+    if (grab.used < GRAB_CAPACITY) dropped = true;
   }
 
   check(
-    'Проводка добирает, но не вываливает: буфер полон и не убывает',
-    grab.used === GRAB_CAPACITY && placed === 0,
+    'Полный буфер не роняет комок посреди жеста',
+    grab.used === GRAB_CAPACITY && !dropped,
     `в буфере ${grab.used}`,
   );
 }
 
 {
-  // Выброс — событие, а не кисть: удержание не раскладывает комок порциями.
+  // Курсор над панелью приостанавливает жест: отпускание там комок не роняет,
+  // а возврат в мир продолжает тот же жест.
   const w = box();
   const grab = new Grab();
   const g = new Grabber();
+  fill(w, 20, 20, 24, 24, MAT.REGOLITH_LOOSE);
+
+  hold(g, w, grab, 22, 22);
+  const carried = grab.used;
+  g.update(FIXED_DT, w, grab, false, true, 60, 60);
+  const kept = grab.used === carried && count(w, MAT.REGOLITH_LOOSE) === 0;
+  release(g, w, grab, 60, 60);
+
+  check(
+    'Отпускание над панелью комок не роняет',
+    carried > 0 && kept && count(w, MAT.REGOLITH_LOOSE) === carried,
+    `после панели ${kept}, в мире ${count(w, MAT.REGOLITH_LOOSE)}`,
+  );
+}
+
+{
+  // Пустой буфер отпусканием ничего не делает: класть нечего.
+  const w = box();
+  const grab = new Grab();
+  const g = new Grabber();
+  const before = Array.from(w.cells).join(',');
+  gesture(g, w, grab, 40, 40);
+
+  check(
+    'Пустой буфер отпусканием мир не меняет',
+    Array.from(w.cells).join(',') === before && grab.used === 0,
+  );
+}
+
+{
+  // Смена режима прерывает жест, но не буфер: комок ждёт следующего
+  // отпускания над миром, а не вываливается в секунду возврата в захват.
+  const w = box();
+  const grab = new Grab();
+  const g = new Grabber();
+  fill(w, 20, 20, 24, 24, MAT.REGOLITH_LOOSE);
+
+  hold(g, w, grab, 22, 22);
+  const carried = grab.used;
+  g.cancel();
+  const idle = release(g, w, grab, 60, 60);
+
+  check(
+    'Смена режима не роняет комок',
+    carried > 0 && idle === 0 && grab.used === carried && count(w, MAT.REGOLITH_LOOSE) === 0,
+    `в буфере ${grab.used}, положено ${idle}`,
+  );
+}
+
+{
+  // Остаток донашивается: то, что не влезло в тесное место, выбрасывается
+  // следующим отпусканием.
+  const w = box();
+  const grab = new Grab();
+  const g = new Grabber();
+  fill(w, 30, 30, 50, 50, MAT.ROCK);
+  w.set(40, 40, MAT.VACUUM);
+  w.set(41, 40, MAT.VACUUM);
+  w.set(42, 40, MAT.VACUUM);
   grab.add(MAT.REGOLITH_LOOSE, 20);
-  press(g, w, grab, 40, 40);
-  const afterPress = count(w, MAT.REGOLITH_LOOSE);
-  grab.add(MAT.PULP, 20);
-  for (let i = 0; i < 30; i++) {
-    g.update(FIXED_DT, w, grab, false, true, AWAY.cx, AWAY.cy, 40, 40);
-  }
+
+  hold(g, w, grab, 40, 40);
+  release(g, w, grab, 40, 40);
+  const left = grab.used;
+  hold(g, w, grab, 70, 70);
+  release(g, w, grab, 70, 70);
 
   check(
-    'Выброс не повторяется удержанием',
-    afterPress === 20 && count(w, MAT.PULP) === 0 && grab.count(MAT.PULP) === 20,
-    `пульпы в мире ${count(w, MAT.PULP)}`,
+    'Остаток донашивается до открытого места',
+    left === 17 && grab.used === 0 && count(w, MAT.REGOLITH_LOOSE) === 20,
+    `остаток ${left}, в мире ${count(w, MAT.REGOLITH_LOOSE)}`,
   );
-}
-
-{
-  // Промах не тратит ход: пустой буфер над пустотой ничего не делает.
-  const w = box();
-  const grab = new Grab();
-  const g = new Grabber();
-  fill(w, 60, 60, 70, 70, MAT.REGOLITH_LOOSE);
-
-  press(g, w, grab, 20, 20);
-  const idle = grab.used === 0 && count(w, MAT.REGOLITH_LOOSE) === 11 * 11;
-  g.update(FIXED_DT, w, grab, false, false, AWAY.cx, AWAY.cy, 20, 20);
-  press(g, w, grab, 65, 65);
-
-  check(
-    'Промах ничего не меняет, следующее нажатие берёт',
-    idle && grab.used > 0,
-    `после промаха ${idle}, после попадания ${grab.used}`,
-  );
-}
-
-{
-  // Недостижимая цель не меняет НИ мир, НИ буфер — ни набором, ни выбросом.
-  const w = box();
-  const grab = new Grab();
-  const g = new Grabber();
-  fill(w, 60, 60, 80, 80, MAT.REGOLITH_LOOSE);
-  const before = count(w, MAT.REGOLITH_LOOSE);
-  const far = DIG.reach + 20;
-
-  press(g, w, grab, 70, 70, 70 - far, 70);
-  const takeBlocked = grab.used === 0 && count(w, MAT.REGOLITH_LOOSE) === before;
-
-  grab.add(MAT.PULP, 10);
-  press(g, w, grab, 20, 20, 20 + far, 20);
-  const dropBlocked = grab.count(MAT.PULP) === 10 && count(w, MAT.PULP) === 0;
-
-  check('Недостижимая цель не меняет ни мир, ни буфер', takeBlocked && dropBlocked);
 }
 
 // --- Выброс ---
@@ -360,11 +479,11 @@ function press(
   fill(w, 30, 30, 50, 50, MAT.ROCK);
   grab.add(MAT.REGOLITH_LOOSE, 20);
   const rock = count(w, MAT.ROCK);
-  press(g, w, grab, 40, 40);
+  gesture(g, w, grab, 40, 40);
 
   check(
     'Выброс в сплошную породу ничего не меняет',
-    count(w, MAT.ROCK) === rock && grab.count(MAT.REGOLITH_LOOSE) === 20,
+    count(w, MAT.ROCK) === rock && grab.countOf(MAT.REGOLITH_LOOSE) === 20,
     `породы ${count(w, MAT.ROCK)}, в буфере ${grab.used}`,
   );
 }
@@ -380,12 +499,12 @@ function press(
   w.set(41, 40, MAT.VACUUM);
   w.set(42, 40, MAT.VACUUM);
   grab.add(MAT.REGOLITH_LOOSE, 20);
-  press(g, w, grab, 40, 40);
+  gesture(g, w, grab, 40, 40);
 
   check(
     'Тесное место принимает сколько влезло, остальное остаётся в буфере',
-    count(w, MAT.REGOLITH_LOOSE) === 3 && grab.count(MAT.REGOLITH_LOOSE) === 17,
-    `в мире ${count(w, MAT.REGOLITH_LOOSE)}, в буфере ${grab.count(MAT.REGOLITH_LOOSE)}`,
+    count(w, MAT.REGOLITH_LOOSE) === 3 && grab.countOf(MAT.REGOLITH_LOOSE) === 17,
+    `в мире ${count(w, MAT.REGOLITH_LOOSE)}, в буфере ${grab.countOf(MAT.REGOLITH_LOOSE)}`,
   );
 }
 
@@ -396,7 +515,7 @@ function press(
   const g = new Grabber();
   grab.add(MAT.REGOLITH_LOOSE, GRAB_CAPACITY);
   const occupant = { x: 38, y: 38, w: PLAYER.hitboxW, h: PLAYER.hitboxH };
-  press(g, w, grab, 40, 40, 41, 43, occupant);
+  gesture(g, w, grab, 40, 40, occupant);
 
   let inside = 0;
   for (let y = occupant.y; y < occupant.y + occupant.h; y++) {
@@ -413,16 +532,14 @@ function press(
 
 {
   // Повторяемость: один и тот же выброс из одинакового состояния мира даёт
-  // одинаковую сетку. Смешанный комок — самый жёсткий случай.
+  // одинаковую сетку.
   const grids: string[] = [];
   for (let run = 0; run < 2; run++) {
     const w = box();
     const grab = new Grab();
     const g = new Grabber();
-    grab.add(MAT.REGOLITH_LOOSE, 30);
-    grab.add(MAT.IRIDIUM, 25);
-    grab.add(MAT.PULP, 15);
-    press(g, w, grab, 40, 40);
+    grab.add(MAT.IRIDIUM, 70);
+    gesture(g, w, grab, 40, 40);
     settle(w, 400);
     grids.push(Array.from(w.cells).join(','));
   }
@@ -438,7 +555,7 @@ function press(
   const receiver = { x: 34, y: 34, w: 13, h: 13 };
   const landing = new LandingModule(receiver);
   grab.add(MAT.REGOLITH_LOOSE, 40);
-  press(g, w, grab, 40, 40);
+  gesture(g, w, grab, 40, 40);
   const payout = landing.update(w);
 
   check(
@@ -457,19 +574,23 @@ function press(
   const grab = new Grab();
   const g = new Grabber();
   fill(w, 30, 30, 50, 50, MAT.REGOLITH_LOOSE);
-  fill(w, 36, 36, 44, 44, MAT.ROCK);
+  fill(w, 40, 40, 44, 44, MAT.ROCK);
+  // Квадрат целиком внутри залитой области: пустота в нём появляется только
+  // от набора, иначе сравнивать план с изменениями было бы не с чем.
+  const tx = 38;
+  const ty = 38;
 
-  const plan = g.plan(w, grab, AWAY.cx, AWAY.cy, 40, 40);
+  const plan = g.plan(w, grab, tx, ty);
   const planned = new Set<string>();
   for (let i = 0; i < plan.count; i++) {
     planned.add(`${plan.cells[i * 2]},${plan.cells[i * 2 + 1]}`);
   }
   const highlighted = plan.action;
 
-  press(g, w, grab, 40, 40);
+  hold(g, w, grab, tx, ty);
   const changed = new Set<string>();
-  for (let y = 40 - HALF; y <= 40 + HALF; y++) {
-    for (let x = 40 - HALF; x <= 40 + HALF; x++) {
+  for (let y = ty - HALF; y <= ty + HALF; y++) {
+    for (let x = tx - HALF; x <= tx + HALF; x++) {
       if (w.get(x, y) === MAT.VACUUM) changed.add(`${x},${y}`);
     }
   }
@@ -484,42 +605,36 @@ function press(
 }
 
 {
-  // Подсветка не обещает того, чего не будет: порода в квадрате не подсвечена,
-  // а вне дальности не подсвечено ничего.
+  // Подсветка не обещает того, чего не будет: порода в квадрате не подсвечена.
   const w = box();
   const grab = new Grab();
   const g = new Grabber();
   fill(w, 30, 30, 50, 50, MAT.ROCK);
   fill(w, 38, 38, 42, 42, MAT.REGOLITH_LOOSE);
 
-  const plan = g.plan(w, grab, AWAY.cx, AWAY.cy, 40, 40);
+  const plan = g.plan(w, grab, 40, 40);
   let rocky = 0;
   for (let i = 0; i < plan.count; i++) {
     if (w.get(plan.cells[i * 2]!, plan.cells[i * 2 + 1]!) === MAT.ROCK) rocky++;
   }
   check(
-    'Подсвечено только переносимое: порода в квадрате не подсвечена',
+    'Подсвечено только вещество комка: порода в квадрате не подсвечена',
     plan.count === 25 && rocky === 0,
     `в плане ${plan.count}, из них породы ${rocky}`,
-  );
-
-  const far = g.plan(w, grab, 40 + DIG.reach + 20, 40, 40, 40);
-  check(
-    'Вне дальности не подсвечено ничего',
-    far.count === 0 && far.action === 'none',
-    `в плане ${far.count}, решение ${far.action}`,
   );
 }
 
 {
   // Решение «выброс» подсвечивает СВОБОДНЫЕ ячейки — те, что примут вещество.
+  // Их же рисует несомый комок, поэтому показанное совпадает со сделанным
+  // по построению.
   const w = box();
   const grab = new Grab();
   const g = new Grabber();
   fill(w, 30, 44, 50, 50, MAT.ROCK);
   grab.add(MAT.REGOLITH_LOOSE, 10);
 
-  const plan = g.plan(w, grab, AWAY.cx, AWAY.cy, 40, 40);
+  const plan = g.plan(w, grab, 40, 40);
   let occupied = 0;
   for (let i = 0; i < plan.count; i++) {
     if (w.get(plan.cells[i * 2]!, plan.cells[i * 2 + 1]!) !== MAT.VACUUM) occupied++;
@@ -528,5 +643,132 @@ function press(
     'Выброс подсвечивает только пустые ячейки и не больше, чем несёт',
     plan.action === 'drop' && plan.count === 10 && occupied === 0,
     `решение ${plan.action}, в плане ${plan.count}, занятых ${occupied}`,
+  );
+}
+
+// --- Подпись вещества под перекрестием ---
+
+{
+  // Подпись называет то, что задаст тип комка, и обещает ровно то, что сделает
+  // нажатие: приглушается всё, чего оно сейчас не возьмёт.
+  const w = box();
+  const grab = new Grab();
+  const g = new Grabber();
+  fill(w, 30, 30, 50, 50, MAT.REGOLITH_LOOSE);
+  fill(w, 60, 60, 70, 70, MAT.IRIDIUM);
+  fill(w, 10, 60, 20, 70, MAT.ROCK);
+
+  const loose = aimLabel(w, grab, 40, 40);
+  const rock = aimLabel(w, grab, 15, 65);
+  const empty = aimLabel(w, grab, 80, 20);
+
+  check(
+    'Подпись называет вещество под перекрестием',
+    loose.name === MATERIALS[MAT.REGOLITH_LOOSE]!.name && loose.takeable,
+    `«${loose.name}», возьмётся ${loose.takeable}`,
+  );
+  check(
+    'Порода названа, но приглушена',
+    rock.name === MATERIALS[MAT.ROCK]!.name && !rock.takeable,
+    `«${rock.name}», возьмётся ${rock.takeable}`,
+  );
+  check('Над пустотой подписи нет', empty.name === '' && !empty.takeable);
+
+  // Непустой буфер закрывает чужое вещество: светлое имя обещало бы набор,
+  // которого не будет. Берём горстку, чтобы буфер остался неполным.
+  const crumbs = new Grab();
+  crumbs.add(MAT.REGOLITH_LOOSE, 5);
+  const foreign = aimLabel(w, crumbs, 65, 65);
+  const same = aimLabel(w, crumbs, 40, 40);
+  check(
+    'Чужое вещество при непустом буфере приглушено',
+    foreign.name === MATERIALS[MAT.IRIDIUM]!.name && !foreign.takeable && same.takeable,
+    `иридий возьмётся ${foreign.takeable}, реголит ${same.takeable}`,
+  );
+
+  // Полный буфер не примет уже ничего, и подпись обязана это признать.
+  const full = new Grab();
+  full.add(MAT.REGOLITH_LOOSE, GRAB_CAPACITY);
+  check('При полном буфере приглушено даже своё вещество', !aimLabel(w, full, 40, 40).takeable);
+
+  // Обещание подписи и поведение инструмента — одно и то же: то, что подпись
+  // назвала невзятым, набором не уходит.
+  hold(g, w, grab, 40, 40);
+  const before = count(w, MAT.IRIDIUM);
+  for (let i = 0; i < STEPS_PER_TAKE; i++) hold(g, w, grab, 65, 65);
+  check(
+    'Приглушённое подписью не берётся и на деле',
+    count(w, MAT.IRIDIUM) === before,
+    `иридия в мире ${count(w, MAT.IRIDIUM)}`,
+  );
+}
+
+// --- Отчёт шага для звука ---
+
+{
+  // Набор и выброс — разные события, и на одном шаге они не встречаются:
+  // на этом держится одна пара координат в снапшоте сигналов.
+  const w = box();
+  const grab = new Grab();
+  const g = new Grabber();
+  fill(w, 20, 20, 30, 30, MAT.REGOLITH_LOOSE);
+
+  let both = 0;
+  let takes = 0;
+  let drops = 0;
+  let mismatched = 0;
+  const step = (held: boolean, tx: number, ty: number): void => {
+    const cells = g.update(FIXED_DT, w, grab, held, false, tx, ty);
+    const action = g.lastAction;
+    if (action !== 'none' && g.lastCells !== cells) mismatched++;
+    if (action === 'take') takes++;
+    if (action === 'drop') drops++;
+    // Отчёт — одно значение, и «оба сразу» им невыразимо; проверяется, что
+    // ненулевые ячейки всегда приписаны ровно одному событию.
+    if (action === 'none' && cells > 0) both++;
+  };
+
+  for (let i = 0; i < 40; i++) step(true, 25, 25);
+  step(false, 60, 60);
+  for (let i = 0; i < 10; i++) step(false, 60, 60);
+
+  check(
+    'Отчёт шага: набор и выброс не встречаются вместе',
+    both === 0 && takes > 0 && drops === 1 && mismatched === 0,
+    `наборов ${takes}, выбросов ${drops}, расхождений ${mismatched}`,
+  );
+}
+
+{
+  // Отпускание, не положившее ни ячейки, событием не считается: звук
+  // подтверждает изменение мира, а не отпускание кнопки.
+  const w = box();
+  const grab = new Grab();
+  const g = new Grabber();
+  g.update(FIXED_DT, w, grab, true, false, 40, 40);
+  g.update(FIXED_DT, w, grab, false, false, 40, 40);
+
+  check(
+    'Отчёт шага: пустое отпускание событием не считается',
+    g.lastAction === 'none' && g.lastCells === 0,
+    `отчёт ${g.lastAction}`,
+  );
+}
+
+{
+  // Квадрат стоит под АКТИВНЫМ ИСТОЧНИКОМ прицела, а не под нажатой кнопкой:
+  // отпущенная мышь целится курсором, и квадрат не уезжает к персонажу.
+  // Ровно это `main.ts` передаёт захвату — `actionTarget(aimSource === 'mouse')`.
+  const cursor = actionTarget(true, 300, 120, 40, 40, 1, 0);
+  const keys = actionTarget(false, 300, 120, 40, 40, 1, 0);
+
+  check(
+    'Мышь целит квадрат в курсор, клавиатура — в сторону персонажа',
+    cursor.x === 300 &&
+      cursor.y === 120 &&
+      keys.x === 40 + DIG.aimDistance &&
+      keys.y === 40 &&
+      DIG.aimDistance < 300,
+    `мышь ${cursor.x},${cursor.y}; клавиатура ${keys.x},${keys.y}`,
   );
 }

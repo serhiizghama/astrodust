@@ -1,6 +1,6 @@
 import { Camera, Backdrop, Renderer, RecordingSurface } from '../src/render';
 import type { Display } from '../src/core';
-import { MATERIALS, LUNA } from '../src/world';
+import { MATERIALS, MatterState, LUNA } from '../src/world';
 import { Player } from '../src/entities';
 import { WORLD_SEED, BASE_VIEW_W, BASE_VIEW_H, BACKDROP } from '../src/config';
 import { check, IDLE_HUD, luna } from './harness';
@@ -141,14 +141,17 @@ const first = luna();
     const luma = (c: number): number =>
       0.3 * ((c >> 16) & 0xff) + 0.6 * ((c >> 8) & 0xff) + 0.1 * (c & 0xff);
 
+    // Вещество толщи — статичное или сыпучее: задник виден на фоне того, что
+    // заполняет кадр сплошной заливкой, а не того, что держит персонажа.
     let darkestSolid = Infinity;
     for (const m of MATERIALS) {
-      if (m.blocksPlayer) darkestSolid = Math.min(darkestSolid, luma(m.color));
+      if (m.state !== MatterState.Solid && m.state !== MatterState.Powder) continue;
+      darkestSolid = Math.min(darkestSolid, luma(m.color));
     }
 
     const fills = spec.layers.map((l) => luma(l.fill));
     check(
-      'Все заливки задника темнее самой тёмной твёрдой породы',
+      'Все заливки задника темнее самого тёмного вещества толщи',
       fills.every((f) => f < darkestSolid),
       `слои ${fills.map((f) => f.toFixed(0)).join('/')} против ${darkestSolid.toFixed(0)}`,
     );

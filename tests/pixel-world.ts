@@ -1,12 +1,21 @@
-import { generateLuna, World, MAT, MAT_STATE, MatterState, Simulation } from '../src/world';
+import {
+  generateLuna,
+  World,
+  MAT,
+  MAT_SOLID,
+  MAT_STATE,
+  MATERIALS,
+  MatterState,
+  Simulation,
+} from '../src/world';
 import { Digger } from '../src/systems';
 import { Player } from '../src/entities';
 import { PLAYER, FIXED_DT, WORLD_SEED, DIG } from '../src/config';
 import { check, FakeInput, asInput, luna } from './harness';
 
 // --- Генерация мира ---
-// `first` — общий мир прогона: наборы ходят по нему персонажем и продавливают
-// рыхлое, поэтому экземпляр обязан быть один. `second` генерируется отдельно
+// `first` — общий мир прогона: наборы ходят по нему персонажем и копают,
+// поэтому экземпляр обязан быть один. `second` генерируется отдельно
 // и только ради сверки на детерминированность.
 const first = luna();
 const second = generateLuna(WORLD_SEED);
@@ -35,6 +44,37 @@ const { world, spawn } = first;
 check('За левым краем — твёрдо', world.isSolid(-1, 100));
 check('Ниже дна мира — твёрдо', world.isSolid(100, world.height + 5));
 check('Пустота не твёрдая', !world.isSolid(spawn.x, spawn.y));
+
+// --- Проходимость ---
+//
+// Состав блокирующих проверяется целиком, а не поимённо по одному веществу:
+// правило «стена — нетронутый массив и корпус модуля» иначе размывается новой
+// строкой таблицы, и ни одна проверка этого не заметит.
+{
+  const powders = MATERIALS.filter((m) => m.state === MatterState.Powder);
+  check(
+    'Ни одно сыпучее не держит персонажа',
+    powders.length >= 4 && powders.every((m) => MAT_SOLID[m.id] === 0),
+    powders.map((m) => `${m.name} ${MAT_SOLID[m.id]}`).join(', '),
+  );
+
+  const fluids = MATERIALS.filter(
+    (m) => m.state === MatterState.Liquid || m.state === MatterState.Gas,
+  );
+  check(
+    'Ни одна жидкость и ни один газ не держат персонажа',
+    fluids.length >= 3 && fluids.every((m) => MAT_SOLID[m.id] === 0),
+    fluids.map((m) => `${m.name} ${MAT_SOLID[m.id]}`).join(', '),
+  );
+
+  const blocking = MATERIALS.filter((m) => MAT_SOLID[m.id] === 1).map((m) => m.id);
+  const expected = [MAT.ROCK, MAT.ROCK_DEEP, MAT.REGOLITH_PACKED, MAT.ICE, MAT.MODULE_HULL];
+  check(
+    'Блокируют персонажа только массив и корпус модуля',
+    blocking.length === expected.length && expected.every((id) => blocking.includes(id)),
+    blocking.map((id) => MATERIALS[id]!.name).join(', ') || 'ни одного',
+  );
+}
 
 // --- Связность уровня ---
 {

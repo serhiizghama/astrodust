@@ -18,7 +18,7 @@ import {
   carryLine,
   COIN_KEY,
 } from '../src/render';
-import type { HudState, HudLayout, UiOp, PanelStyle, OverlayView } from '../src/render';
+import type { HudState, HudLayout, UiOp, PanelStyle, OverlayView, GrabView } from '../src/render';
 import type { Display } from '../src/core';
 import { ActionBarState, ToolMode } from '../src/core';
 import { Research, NO_UNLOCKS } from '../src/progress';
@@ -32,6 +32,8 @@ import {
   WORLD_SEED,
   HUD,
   UI,
+  GRAB,
+  GRAB_CAPACITY,
 } from '../src/config';
 import { check, luna, IDLE_HUD, IDLE_SLOTS, pick, said, saysLike, amountAt } from './harness';
 import { TECHNOLOGIES, TECH_NODES, TECH_EDGES } from '../src/progress';
@@ -298,6 +300,45 @@ const BUILD_SLOT = IDLE_SLOTS.findIndex((s) => s.action === 'build');
   }
 
   const base = shoot();
+
+  // Подпись вещества у прицела: ширина ИЗМЕРЯЕТСЯ, поэтому у правого края
+  // слово переезжает влево от перекрестия, а не уходит за кадр.
+  {
+    const NAME = 'Реголит уплотнённый';
+    const at = (screenX: number, takeable = true): GrabView => ({
+      action: 'take',
+      cells: new Int16Array(0),
+      count: 0,
+      side: GRAB.side,
+      material: null,
+      label: NAME,
+      labelTakeable: takeable,
+      used: 0,
+      capacity: GRAB_CAPACITY,
+      targetX: camera.x + screenX,
+      targetY: camera.y + 40,
+    });
+    const label = (grab: GrabView): (UiOp & { kind: 'text' }) | undefined =>
+      pick(shoot({ grab }), 'text').find((op) => op.text === NAME);
+
+    const middle = label(at(60))!;
+    const edge = label(at(BASE_VIEW_W - 2))!;
+
+    check(
+      'Подпись у прицела стоит справа от перекрестия и не уходит за кадр',
+      middle.x === 60 + UI.aimLabelGap &&
+        edge.x + edge.width <= BASE_VIEW_W &&
+        edge.x < BASE_VIEW_W - 2,
+      `в середине x=${middle.x}, у края x=${edge.x} + ${edge.width.toFixed(1)}`,
+    );
+
+    check(
+      'Тон подписи различает взятое и невзятое',
+      label(at(60))!.style.color !== label(at(60, false))!.style.color,
+    );
+
+    check('Пустое имя подписи не рисуется', label({ ...at(60), label: '' }) === undefined);
+  }
 
   // Панель обязана быть в кадре при ВЫКЛЮЧЕННОЙ диагностике: она — состояние
   // игры, а не инструмент разработчика.

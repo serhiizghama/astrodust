@@ -12,7 +12,7 @@
  * Здесь только СЪЁМКА показаний. Все утверждения — в `tests/audio-verify.ts`,
  * рядом друг с другом и в одном месте.
  */
-import { AUDIO, FIXED_DT, WORLD_SEED } from '../src/config';
+import { AUDIO, FIXED_DT, WORLD_SEED, GRAB_CAPACITY } from '../src/config';
 import {
   createBus,
   createVoices,
@@ -88,6 +88,18 @@ function powder(s: AudioSignals, moves: number, offsetX: number): void {
   s.powderX = LISTENER_X + offsetX;
   s.powderY = LISTENER_Y;
   s.powderMoves = moves;
+}
+
+/**
+ * Набор захватом с фактическим темпом: интервал тот же, что у копания, —
+ * порция через шаг. Двадцать ячеек на порцию: проводка по куче добирает
+ * кромку квадрата, а не полный квадрат каждый раз.
+ */
+function grabbing(s: AudioSignals, step: number, offsetX: number): void {
+  atListener(s);
+  s.grabX = LISTENER_X + offsetX;
+  s.grabY = LISTENER_Y;
+  s.grabTaken = step % 2 === 0 ? 20 : 0;
 }
 
 export const SCENES: Record<string, Scene> = {
@@ -183,7 +195,36 @@ export const SCENES: Record<string, Scene> = {
       s.powderMoves = 4000;
       s.powderX = LISTENER_X + 4;
       s.powderY = LISTENER_Y;
+      // Захват на пределе тоже участвует: «все дорожки одновременно» обязано
+      // означать ВСЕ, иначе проверка слабеет с каждой новой дорожкой.
+      s.grabX = LISTENER_X + 4;
+      s.grabY = LISTENER_Y;
+      s.grabTaken = step % 2 === 0 ? GRAB_CAPACITY : 0;
+      s.grabDropped = step % 30 === 0 ? GRAB_CAPACITY : 0;
     },
+  },
+
+  /** Набор захватом вплотную к персонажу: шорохи своим темпом. */
+  grabNear: {
+    seconds: 3,
+    drive: (s, step) => grabbing(s, step, 6),
+  },
+
+  /** Сброс комка: одно событие на всю сцену. */
+  grabDrop: {
+    seconds: 2,
+    drive: (s, step) => {
+      atListener(s);
+      s.grabX = LISTENER_X + 6;
+      s.grabY = LISTENER_Y;
+      s.grabDropped = step === 30 ? 120 : 0;
+    },
+  },
+
+  /** Захват за радиусом контактной слышимости: в вакууме не доносится. */
+  grabFar: {
+    seconds: 2,
+    drive: (s, step) => grabbing(s, step, AUDIO.contactRadius + 40),
   },
 
   /** Та же сцена, но слышна одна дорожка. */

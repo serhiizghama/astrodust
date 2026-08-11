@@ -27,8 +27,8 @@ const first = luna();
     MAT_SOLID[MAT.REGOLITH_PACKED] === 1 && MAT_STATE[MAT.REGOLITH_PACKED] === MatterState.Solid,
   );
   check(
-    'Рыхлый реголит сыпучий и при этом препятствие (по нему можно ходить)',
-    MAT_STATE[MAT.REGOLITH_LOOSE] === MatterState.Powder && MAT_SOLID[MAT.REGOLITH_LOOSE] === 1,
+    'Рыхлый реголит сыпучий и персонажа не держит: добытое — груз, не рельеф',
+    MAT_STATE[MAT.REGOLITH_LOOSE] === MatterState.Powder && MAT_SOLID[MAT.REGOLITH_LOOSE] === 0,
   );
   check(
     'Свежевыкопанное отличимо по цвету от грунта',
@@ -360,6 +360,58 @@ const first = luna();
       'Персонаж отошёл — материал возобновил падение',
       lowest() > heldY,
       `${heldY} → ${lowest()}`,
+    );
+  }
+
+  // Проход сквозь насыпь ничего не переставляет. Полость за персонажем НЕ едет:
+  // правило не пускает в хитбокс новое сыпучее, но вошедшего в толщу оно
+  // не выталкивает — иначе ходьба стала бы вторым инструментом. Стартовая
+  // полость при этом засыпается сама, а вещество не теряется.
+  {
+    const w = sandbox(160, 96);
+    const h = PLAYER.hitboxH;
+    const wd = PLAYER.hitboxW;
+    for (let y = 40; y < 95; y++) for (let x = 1; x < 159; x++) w.set(x, y, MAT.REGOLITH_LOOSE);
+    const top = 95 - h;
+    const at = (x: number): Rect => ({ x, y: top, w: wd, h });
+    for (let y = top; y < top + h; y++) for (let x = 20; x < 20 + wd; x++) w.set(x, y, MAT.VACUUM);
+    w.chunks.wakeAll();
+
+    const before = count(w, MAT.REGOLITH_LOOSE);
+    const sim = new Simulation();
+    // Шаг персонажа — ячейка за шаг симуляции: так проверяется именно вход
+    // в толщу, а не прыжок хитбокса через неё.
+    let px = 20;
+    for (let step = 0; step < 100; step++) {
+      if (px < 130) px++;
+      sim.update(w, at(px));
+    }
+
+    let inside = 0;
+    for (let y = top; y < top + h; y++) {
+      for (let x = px; x < px + wd; x++) if (w.get(x, y) === MAT.REGOLITH_LOOSE) inside++;
+    }
+    // Считается стартовая полость, а не вся колонка: осевшая над ней насыпь
+    // законно оставляет впадину на поверхности — это осыпание, а не след.
+    let holes = 0;
+    for (let y = top; y < 95; y++) {
+      for (let x = 20; x < 20 + wd; x++) if (w.get(x, y) === MAT.VACUUM) holes++;
+    }
+
+    check(
+      'Проход сквозь насыпь не изменил количества вещества',
+      count(w, MAT.REGOLITH_LOOSE) === before,
+      `${before} → ${count(w, MAT.REGOLITH_LOOSE)}`,
+    );
+    check(
+      'Оставленная позади полость засыпалась сама',
+      holes === 0,
+      `пустот в пройденном ${holes}`,
+    );
+    check(
+      'Полость за персонажем не едет: вошедшее в хитбокс остаётся на месте',
+      inside === wd * h,
+      `внутри хитбокса ${inside} из ${wd * h}`,
     );
   }
 
@@ -865,7 +917,7 @@ const first = luna();
   {
     check('Вода персонажа не блокирует', MAT_SOLID[MAT.WATER] === 0);
     check('Пар персонажа не блокирует', MAT_SOLID[MAT.STEAM] === 0);
-    check('Рыхлый реголит персонажа блокирует', MAT_SOLID[MAT.REGOLITH_LOOSE] === 1);
+    check('Рыхлый реголит персонажа не блокирует', MAT_SOLID[MAT.REGOLITH_LOOSE] === 0);
 
     const w = box();
     for (let y = 70; y < 94; y++) for (let x = 30; x < 50; x++) w.set(x, y, MAT.WATER);

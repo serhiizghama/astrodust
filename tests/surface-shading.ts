@@ -6,7 +6,7 @@
  * по мере появления самих эффектов.
  */
 import { check, IDLE_HUD } from './harness';
-import { MATERIALS, MAT, MAT_SOLID, MAT_EMIT, LUNA, World } from '../src/world';
+import { MATERIALS, MAT, MAT_EMIT, MatterState, LUNA, World } from '../src/world';
 import {
   MAT_SHADES,
   BAYER,
@@ -169,13 +169,18 @@ check(
 // --- Пустота остаётся пустотой ---
 
 {
-  // Самая светлая ступень пещеры против самой тёмной ступени твёрдого: если
-  // тонирование увело породу ниже пещеры, пустота перестала читаться пустотой.
+  // Самая светлая ступень пещеры против самой тёмной ступени вещества толщи:
+  // если тонирование увело вещество ниже пещеры, пустота перестала читаться
+  // пустотой.
+  //
+  // Толщу образуют статичные и сыпучие, а не те, кто держит персонажа: рыхлое
+  // персонажа не блокирует, но заполняет кадр сплошной заливкой наравне
+  // с породой. `MAT_SOLID` здесь совпадал с этим множеством случайно.
   const caveMax = Math.max(...CAVE_SHADES.map(luma));
   let solidMin = Infinity;
   let culprit = '';
   for (const m of MATERIALS) {
-    if (!MAT_SOLID[m.id]) continue;
+    if (m.state !== MatterState.Solid && m.state !== MatterState.Powder) continue;
     for (const c of MAT_SHADES[m.id]!) {
       if (luma(c) < solidMin) {
         solidMin = luma(c);
@@ -184,7 +189,7 @@ check(
     }
   }
   check(
-    'Всякая ступень пещеры темнее всякой ступени твёрдого материала',
+    'Всякая ступень пещеры темнее всякой ступени вещества толщи',
     caveMax < solidMin,
     `пещера ${caveMax.toFixed(1)} < ${culprit} ${solidMin.toFixed(1)}`,
   );

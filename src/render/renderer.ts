@@ -2,7 +2,13 @@ import { CONVEYOR, BUILD_MODULE, SIM_HZ, SHADING, UI } from '../config';
 import { Display } from '../core';
 import { Camera } from './camera';
 import { World, MAT, MAT_CARRY } from '../world';
-import { SHADE_R, SHADE_G, SHADE_B, CONVEYOR_ROLLER_COLOR } from './material-colors';
+import {
+  SHADE_R,
+  SHADE_G,
+  SHADE_B,
+  CONVEYOR_ROLLER_COLOR,
+  materialBaseColor,
+} from './material-colors';
 import { GRAIN } from './grain';
 import { BAYER, DITHER_MASK, DITHER_LEVELS, threshold } from './dither';
 import { Lightmap, LIGHT_NEUTRAL } from './lightmap';
@@ -276,6 +282,16 @@ export interface GrabView {
   readonly count: number;
   /** Сторона квадрата в ячейках: контур рисуется по ней, а не по числу ячеек. */
   readonly side: number;
+  /** Вещество комка; `null` — буфер пуст и рисовать нечего. */
+  readonly material: number | null;
+  /**
+   * Имя вещества под перекрестием; пустая строка — называть нечего (пустота).
+   * Тип комка задаёт одна ячейка, а квадрат накрывает сотню: без слова
+   * граница двух куч до нажатия неразличима.
+   */
+  readonly label: string;
+  /** Уйдёт ли названное в буфер этим нажатием: от этого тон подписи. */
+  readonly labelTakeable: boolean;
   readonly used: number;
   readonly capacity: number;
   /** Куда наведён квадрат, в координатах мира. */
@@ -412,6 +428,7 @@ export class Renderer {
 
     this.ui.begin();
     this.drawHud(hud);
+    if (hud.grab) this.drawAimLabel(camera, hud.grab);
     this.drawDebug(fps, debugMaterial);
     // Оверлей — последним из РИСУЮЩИХ: он перекрывает и мир, и интерфейс, и это
     // правильный порядок. Пока он открыт, низ кадра всё равно не описывает того,
@@ -698,11 +715,21 @@ export class Renderer {
     // выброс подсвечивает только пустые ячейки, а вода пустой не бывает.
     const tint = take ? RAMP.green[4] : RAMP.blue[4];
 
-    // Через ячейку по Байеру: сплошная заливка закрыла бы вещество под собой,
-    // а вопрос захвата ровно про то, какое вещество он берёт.
+    // Комок рисуется СВОИМ цветом и сплошным пикселем: ячейки плана выброса
+    // пусты, закрывать в них нечего. Отсюда же бесплатно берётся «здесь
+    // не помещается» — недорисованный комок и есть нехватка места.
+    const lump = !take && grab.material !== null ? materialBaseColor(grab.material) : null;
+
+    // Подсветка набора — через ячейку по Байеру: сплошная заливка закрыла бы
+    // вещество под собой, а вопрос захвата ровно про то, какое вещество он
+    // берёт.
     for (let i = 0; i < grab.count; i++) {
       const x = grab.cells[i * 2]! - camera.x;
       const y = grab.cells[i * 2 + 1]! - camera.y;
+      if (lump !== null) {
+        this.setPixel(x, y, lump);
+        continue;
+      }
       if (threshold(x, y) >= 0.5) continue;
       this.setPixel(x, y, tint);
     }
@@ -745,6 +772,33 @@ export class Renderer {
       }
       this.setPixel(x, y, k < filled ? tint : RAMP.gray[4]);
     }
+  }
+
+  /**
+   * Имя вещества под перекрестием — у самого прицела.
+   *
+   * Словом, а не цветом: имя вещества и его цвет отвечают на разные вопросы,
+   * и собственный цвет реголита на тёмной породе нечитаем. Приглушённый тон
+   * означает «этим нажатием не возьмётся» — тот же серый, которым прицел
+   * показывает недостижимость.
+   *
+   * Рисуется в слое интерфейса, а не в буфер мира: кадр 320×180, и слово
+   * пикселями заняло бы половину квадрата захвата.
+   */
+  private drawAimLabel(camera: Camera, grab: GrabView): void {
+    if (grab.label === '') return;
+
+    const style = smallText(grab.labelTakeable ? RAMP.green[4] : RAMP.gray[5], { shadow: true });
+    const x = grab.targetX - camera.x;
+    const y = grab.targetY - camera.y;
+
+    // У правого края подпись переезжает влево от перекрестия. Ширина
+    // ИЗМЕРЯЕТСЯ: системный шрифт разный на разных машинах, и константа
+    // здесь означала бы подпись, уезжающую за кадр у части игроков.
+    const width = this.ui.measure(grab.label, style);
+    const right = x + UI.aimLabelGap;
+    const at = right + width <= this.display.width ? right : x - UI.aimLabelGap - width;
+    this.ui.text(grab.label, at, y, style);
   }
 
   private drawPlayer(camera: Camera, player: Player): void {

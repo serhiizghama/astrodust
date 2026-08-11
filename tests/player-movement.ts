@@ -1,5 +1,4 @@
 import { World, MAT, Simulation } from '../src/world';
-import { Digger } from '../src/systems';
 import { Player } from '../src/entities';
 import { PLAYER, FIXED_DT } from '../src/config';
 import { check, FakeInput, asInput, luna } from './harness';
@@ -341,134 +340,157 @@ check('Стена 8 ячеек останавливает', !runIntoWall(8));
   check('Низкий тоннель: персонаж не оказался в потолке', !embedded);
 }
 
-// --- Продавливание сквозь рыхлое ---
+// --- Проходимость подвижного вещества ---
 {
-  function ground(w = 200, h = 96): World {
-    const world = new World(w, h, first.world.profile);
-    for (let x = 0; x < w; x++) for (let y = h - 10; y < h; y++) world.set(x, y, MAT.ROCK);
+  const H = 96;
+  const ROCK_TOP = H - 10;
+  function ground(w = 200): World {
+    const world = new World(w, H, first.world.profile);
+    for (let x = 0; x < w; x++) for (let y = ROCK_TOP; y < H; y++) world.set(x, y, MAT.ROCK);
     return world;
   }
-  const floorY = 96 - 10 - PLAYER.hitboxH;
+  const floorY = ROCK_TOP - PLAYER.hitboxH;
+  const occOf = (p: Player) => ({ x: p.x, y: p.y, w: PLAYER.hitboxW, h: PLAYER.hitboxH });
 
-  /** Секунды на прохождение dist ячеек вправо; Infinity — не дошёл. */
-  function walkTime(build: (w: World) => void, dist: number, limit = 6000): number {
+  // Куча не опора: сквозь неё проваливаются до породы. Куча выше роста —
+  // иначе остановка на породе была бы неотличима от стояния на её верхушке.
+  {
+    const w = ground();
+    const heapTop = ROCK_TOP - PLAYER.hitboxH - 6;
+    for (let x = 0; x < 200; x++) {
+      for (let y = heapTop; y < ROCK_TOP; y++) w.set(x, y, MAT.REGOLITH_LOOSE);
+    }
+    const p = new Player(20, heapTop - PLAYER.hitboxH - 10);
+    const input = new FakeInput();
+    const sim = new Simulation();
+    for (let i = 0; i < 600; i++) {
+      p.update(FIXED_DT, asInput(input), w);
+      sim.update(w, occOf(p));
+    }
+    check(
+      'Куча рыхлого не держит: персонаж проваливается до породы',
+      p.onGround && p.y + PLAYER.hitboxH === ROCK_TOP,
+      `низ хитбокса ${p.y + PLAYER.hitboxH}, порода с ${ROCK_TOP}`,
+    );
+  }
+
+  // Продукты переработки — то же вещество с точки зрения коллизии.
+  {
+    const stuck = [MAT.PULP, MAT.IRIDIUM, MAT.SLAG].filter((mat) => {
+      const w = ground();
+      for (let x = 0; x < 200; x++) {
+        for (let y = ROCK_TOP - 20; y < ROCK_TOP; y++) w.set(x, y, mat);
+      }
+      const p = new Player(20, ROCK_TOP - 30);
+      const input = new FakeInput();
+      const sim = new Simulation();
+      for (let i = 0; i < 600; i++) {
+        p.update(FIXED_DT, asInput(input), w);
+        sim.update(w, occOf(p));
+      }
+      return p.y + PLAYER.hitboxH !== ROCK_TOP;
+    });
+    check(
+      'Пульпа, иридий и шлак проходимы наравне с реголитом',
+      stuck.length === 0,
+      stuck.map((id) => `${id}`).join(', ') || 'все три проходимы',
+    );
+  }
+
+  /** Пройденный вправо путь за steps шагов; мир строит build. */
+  function walked(build: (w: World) => void, steps = 400): { dist: number; world: World } {
     const w = ground();
     build(w);
     const p = new Player(20, floorY);
     const input = new FakeInput();
     input.right = true;
-    const sim = new Simulation();
-    for (let i = 0; i < limit; i++) {
-      p.update(FIXED_DT, asInput(input), w);
-      sim.update(w, { x: p.x, y: p.y, w: PLAYER.hitboxW, h: PLAYER.hitboxH });
-      if (p.x >= 20 + dist) return i * FIXED_DT;
-    }
-    return Infinity;
+    for (let i = 0; i < steps; i++) p.update(FIXED_DT, asInput(input), w);
+    return { dist: p.x - 20, world: w };
   }
 
-  // Коридор ровно в рост персонажа: без потолка куча реголита осыпается
-  // в пологий склон, и персонаж просто взбегает по нему автоподъёмом,
-  // ни разу ничего не продавив.
-  function corridor(w: World, fill: number | null): void {
-    for (let x = 30; x < 110; x++) w.set(x, floorY - 1, MAT.ROCK);
-    if (fill === null) return;
-    for (let x = 40; x < 100; x++) {
-      for (let y = floorY; y < floorY + PLAYER.hitboxH; y++) w.set(x, y, fill);
-    }
-  }
-  const clear = walkTime((w) => corridor(w, null), 60);
-  const through = walkTime((w) => corridor(w, MAT.REGOLITH_LOOSE), 60);
-  check('Продавливание доводит сквозь завал', Number.isFinite(through), `${through.toFixed(2)} с`);
-  check(
-    'Продавливание заметно медленнее ходьбы по твёрдому',
-    through > clear * 2,
-    `по полу ${clear.toFixed(2)} с, сквозь реголит ${through.toFixed(2)} с`,
-  );
+  // Ход внутри толщи реголита ничем не отличается от хода по пустому коридору,
+  // и сама толща при этом остаётся нетронутой: двигать вещество умеет только
+  // инструмент. Симуляция здесь не крутится намеренно — иначе осыпание кучи
+  // было бы не отличить от следа, оставленного персонажем.
+  {
+    const fill = (w: World): void => {
+      for (let x = 30; x < 190; x++) {
+        for (let y = ROCK_TOP - 30; y < ROCK_TOP; y++) w.set(x, y, MAT.REGOLITH_LOOSE);
+      }
+    };
+    const clear = walked(() => {});
+    const buried = ground();
+    fill(buried);
+    const before = buried.cells.slice();
+    const through = walked(fill);
+    let moved = 0;
+    for (let i = 0; i < before.length; i++) if (before[i] !== through.world.cells[i]) moved++;
+    let regolith = 0;
+    let regolithAfter = 0;
+    for (const c of before) if (c === MAT.REGOLITH_LOOSE) regolith++;
+    for (const c of through.world.cells) if (c === MAT.REGOLITH_LOOSE) regolithAfter++;
 
-  // Порода не продавливается: её убирают копанием, а не напором.
+    check(
+      'Внутри реголита ход такой же свободный, как по пустому коридору',
+      through.dist > 100 && through.dist === clear.dist,
+      `сквозь реголит ${through.dist}, по пустому ${clear.dist}`,
+    );
+    check(
+      'Ходьба сквозь толщу не сдвинула ни одной ячейки',
+      moved === 0 && regolith === regolithAfter,
+      `изменено ячеек ${moved}, реголита ${regolith} → ${regolithAfter}`,
+    );
+  }
+
+  // Массив не раздвигается: стену убирают копанием, а не напором.
   {
     const w = ground();
-    for (let x = 60; x < 70; x++) for (let y = 0; y < 96; y++) w.set(x, y, MAT.ROCK);
+    for (let x = 60; x < 70; x++) for (let y = 0; y < H; y++) w.set(x, y, MAT.ROCK);
     const p = new Player(20, floorY);
     const input = new FakeInput();
     input.right = true;
     input.jumpIsHeld = true;
     for (let i = 0; i < 3000; i++) p.update(FIXED_DT, asInput(input), w);
-    check('Порода не продавливается', p.x + PLAYER.hitboxW <= 60, `остановился на x=${p.x}`);
+    check('Массив не раздвигается', p.x + PLAYER.hitboxW <= 60, `остановился на x=${p.x}`);
   }
 
-  // Персонаж не тонет в куче, на которой стоит: продавливание вниз запрещено.
+  // Полное засыпание: выход мгновенный, ожидания нет вовсе.
   {
     const w = ground();
-    for (let x = 0; x < 200; x++)
-      for (let y = floorY + PLAYER.hitboxH; y < 86; y++) {
-        w.set(x, y, MAT.REGOLITH_LOOSE);
-      }
-    const p = new Player(20, floorY);
-    const input = new FakeInput();
+    for (let x = 0; x < 200; x++) {
+      for (let y = ROCK_TOP - 40; y < ROCK_TOP; y++) w.set(x, y, MAT.REGOLITH_LOOSE);
+    }
+    const p = new Player(100, ROCK_TOP - 25);
     const sim = new Simulation();
-    const startY = p.y;
-    for (let i = 0; i < 2000; i++) {
-      p.update(FIXED_DT, asInput(input), w);
-      sim.update(w, { x: p.x, y: p.y, w: PLAYER.hitboxW, h: PLAYER.hitboxH });
-    }
-    check('Персонаж не тонет в куче, на которой стоит', p.y <= startY, `y ${startY} → ${p.y}`);
-  }
-
-  // Полное засыпание: выход есть, и вещество при этом сохраняется.
-  {
-    const w = new World(64, 96, first.world.profile);
-    for (let i = 0; i < w.cells.length; i++) w.cells[i] = MAT.ROCK;
-    for (let y = 20; y < 80; y++) for (let x = 24; x < 32; x++) w.setRaw(x, y, MAT.VACUUM);
-    const p = new Player(25, 69);
-    const sim = new Simulation();
-    // Персонаж прокапывает потолок шахты у себя над головой — штатное действие.
-    for (let pass = 0; pass < 14; pass++) {
-      for (let cx = 24; cx < 32; cx += 3) Digger.applyBrush(w, cx, 22 + pass);
-    }
-    w.chunks.wakeAll();
-    const idle = new FakeInput();
-    const occ = () => ({ x: p.x, y: p.y, w: PLAYER.hitboxW, h: PLAYER.hitboxH });
-    for (let i = 0; i < 600; i++) {
-      p.update(FIXED_DT, asInput(idle), w);
-      sim.update(w, occ());
-    }
     const dirs: [number, number][] = [
       [1, 0],
       [-1, 0],
       [0, -1],
       [0, 1],
     ];
-    const stuck = dirs.filter(
+    const free = dirs.filter(
       ([dx, dy]) => !w.rectHitsSolid(p.x + dx, p.y + dy, PLAYER.hitboxW, PLAYER.hitboxH),
     ).length;
+    check('Обложенный реголитом свободен во все четыре стороны', free === 4, `свободно ${free}/4`);
+
     let regolith = 0;
     for (const c of w.cells) if (c === MAT.REGOLITH_LOOSE) regolith++;
-
-    const dig = new FakeInput();
-    dig.right = true;
-    dig.jumpIsHeld = true;
-    const startY = p.y;
-    let escaped = 0;
-    for (; escaped < 3600; escaped++) {
-      p.update(FIXED_DT, asInput(dig), w);
-      sim.update(w, occ());
-      const free = dirs.filter(
-        ([dx, dy]) => !w.rectHitsSolid(p.x + dx, p.y + dy, PLAYER.hitboxW, PLAYER.hitboxH),
-      ).length;
-      if (free >= 2 && p.y < startY - 4) break;
+    const startX = p.x;
+    const input = new FakeInput();
+    input.right = true;
+    for (let i = 0; i < 30; i++) {
+      p.update(FIXED_DT, asInput(input), w);
+      sim.update(w, occOf(p));
     }
     let regolithAfter = 0;
     for (const c of w.cells) if (c === MAT.REGOLITH_LOOSE) regolithAfter++;
-
-    check('Засыпание действительно запирает без продавливания', stuck === 0, `свободно ${stuck}/4`);
     check(
-      'Засыпанный персонаж выбирается за конечное время',
-      escaped < 3600,
-      `${(escaped * FIXED_DT).toFixed(2)} с`,
+      'Засыпанный персонаж уходит в сторону сразу, без ожидания',
+      p.x > startX + 4,
+      `x ${startX} → ${p.x} за ${(30 * FIXED_DT).toFixed(2)} с`,
     );
     check(
-      'Продавливание не уничтожает вещество',
+      'Выход из завала не уничтожает вещество',
       regolith === regolithAfter,
       `${regolith} → ${regolithAfter}`,
     );

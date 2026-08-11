@@ -24,6 +24,19 @@ export interface AudioSignals {
   /** Центр масс движения. Значим только при `powderMoves > 0`. */
   powderX: number;
   powderY: number;
+
+  /** Ячеек ушло в буфер захвата за шаг. */
+  grabTaken: number;
+  /** Ячеек выброшено из буфера захвата за шаг. */
+  grabDropped: number;
+  /**
+   * Где это случилось. Пара ОДНА на оба счётчика: набор и выброс не бывают
+   * на одном шаге — `Grabber.update` выбирает одну ветку, — и вторая пара
+   * описывала бы состояние, которого не существует.
+   * Держит `tests/procedural-audio.ts`.
+   */
+  grabX: number;
+  grabY: number;
 }
 
 export function createSignals(): AudioSignals {
@@ -36,6 +49,10 @@ export function createSignals(): AudioSignals {
     powderMoves: 0,
     powderX: 0,
     powderY: 0,
+    grabTaken: 0,
+    grabDropped: 0,
+    grabX: 0,
+    grabY: 0,
   };
 }
 
@@ -48,4 +65,6 @@ export function createSignals(): AudioSignals {
 export function resetSignals(s: AudioSignals): void {
   s.digConverted = 0;
   s.powderMoves = 0;
+  s.grabTaken = 0;
+  s.grabDropped = 0;
 }

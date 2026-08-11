@@ -4,4 +4,4 @@
  * Слой над всеми подсистемами. Знает про них всё, они про него — ничего.
  */
 export { Game } from './game';
-export type { GameState, StepIntent, DigReport } from './game';
+export type { GameState, StepIntent, DigReport, GrabReport } from './game';

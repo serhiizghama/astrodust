@@ -106,6 +106,16 @@ for (const m of MATERIALS) {
 }
 
 /**
+ * Базовый цвет вещества — тот, которым его опознают. Нужен там, где вещество
+ * рисуют ВНЕ мира: комок в руках захвата не лежит в ячейке, и ни зерна,
+ * ни света у него нет.
+ */
+export function materialBaseColor(material: number): number {
+  const at = (material << SHADING.shadeBits) | SHADING.baseShade;
+  return (SHADE_R[at]! << 16) | (SHADE_G[at]! << 8) | SHADE_B[at]!;
+}
+
+/**
  * Цвет бегущих роликов конвейера. Не поле таблицы: в мире роликов нет — ячейка
  * хранит идентификатор ленты, ролики рисует рендер.
  *

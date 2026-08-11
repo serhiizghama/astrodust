@@ -918,7 +918,7 @@ const { world } = first;
     const input = new FakeInput();
     input.right = right;
     for (let i = 0; i < 30; i++) {
-      g.advanceWorld(FIXED_DT, { input: asInput(input), faceX, dig: null });
+      g.advanceWorld(FIXED_DT, { input: asInput(input), faceX, dig: null, grab: null });
     }
     return p.facing;
   };
@@ -967,6 +967,7 @@ const { world } = first;
         input: asInput(input),
         faceX: 0,
         dig: null,
+        grab: null,
       });
       if (w.rectHitsSolid(p.x, p.y, PLAYER.hitboxW, PLAYER.hitboxH)) buried++;
     }
@@ -999,7 +1000,7 @@ const { world } = first;
     // и только на этом шаге.
     w.set(zone.x + 2, zone.y - 1, MAT.PULP);
     const before = mod.credits;
-    g.advanceWorld(FIXED_DT, { input: NO_INPUT, faceX: 0, dig: null });
+    g.advanceWorld(FIXED_DT, { input: NO_INPUT, faceX: 0, dig: null, grab: null });
     check(
       'Порядок шага: скатившаяся в зону ячейка засчитывается на том же шаге',
       mod.credits > before,
@@ -1031,8 +1032,8 @@ const { world } = first;
       // Пульпа на две ячейки выше приёмной грани: на грань её кладёт автомат.
       w.set(bx + (SEPARATOR.width >> 1), by - 2, MAT.PULP);
       const stored = machine.stored;
-      g.advanceWorld(FIXED_DT, { input: NO_INPUT, faceX: 0, dig: null });
-      g.advanceWorld(FIXED_DT, { input: NO_INPUT, faceX: 0, dig: null });
+      g.advanceWorld(FIXED_DT, { input: NO_INPUT, faceX: 0, dig: null, grab: null });
+      g.advanceWorld(FIXED_DT, { input: NO_INPUT, faceX: 0, dig: null, grab: null });
       check(
         'Порядок шага: машина принимает сырьё на шаге его прибытия на грань',
         machine.stored > stored,
@@ -1074,6 +1075,7 @@ const { world } = first;
       input: NO_INPUT,
       faceX: 0,
       dig: { converted: 7, x: 11, y: 13 },
+      grab: null,
     });
     check(
       'Порядок шага: отчёт для звука описывает этот шаг, а не предыдущий',
@@ -1102,7 +1104,7 @@ const { world } = first;
     const mod = new LandingModule({ x: 2, y: 2, w: 3, h: 3 });
     const g = new Game(w, p, new Camera(w.width, w.height), mod);
     for (let i = 0; i < 240; i++) {
-      g.advanceWorld(FIXED_DT, { input: NO_INPUT, faceX: 0, dig });
+      g.advanceWorld(FIXED_DT, { input: NO_INPUT, faceX: 0, dig, grab: null });
     }
     let sum = 0;
     for (let i = 0; i < w.cells.length; i++) sum += w.cells[i]! * ((i % 97) + 1);

@@ -13,6 +13,7 @@ import type { AudioSignals } from './signals';
 import type { Voice } from './voice';
 import { DigVoice } from './voices/dig';
 import { DustVoice } from './voices/dust';
+import { GrabVoice } from './voices/grab';
 
 /**
  * Реестр дорожек. Новая дорожка — новый файл и одна строка здесь.
@@ -21,7 +22,7 @@ import { DustVoice } from './voices/dust';
  * а дорожки держат состояние — общий экземпляр они делить не могут.
  */
 export function createVoices(): Voice[] {
-  return [new DigVoice(), new DustVoice()];
+  return [new DigVoice(), new DustVoice(), new GrabVoice()];
 }
 
 export class Soundscape {

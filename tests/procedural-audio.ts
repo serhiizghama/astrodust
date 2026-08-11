@@ -22,6 +22,7 @@ import {
   mergeStrike,
 } from '../src/audio';
 import { createDustState, createDustParams, dustParams, dustIntensity } from '../src/audio';
+import { createGrabState, createGrabParams, grabParams, mergeRustle } from '../src/audio';
 import { check, luna } from './harness';
 
 const first = luna();
@@ -260,6 +261,181 @@ const { world } = first;
     check(
       'Копание: за радиусом слышимости молчит и помол, и акцент',
       loudest === 0 && strikeGain === 0,
+    );
+  }
+
+  // --- Дорожка захвата ---
+
+  /** Снапшот с персонажем и местом захвата в одной точке: слышимость единица. */
+  function grabSignals(taken: number, dropped = 0) {
+    const sig = createSignals();
+    sig.listenerX = 100;
+    sig.listenerY = 100;
+    sig.grabX = 100;
+    sig.grabY = 100;
+    sig.grabTaken = taken;
+    sig.grabDropped = dropped;
+    return sig;
+  }
+
+  // Потолок темпа шорохов: набор идёт 33 раза в секунду, слух разбирает
+  // события примерно до 20 Гц.
+  {
+    const state = createGrabState();
+    const out = createGrabParams();
+    const portions = 33;
+    const sig = grabSignals(0);
+    let rustles = 0;
+    for (let i = 0; i < 60; i++) {
+      const due = Math.floor((i * portions) / 60) > Math.floor(((i - 1) * portions) / 60);
+      sig.grabTaken = due ? 20 : 0;
+      grabParams(sig, state, FIXED_DT, out);
+      if (out.rustle) rustles++;
+    }
+    check(
+      'Захват: при 33 порциях набора в секунду шорохов не больше потолка',
+      rustles <= AUDIO.grab.rateHz,
+      `шорохов ${rustles} ≤ ${AUDIO.grab.rateHz}`,
+    );
+    check(
+      'Захват: шорохи при этом звучат, а не пропадают',
+      rustles >= AUDIO.grab.rateHz - 2,
+      `шорохов ${rustles}`,
+    );
+  }
+
+  // Удержание без набора молчит: над породой мир не меняется.
+  {
+    const state = createGrabState();
+    const out = createGrabParams();
+    const sig = grabSignals(0);
+    let rustles = 0;
+    let loudest = 0;
+    for (let i = 0; i < 300; i++) {
+      grabParams(sig, state, FIXED_DT, out);
+      if (out.rustle) rustles++;
+      loudest = Math.max(loudest, out.rustleGain, out.dropGain);
+    }
+    check(
+      'Захват: удержание без набора не звучит',
+      rustles === 0 && loudest === 0,
+      `шорохов ${rustles}, громкость ${loudest}`,
+    );
+  }
+
+  // Громкость шороха следует размеру порции.
+  {
+    const loud = (taken: number): number => {
+      const state = createGrabState();
+      const out = createGrabParams();
+      const sig = grabSignals(taken);
+      for (let i = 0; i < 30; i++) {
+        grabParams(sig, state, FIXED_DT, out);
+        sig.grabTaken = 0;
+        if (out.rustle) return out.rustleGain;
+      }
+      return 0;
+    };
+    const big = loud(169);
+    const small = loud(3);
+    check(
+      'Захват: полная порция звучит громче трёх ячеек',
+      big > small && small > 0,
+      `${big.toFixed(3)} > ${small.toFixed(3)}`,
+    );
+  }
+
+  // Сброс: один на событие и тише набора.
+  {
+    const state = createGrabState();
+    const out = createGrabParams();
+    const sig = grabSignals(0, 40);
+    grabParams(sig, state, FIXED_DT, out);
+    const dropGain = out.dropGain;
+    const fired = out.drop;
+
+    sig.grabDropped = 0;
+    let more = 0;
+    for (let i = 0; i < 60; i++) {
+      grabParams(sig, state, FIXED_DT, out);
+      if (out.drop) more++;
+    }
+
+    check('Захват: сброс звучит один раз на событие', fired && more === 0, `повторов ${more}`);
+    check(
+      'Захват: сброс тише шороха набора',
+      AUDIO.grab.dropGain < AUDIO.grab.gain && dropGain > 0,
+      `${AUDIO.grab.dropGain} < ${AUDIO.grab.gain}`,
+    );
+  }
+
+  // Отпускание, не положившее ни ячейки, событием не является: сигнал пуст,
+  // и дорожке нечего играть.
+  {
+    const state = createGrabState();
+    const out = createGrabParams();
+    grabParams(grabSignals(0, 0), state, FIXED_DT, out);
+    check('Захват: пустое отпускание не звучит', !out.drop && out.dropGain === 0);
+  }
+
+  // За радиусом слышимости молчат оба события.
+  {
+    const state = createGrabState();
+    const out = createGrabParams();
+    const sig = grabSignals(96, 0);
+    sig.grabX = 100 + AUDIO.contactRadius + 10;
+    let rustleGain = 0;
+    for (let i = 0; i < 120; i++) {
+      grabParams(sig, state, FIXED_DT, out);
+      if (out.rustle) rustleGain = Math.max(rustleGain, out.rustleGain);
+    }
+    sig.grabTaken = 0;
+    sig.grabDropped = 40;
+    grabParams(sig, state, FIXED_DT, out);
+    check(
+      'Захват: за радиусом слышимости молчат и шорох, и сброс',
+      rustleGain === 0 && out.dropGain === 0,
+    );
+  }
+
+  // Порция без слота не теряется: её ячейки возвращаются в окно и делают
+  // следующий шорох громче.
+  {
+    const state = createGrabState();
+    const out = createGrabParams();
+    const sig = grabSignals(48);
+    let first = 0;
+    for (let i = 0; i < 30; i++) {
+      grabParams(sig, state, FIXED_DT, out);
+      sig.grabTaken = 0;
+      if (out.rustle) {
+        first = out.rustleGain;
+        mergeRustle(state, out);
+        break;
+      }
+    }
+    let next = 0;
+    for (let i = 0; i < 30; i++) {
+      grabParams(sig, state, FIXED_DT, out);
+      if (out.rustle) {
+        next = out.rustleGain;
+        break;
+      }
+    }
+    check(
+      'Захват: порция без слота вливается в следующий шорох',
+      next > 0 && Math.abs(next - first) < 1e-9,
+      `было ${first.toFixed(3)}, стало ${next.toFixed(3)}`,
+    );
+  }
+
+  // Полосы: с пылью захват звучит одновременно чаще всего — выброшенный комок
+  // осыпается в ту же секунду.
+  {
+    check(
+      'Полосы: захват лежит ниже дорожки пыли',
+      Math.max(AUDIO.grab.hzHigh, AUDIO.grab.dropHz) < AUDIO.dust.hzQuiet,
+      `${Math.max(AUDIO.grab.hzHigh, AUDIO.grab.dropHz)} < ${AUDIO.dust.hzQuiet}`,
     );
   }
 

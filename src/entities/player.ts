@@ -1,5 +1,5 @@
 import { PLAYER } from '../config';
-import { World, MatterState, MAT_STATE, MAT_SOLID } from '../world';
+import { World } from '../world';
 /**
  * Что из снапшота читает персонаж.
  *
@@ -49,8 +49,6 @@ export class Player {
   private jumpBufferTimer = 0;
   /** Идёт ли подъём, который ещё можно обрезать отпусканием клавиши. */
   private jumping = false;
-  /** Оставшееся время до следующей продавленной ячейки. */
-  private pushTimer = 0;
 
   /**
    * Профиль параметров: отсюда читается предел скорости подъёма. Персонаж
@@ -87,7 +85,6 @@ export class Player {
 
     this.moveX(this.vx * dt, world);
     this.moveY(this.vy * dt, world);
-    this.pushThroughLoose(dt, input, world);
 
     this.onGround = this.hasGroundBelow(world);
     if (this.onGround && this.vy >= 0) this.jumping = false;
@@ -266,78 +263,6 @@ export class Player {
       this.y += dir;
       steps--;
     }
-  }
-
-  /**
-   * Продавливание сквозь рыхлое — единственный выход из завала. Без него
-   * засыпать себя это необратимый софтлок: карман вокруг хитбокса держится,
-   * но снаружи обкладывает реголит, а кисть копания рыхлое пропускает
-   * по построению (замер: 0 свободных направлений из 4 после сорока применений).
-   *
-   * Отдельно от `moveX`/`moveY`: там шаг случается по субпиксельному остатку,
-   * и темп продавливания зависел бы от разгона, а не от своего интервала.
-   *
-   * Вниз не продавливаемся никогда — иначе персонаж тонет в куче, на которой
-   * стоит.
-   */
-  private pushThroughLoose(dt: number, input: PlayerInput, world: World): void {
-    this.pushTimer = Math.max(0, this.pushTimer - dt);
-    if (this.pushTimer > 0) return;
-
-    const axis = input.moveAxis;
-    if (axis !== 0 && this.hitsWorld(world, this.x + axis, this.y)) {
-      if (this.push(world, axis, 0)) return;
-    }
-    if (input.jumpHeld && this.hitsWorld(world, this.x, this.y - 1)) {
-      this.push(world, 0, -1);
-    }
-  }
-
-  /**
-   * Обмен содержимого покидаемой и занимаемой полос. Полосы одного размера
-   * по построению, поэтому обмен сохраняет количество ячеек каждого материала
-   * без проверок. Удаление вместо обмена — это копание без инструмента.
-   */
-  private push(world: World, dx: number, dy: number): boolean {
-    const w = PLAYER.hitboxW;
-    const h = PLAYER.hitboxH;
-    const count = dx !== 0 ? h : w;
-
-    // Занимаемая грань, куда персонаж шагнёт, и покидаемая, которая
-    // освободится. Для шага вверх грани горизонтальные.
-    const intoX = dx > 0 ? this.x + w : this.x - 1;
-    const fromX = dx > 0 ? this.x : this.x + w - 1;
-    const intoY = this.y - 1;
-    const fromY = this.y + h - 1;
-
-    for (let i = 0; i < count; i++) {
-      const ix = dx !== 0 ? intoX : this.x + i;
-      const iy = dx !== 0 ? this.y + i : intoY;
-      const fx = dx !== 0 ? fromX : this.x + i;
-      const fy = dx !== 0 ? this.y + i : fromY;
-
-      // Статичное не раздвигается: порода остаётся стеной, её убирают копанием.
-      if (MAT_STATE[world.get(ix, iy)] === MatterState.Solid) return false;
-      // Освобождаемое встанет внутрь нового хитбокса — оно обязано быть
-      // проходимым, иначе персонаж окажется внутри твёрдых ячеек.
-      if (MAT_SOLID[world.get(fx, fy)] === 1) return false;
-    }
-
-    for (let i = 0; i < count; i++) {
-      const ix = dx !== 0 ? intoX : this.x + i;
-      const iy = dx !== 0 ? this.y + i : intoY;
-      const fx = dx !== 0 ? fromX : this.x + i;
-      const fy = dx !== 0 ? this.y + i : fromY;
-
-      const pushed = world.get(ix, iy);
-      world.set(ix, iy, world.get(fx, fy));
-      world.set(fx, fy, pushed);
-    }
-
-    this.x += dx;
-    this.y += dy;
-    this.pushTimer = PLAYER.pushInterval;
-    return true;
   }
 
   /** Гасит вертикальную скорость, если ячейка в направлении движения занята. */

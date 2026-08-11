@@ -146,6 +146,11 @@ const first = luna();
     // на радиус кисти. Обе границы имеют смысл: за один проход ход в рост
     // не получается (7 ячеек выемки против роста 10) — иначе порода резалась
     // бы как масло; больше пяти — работа превращается в повинность.
+    //
+    // Ход меряется ПУСТОТОЙ, а не коллизией: рыхлое персонажа не держит,
+    // и по коллизии ход был бы «готов» уже после первого прохода, забитый
+    // собственной выработкой доверху. Отсюда же выведена доля выработки
+    // (`base.yieldRate` в `world/materials.ts`).
     const w = solidRock(120, 96);
     const sim = new Simulation();
     let passes = 0;
@@ -155,7 +160,13 @@ const first = luna();
       let fits = false;
       for (let x = 30; x < 90 - PLAYER.hitboxW && !fits; x++) {
         for (let y = 20; y < 80 && !fits; y++) {
-          if (!w.rectHitsSolid(x, y, PLAYER.hitboxW, PLAYER.hitboxH)) fits = true;
+          let clean = true;
+          for (let dy = 0; dy < PLAYER.hitboxH && clean; dy++) {
+            for (let dx = 0; dx < PLAYER.hitboxW; dx++) {
+              if (w.get(x + dx, y + dy) !== MAT.VACUUM) clean = false;
+            }
+          }
+          if (clean) fits = true;
         }
       }
       if (fits) {

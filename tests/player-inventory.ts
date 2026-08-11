@@ -553,7 +553,7 @@ const { spawn } = first;
       const inv = new Inventory();
       const buf = new Grab();
       Vacuum.collect(vw, inv, 40, 40);
-      new Grabber().update(FIXED_DT, gw, buf, true, true, 40, 40, 40, 40);
+      new Grabber().update(FIXED_DT, gw, buf, true, false, 40, 40);
       if (inv.used > 0 !== buf.used > 0) mismatch += `${m.name} `;
     }
     check('Сбор и захват берут одни и те же вещества', mismatch === '', mismatch);
@@ -574,7 +574,7 @@ const { spawn } = first;
     new Vacuum().updateDump(FIXED_DT, w, inv, true, 40, 40, 40, 40);
     check(
       'Высыпание из инвентаря не трогает буфер захвата',
-      count(w, inv.selected) > 0 && count(w, MAT.IRIDIUM) === 0 && buf.count(MAT.IRIDIUM) === 20,
+      count(w, inv.selected) > 0 && count(w, MAT.IRIDIUM) === 0 && buf.countOf(MAT.IRIDIUM) === 20,
       `в мире ${count(w, inv.selected)}, в захвате ${buf.used}`,
     );
 
@@ -583,7 +583,10 @@ const { spawn } = first;
     const buf2 = new Grab();
     inv2.add(MAT.PULP, 20);
     buf2.add(MAT.IRIDIUM, 20);
-    new Grabber().update(FIXED_DT, w2, buf2, true, true, 40, 40, 40, 40);
+    // Выброс идёт по ОТПУСКАНИЮ, поэтому жест здесь целиком: зажали и отпустили.
+    const grabber = new Grabber();
+    grabber.update(FIXED_DT, w2, buf2, true, false, 40, 40);
+    grabber.update(FIXED_DT, w2, buf2, false, false, 40, 40);
     check(
       'Выброс из захвата не трогает инвентарь',
       count(w2, MAT.IRIDIUM) === 20 && inv2.count(MAT.PULP) === 20 && buf2.used === 0,

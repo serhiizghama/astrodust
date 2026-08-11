@@ -16,6 +16,19 @@ export interface DigReport {
 }
 
 /**
+ * Что захват сделал за шаг. `null` — мир не менялся.
+ *
+ * Набор и выброс — разные поля одного отчёта, а не одно число: звучат они
+ * по-разному, а случиться на одном шаге не могут.
+ */
+export interface GrabReport {
+  readonly taken: number;
+  readonly dropped: number;
+  readonly x: number;
+  readonly y: number;
+}
+
+/**
  * Намерение игрока на шаг: всё, что состояние игры отдаёт миру.
  *
  * Состояния различаются ТОЛЬКО этим. Мир после них идёт одинаково — в том
@@ -29,6 +42,7 @@ export interface StepIntent {
    */
   readonly faceX: -1 | 0 | 1;
   readonly dig: DigReport | null;
+  readonly grab: GrabReport | null;
 }
 
 /**
@@ -86,7 +100,7 @@ export class Game {
     this.buildings.update(this.world, dt);
     this.landingModule.update(this.world);
     this.camera.follow(this.player.centerX, this.player.centerY);
-    this.collectSignals(intent.dig);
+    this.collectSignals(intent.dig, intent.grab);
   }
 
   /**
@@ -96,7 +110,7 @@ export class Game {
    * от него на сглаживание и мёртвую зону, и звуковая картина уползала бы
    * вбок при ходьбе.
    */
-  private collectSignals(dig: DigReport | null): void {
+  private collectSignals(dig: DigReport | null, grab: GrabReport | null): void {
     const s = this.signals;
     resetSignals(s);
     s.listenerX = this.player.centerX;
@@ -105,6 +119,12 @@ export class Game {
       s.digConverted = dig.converted;
       s.digX = dig.x;
       s.digY = dig.y;
+    }
+    if (grab !== null) {
+      s.grabTaken = grab.taken;
+      s.grabDropped = grab.dropped;
+      s.grabX = grab.x;
+      s.grabY = grab.y;
     }
     const moves = this.simulation.lastPowderMoves;
     s.powderMoves = moves;

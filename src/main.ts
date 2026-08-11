@@ -52,10 +52,10 @@ import {
 } from './entities';
 import type { BuildingKind } from './entities';
 import { generateLuna, MATERIALS, PORTABLE_MATERIALS } from './world';
-import { Digger, Vacuum, Grabber, Builder, BuildRun, DebugPainter } from './systems';
+import { Digger, Vacuum, Grabber, Builder, BuildRun, DebugPainter, aimLabel } from './systems';
 import type { BuildPreview } from './systems';
 import { Game } from './app';
-import type { GameState, StepIntent } from './app';
+import type { GameState, StepIntent, GrabReport } from './app';
 import { Soundscape } from './audio';
 
 const canvas = document.getElementById('game');
@@ -152,11 +152,15 @@ let simTime = 0;
  */
 function grabPlanView(targetX: number, targetY: number): GrabView {
   const plan = grabber.lastPlan;
+  const label = aimLabel(world, grab, targetX, targetY);
   return {
     action: plan.action,
     cells: plan.cells,
     count: plan.count,
     side: GRAB.side,
+    material: grab.material,
+    label: label.name,
+    labelTakeable: label.takeable,
     used: grab.used,
     capacity: grab.capacity,
     targetX,
@@ -250,6 +254,19 @@ const playState: GameState = {
       dir.y,
     );
 
+    // Захват целится ИНАЧЕ: от активного источника прицела, а не от нажатой
+    // кнопки. Он единственный рисует квадрат до применения, и квадрат обязан
+    // стоять там, куда игрок целится, а не переезжать под курсор на нажатии.
+    const grabAim = actionTarget(
+      input.aimSource === 'mouse',
+      cursorX,
+      cursorY,
+      player.centerX,
+      player.centerY,
+      dir.x,
+      dir.y,
+    );
+
     // Отладочная установка вещества: доступна только при включённой диагностике
     // и подчиняется той же дальности, что и копание.
     painter.update(
@@ -290,21 +307,30 @@ const playState: GameState = {
     // Захват считает план ВСЕГДА, пока выбран его режим, а не только при
     // нажатии: тот же план кормит подсветку, и она обязана показывать решение
     // до того, как игрок нажмёт.
+    let grabReport: GrabReport | null = null;
     if (tool.grabbing) {
       grabber.update(
         dt,
         world,
         grab,
-        input.toolPressed,
         input.toolHeld,
-        player.centerX,
-        player.centerY,
-        aim.x,
-        aim.y,
+        input.aimSource === 'mouse' && input.overUi,
+        grabAim.x,
+        grabAim.y,
         game.occupant,
       );
-      grabView = grabPlanView(aim.x, aim.y);
+      grabView = grabPlanView(grabAim.x, grabAim.y);
+      const did = grabber.lastAction;
+      if (did !== 'none') {
+        grabReport = {
+          taken: did === 'take' ? grabber.lastCells : 0,
+          dropped: did === 'drop' ? grabber.lastCells : 0,
+          x: grabAim.x,
+          y: grabAim.y,
+        };
+      }
     } else {
+      grabber.cancel();
       grabView = null;
     }
 
@@ -336,6 +362,7 @@ const playState: GameState = {
       input,
       faceX,
       dig: { converted, x: aim.x, y: aim.y },
+      grab: grabReport,
     };
   },
 };
@@ -547,7 +574,7 @@ const overlayState: GameState = {
     input.overUi = false;
     // Персонаж получает пустой ввод, но физику проходит: он не зависает
     // в воздухе на время чтения дерева.
-    return { input: NO_INPUT, faceX: 0, dig: null };
+    return { input: NO_INPUT, faceX: 0, dig: null, grab: null };
   },
 };
 
@@ -699,10 +726,8 @@ function hudState(): HudState {
     capacity: inventory.capacity,
     selected: inventory.selectedName,
     hasVacuum: research.has(CONTENT.VACUUM),
-    grabHeld: PORTABLE_MATERIALS.filter((id) => grab.count(id) > 0).map((id) => ({
-      name: MATERIALS[id]!.name,
-      count: grab.count(id),
-    })),
+    grabHeld:
+      grab.material === null ? [] : [{ name: MATERIALS[grab.material]!.name, count: grab.used }],
     grabUsed: grab.used,
     grabCapacity: grab.capacity,
     credits: landingModule.credits,

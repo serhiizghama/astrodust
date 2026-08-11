@@ -271,6 +271,39 @@ async function render(scene: string): Promise<Measures> {
   );
 }
 
+// --- Захват ---
+{
+  const m = await render('grabNear');
+  const c = centroid(m);
+  // Юбка полосового фильтра шире самой полосы, поэтому центр тяжести
+  // сравнивается с запасом — так же, как у копания и пыли.
+  const skirt = 1.3;
+  check('Захват: набор звучит', m.peak > SILENT, `пик ${m.peak.toFixed(4)}`);
+  check(
+    'Захват: центр тяжести спектра в своей полосе, ниже пыли',
+    c >= AUDIO.grab.hzLow / skirt && c <= AUDIO.grab.hzHigh * skirt,
+    `${c.toFixed(0)} Гц при полосе ${AUDIO.grab.hzLow}–${AUDIO.grab.hzHigh} Гц`,
+  );
+}
+
+{
+  const m = await render('grabDrop');
+  check(
+    'Захват: сброс звучит и не щёлкает',
+    m.peak > SILENT && m.maxJump < 0.2,
+    `пик ${m.peak.toFixed(4)}, скачок ${m.maxJump.toFixed(3)}`,
+  );
+}
+
+{
+  const m = await render('grabFar');
+  check(
+    'Вакуум: захват за радиусом контактной слышимости не слышен',
+    m.peak < SILENT,
+    `пик ${m.peak.toExponential(2)}`,
+  );
+}
+
 // --- Панорама ---
 {
   const right = await render('panRight');
