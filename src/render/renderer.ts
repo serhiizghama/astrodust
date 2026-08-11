@@ -1,4 +1,4 @@
-import { DIG, VACUUM, CONVEYOR, BUILD_MODULE, SIM_HZ, SHADING, UI } from '../config';
+import { CONVEYOR, BUILD_MODULE, SIM_HZ, SHADING, UI } from '../config';
 import { Display } from '../core';
 import { Camera } from './camera';
 import { World, MAT, MAT_CARRY } from '../world';
@@ -24,36 +24,6 @@ import {
   SPRITE_OFFSET_X,
   SPRITE_OFFSET_Y,
 } from './sprites/player';
-
-/**
- * Граница круглой кисти: пары смещений (dx, dy) относительно цели.
- *
- * Только периметр: кадр — непрозрачный буфер без альфа-композитинга, и заливку
- * пришлось бы смешивать на каждый пиксель. Контур несёт ту же информацию
- * и не закрывает то, что игрок собирается выкопать.
- *
- * Считается один раз, плоским типизированным массивом: обход без разыменований
- * и без аллокаций на кадр.
- */
-function brushOutline(radius: number): Int8Array {
-  const rSq = radius * radius;
-  const inside = (dx: number, dy: number): boolean => dx * dx + dy * dy <= rSq;
-  const pairs: number[] = [];
-
-  for (let dy = -radius; dy <= radius; dy++) {
-    for (let dx = -radius; dx <= radius; dx++) {
-      if (!inside(dx, dy)) continue;
-      // Граничная — та, у которой хотя бы один сосед по стороне уже снаружи.
-      // Ячейка, окружённая своими со всех четырёх сторон, — это заливка.
-      const enclosed =
-        inside(dx - 1, dy) && inside(dx + 1, dy) && inside(dx, dy - 1) && inside(dx, dy + 1);
-      if (enclosed) continue;
-      pairs.push(dx, dy);
-    }
-  }
-
-  return Int8Array.from(pairs);
-}
 
 /** Сколько ступеней у интерьера пещеры: у выхода и в глубине. */
 const CAVE_SHADES = 2;
@@ -150,30 +120,11 @@ function caveShade(depth: number, bayerAt: number, lit: number): number {
   return BAYER[bayerAt]! < level ? 1 : 0;
 }
 
-export const BRUSH_OUTLINE = brushOutline(DIG.radius);
 /**
- * Контур кисти сбора. Радиус свой, и это единственное, чем отличается вызов:
- * обещать выемку размером с копательную кисть там, где всосётся вдвое меньше,
- * — то же враньё, что и не показывать радиус вовсе.
+ * Лучи прицела: смещения вдоль каждой оси от центра. Держит
+ * `tests/terrain-digging.ts`.
  */
-export const VACUUM_OUTLINE = brushOutline(VACUUM.radius);
-
-/**
- * Контур кисти сбора для ЛЮБОГО радиуса, с памятью на посчитанное. Радиус
- * правит технология, и застывшее кольцо обещало бы выемку меньше настоящей
- * ровно после того, как игрок заплатил за большую. Память — потому что кольцо
- * рисуется каждый кадр, а радиусов за партию бывает три.
- */
-const OUTLINE_CACHE = new Map<number, Int8Array>([[VACUUM.radius, VACUUM_OUTLINE]]);
-
-export function vacuumOutline(radius: number): Int8Array {
-  let ring = OUTLINE_CACHE.get(radius);
-  if (!ring) {
-    ring = brushOutline(radius);
-    OUTLINE_CACHE.set(radius, ring);
-  }
-  return ring;
-}
+const AIM_ARMS = [-3, -2, 2, 3] as const;
 
 /**
  * Цвета состояния машины — и язык годности при постановке.
@@ -452,7 +403,7 @@ export class Renderer {
     // Подсветка захвата — ДО прицела: крестик обязан остаться поверх неё,
     // иначе точка прицеливания теряется в залитом квадрате.
     if (hud.grab) this.drawGrab(camera, hud.grab);
-    this.drawAim(crosshairX, crosshairY, crosshairInReach, hud.collecting, hud.collectRadius);
+    this.drawAim(crosshairX, crosshairY, crosshairInReach);
 
     // Мир — на экран, и только потом интерфейс. Порядок обратный сломал бы
     // не картинку, а сам замысел: интерфейс лёг бы под вывод буфера и исчез.
@@ -836,53 +787,30 @@ export class Renderer {
   }
 
   /**
-   * Прицел мыши и контур кисти под ним.
+   * Прицел мыши: четыре луча и ядро.
    *
-   * Прицел показывает КУДА, контур — СКОЛЬКО. Цвет обоих означает достижимость
-   * цели: без него недостижимая цель выглядит сломанным копанием. Контур
-   * следует той же логике, иначе обещает выемку там, где её не будет,
-   * и приглушён — кольцо вдвое длиннее крестика.
+   * Цвет означает достижимость цели: без него недостижимая цель выглядит
+   * сломанным копанием. Достижимую отмечает ещё и ядро — отличие обязано
+   * читаться формой, а не только яркостью.
    *
-   * Режим инструмента виден ЗДЕСЬ, а не только в строке состояния. Различаются
-   * размер контура и форма крестика (копание — лучи наружу, сбор — штрихи
-   * внутрь); цвет занят достижимостью и режимом не пользуется.
+   * Инвариант: между лучами и центром остаётся разрыв в ячейку. Сплошной плюс
+   * съедает ядро, и от достижимости остаётся один цвет.
+   *
+   * Режима инструмента прицел не знает: фигура одна на все режимы.
    */
-  private drawAim(
-    sx: number,
-    sy: number,
-    inReach: boolean,
-    collecting: boolean,
-    collectRadius: number,
-  ): void {
+  private drawAim(sx: number, sy: number, inReach: boolean): void {
     const x = Math.round(sx);
     const y = Math.round(sy);
 
-    const ring = collecting ? vacuumOutline(collectRadius) : BRUSH_OUTLINE;
-    // Достижимо — зелёная пара, недостижимо — серая. Оранжевый, которым прицел
-    // был раньше, теперь занят лавой и подсветкой кромок, а зелёного в кадре
-    // нет вовсе: на коричневом грунте и сливовой пещере он выделяется сильнее
-    // всего. В обеих парах кольцо остаётся тусклее крестика (67 против 180
-    // и 70 против 106) — оно вдвое длиннее и при равной яркости перебивало бы
-    // саму точку прицеливания. Серый крестик совпадает с корпусом конвейера
-    // (`gray[5]`) и на ленте пропадает; курсор при этом остаётся виден
-    // по кольцу — оно на ступень темнее и с лентой не совпадает.
-    const outline = inReach ? RAMP.green[1] : RAMP.gray[4];
-    for (let i = 0; i < ring.length; i += 2) {
-      this.setPixel(x + ring[i]!, y + ring[i + 1]!, outline);
-    }
-
+    // Достижимо — зелёный, недостижимо — серый. Оранжевый, которым прицел был
+    // раньше, занят лавой и подсветкой кромок, а зелёного в кадре нет вовсе:
+    // на коричневом грунте и сливовой пещере он выделяется сильнее всего.
     const color = inReach ? RAMP.green[4] : RAMP.gray[5];
 
-    // Копание бьёт наружу, сбор тянет внутрь: лучи у одного начинаются в двух
-    // ячейках от центра и уходят от него, у другого стоят вплотную к кольцу
-    // и указывают на центр.
-    const arms = collecting ? [-1, 1] : [-3, -2, 2, 3];
-    for (const d of arms) {
+    for (const d of AIM_ARMS) {
       this.setPixel(x + d, y, color);
       this.setPixel(x, y + d, color);
     }
-    // Достижимую цель дополнительно отмечаем ядром: отличие должно читаться
-    // и по форме, а не только по яркости.
     if (inReach) this.setPixel(x, y, color);
   }
 

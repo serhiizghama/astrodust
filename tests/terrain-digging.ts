@@ -1,8 +1,11 @@
 import { World, MAT, MATERIALS, Simulation } from '../src/world';
-import { BRUSH_OUTLINE } from '../src/render';
+import { Camera, Renderer, RecordingSurface } from '../src/render';
+import type { HudState } from '../src/render';
+import type { Display } from '../src/core';
+import { Player } from '../src/entities';
 import { Digger } from '../src/systems';
-import { PLAYER, DIG } from '../src/config';
-import { check, luna } from './harness';
+import { PLAYER, DIG, VACUUM, WORLD_SEED, BASE_VIEW_W, BASE_VIEW_H } from '../src/config';
+import { check, luna, IDLE_HUD } from './harness';
 
 const first = luna();
 
@@ -207,45 +210,6 @@ const first = luna();
     );
   }
 
-  // Контур кисти: предпросмотр обводит ровно ту область, которую заденет выемка.
-  {
-    const r = DIG.radius;
-    const inside = (dx: number, dy: number): boolean => dx * dx + dy * dy <= r * r;
-
-    let area = 0;
-    for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) if (inside(dx, dy)) area++;
-
-    const outline = BRUSH_OUTLINE.length / 2;
-    let allInside = true;
-    let allOnEdge = true;
-    let reachesEdge = 0;
-    for (let i = 0; i < BRUSH_OUTLINE.length; i += 2) {
-      const dx = BRUSH_OUTLINE[i]!;
-      const dy = BRUSH_OUTLINE[i + 1]!;
-      if (!inside(dx, dy)) allInside = false;
-      const enclosed =
-        inside(dx - 1, dy) && inside(dx + 1, dy) && inside(dx, dy - 1) && inside(dx, dy + 1);
-      if (enclosed) allOnEdge = false;
-      if (Math.abs(dx) === r || Math.abs(dy) === r) reachesEdge++;
-    }
-
-    check(
-      'Контур кисти не выходит за область выемки',
-      allInside && outline > 0,
-      `${outline} ячеек`,
-    );
-    check(
-      'Контур кисти — периметр, а не заливка: внутренность остаётся видимой',
-      allOnEdge && outline < area,
-      `контур ${outline} из площади ${area}`,
-    );
-    check(
-      'Контур кисти совпадает с кистью по размеру',
-      reachesEdge >= 4,
-      `на радиусе ${reachesEdge}`,
-    );
-  }
-
   // Дальность.
   {
     const w = rockWorld();
@@ -295,4 +259,112 @@ const first = luna();
       `60 Гц: ${at60}, 144 Гц: ${at144}`,
     );
   }
+}
+
+// --- Вид прицела ---
+//
+// Прицел рисуется в буфер МИРА, поэтому проверяются пиксели, а не журнал
+// интерфейса. След прицела снимается разностью двух кадров: `crosshairX/Y`
+// не влияют ни на что, кроме него, поэтому всё, что изменилось в окне вокруг
+// цели при уводе прицела в сторону, — и есть прицел целиком.
+{
+  const pixels = new Uint8ClampedArray(BASE_VIEW_W * BASE_VIEW_H * 4);
+  const display = {
+    pixels,
+    ctx: { putImageData() {} },
+    width: BASE_VIEW_W,
+    height: BASE_VIEW_H,
+    image: {},
+    present() {},
+  } as unknown as Display;
+
+  const renderer = new Renderer(
+    display,
+    first.world,
+    first.surface,
+    WORLD_SEED,
+    new RecordingSurface(),
+  );
+  const camera = new Camera(first.world.width, first.world.height);
+  camera.snapTo(first.spawn.x, first.spawn.y);
+  const player = new Player(first.spawn.x, first.spawn.y);
+
+  function shoot(x: number, y: number, inReach: boolean, hud: HudState): Uint8ClampedArray {
+    renderer.render({
+      camera,
+      player,
+      crosshairX: x,
+      crosshairY: y,
+      crosshairInReach: inReach,
+      hud,
+      fps: 0,
+    });
+    return pixels.slice();
+  }
+
+  // Окно вдвое шире самого длинного луча: кольцо радиусом с кисть копания
+  // (6 ячеек) влезало в него целиком, поэтому его отсутствие проверяемо.
+  const WINDOW = 12;
+  const AWAY = 60;
+  const AT_X = 320;
+  const AT_Y = 60;
+
+  /** Смещения пикселей, которые прицел добавил в кадр. */
+  function footprint(inReach: boolean, hud: HudState): Set<string> {
+    const here = shoot(AT_X, AT_Y, inReach, hud);
+    const gone = shoot(AT_X + AWAY, AT_Y, inReach, hud);
+    const marks = new Set<string>();
+    for (let dy = -WINDOW; dy <= WINDOW; dy++) {
+      for (let dx = -WINDOW; dx <= WINDOW; dx++) {
+        const i = ((AT_Y + dy) * BASE_VIEW_W + (AT_X + dx)) * 4;
+        if (here[i] !== gone[i] || here[i + 1] !== gone[i + 1] || here[i + 2] !== gone[i + 2]) {
+          marks.add(`${dx},${dy}`);
+        }
+      }
+    }
+    return marks;
+  }
+
+  const digging: HudState = { ...IDLE_HUD, collecting: false };
+  const collecting: HudState = {
+    ...IDLE_HUD,
+    collecting: true,
+    hasVacuum: true,
+    collectRadius: VACUUM.radius,
+  };
+
+  const arms = new Set<string>();
+  for (const d of [-3, -2, 2, 3]) {
+    arms.add(`${d},0`);
+    arms.add(`0,${d}`);
+  }
+  const same = (a: Set<string>, b: Set<string>): boolean =>
+    a.size === b.size && [...a].every((k) => b.has(k));
+
+  const reachable = footprint(true, digging);
+  const far = footprint(false, digging);
+
+  check(
+    'Достижимая цель: прицел — лучи и закрашенный центр',
+    same(reachable, new Set([...arms, '0,0'])),
+    `${reachable.size} пикселей вместо ${arms.size + 1}`,
+  );
+  check(
+    'Недостижимая цель: центр пуст, лучи на месте',
+    same(far, arms),
+    `${far.size} пикселей вместо ${arms.size}`,
+  );
+  check(
+    'Прицел не обводит площадь: за лучами в окне ничего не нарисовано',
+    [...reachable].every((k) => {
+      const [dx, dy] = k.split(',').map(Number) as [number, number];
+      return (dx === 0 || dy === 0) && Math.abs(dx) <= 3 && Math.abs(dy) <= 3;
+    }),
+    `самый дальний пиксель ${Math.max(...[...reachable].map((k) => Math.max(...k.split(',').map((n) => Math.abs(Number(n))))))}`,
+  );
+  check(
+    'Режим инструмента не меняет фигуру прицела',
+    same(footprint(true, collecting), reachable),
+    `сбор ${footprint(true, collecting).size}, копание ${reachable.size}`,
+  );
 }

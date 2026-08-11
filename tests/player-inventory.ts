@@ -1,12 +1,5 @@
 import { World } from '../src/world';
-import {
-  Camera,
-  Renderer,
-  RecordingSurface,
-  BRUSH_OUTLINE,
-  VACUUM_OUTLINE,
-  hudLayout,
-} from '../src/render';
+import { Camera, Renderer, RecordingSurface, hudLayout } from '../src/render';
 import type { HudState, UiOp } from '../src/render';
 import type { Display } from '../src/core';
 import { RAMP, css } from '../src/palette';
@@ -317,7 +310,7 @@ const { spawn } = first;
     // Кисть сбора не больше копательной.
     check(
       'Кисть сбора не больше кисти копания',
-      VACUUM.radius <= DIG.radius && VACUUM_OUTLINE.length < BRUSH_OUTLINE.length,
+      VACUUM.radius <= DIG.radius,
       `сбор r=${VACUUM.radius}, копание r=${DIG.radius}`,
     );
   }

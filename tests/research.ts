@@ -1,7 +1,5 @@
 import { World, MAT, MAT_CREDIT_RATE, Simulation } from '../src/world';
 import {
-  VACUUM_OUTLINE,
-  vacuumOutline,
   RecordingSurface,
   techTreeLayout,
   techTreeSize,
@@ -459,16 +457,6 @@ const first = luna();
       topRadius > DIG.radius,
       `сбор ${topRadius}, копание ${DIG.radius}`,
     );
-    // Кольцо прицела обязано следовать за радиусом. Застывшее на базовом,
-    // оно обещало бы выемку меньше настоящей ровно после того, как игрок
-    // заплатил за большую.
-    check(
-      'Кольцо прицела растёт вместе с кистью сбора',
-      vacuumOutline(TUNING_BASE.collectRadius).length === VACUUM_OUTLINE.length &&
-        vacuumOutline(topRadius).length > VACUUM_OUTLINE.length,
-      `базовое ${VACUUM_OUTLINE.length / 2} точек, предельное ${vacuumOutline(topRadius).length / 2}`,
-    );
-
     // Апгрейд ранца обязан ускорять подъём — иначе покупка ничего не даёт.
     // Мир высокий намеренно: при потолке ближе базовый и апгрейженный ранец
     // упираются в него оба, разница схлопывается в ноль, и проверка проходила
