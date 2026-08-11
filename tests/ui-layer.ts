@@ -11,6 +11,8 @@ import {
   Renderer,
   RecordingSurface,
   drawResearchOverlay,
+  closeButtonRect,
+  techTreeLayout,
   fitText,
   bodyText,
   smallText,
@@ -22,7 +24,7 @@ import type { Display } from '../src/core';
 import { Player } from '../src/entities';
 import { RAMP } from '../src/palette';
 import { UI, BASE_VIEW_W, BASE_VIEW_H, WORLD_SEED } from '../src/config';
-import { TECHNOLOGIES, TECH_NODES, TECH_EDGES } from '../src/progress';
+import { TECHNOLOGIES, TECH_NODES, TECH_EDGES, TECH_COLS, TECH_ROWS } from '../src/progress';
 import { check, luna, IDLE_HUD, pick } from './harness';
 
 const first = luna();
@@ -42,7 +44,7 @@ function opaqueOf(color: string): number | null {
 
 const ui = new RecordingSurface();
 
-function overlayView(): OverlayView {
+function overlayView(over: Partial<OverlayView> = {}): OverlayView {
   const nodes: OverlayNode[] = TECHNOLOGIES.map((tc, i) => ({
     name: tc.name,
     description: tc.description,
@@ -61,8 +63,10 @@ function overlayView(): OverlayView {
     edges: TECH_EDGES,
     selected: 0,
     hovered: 2,
+    closeHovered: false,
     pointerX: 100,
     pointerY: 100,
+    ...over,
   };
 }
 
@@ -284,6 +288,46 @@ const [hudFrame, frame]: UiOp[][] = (() => {
       insideBar.length > 0 &&
       insideBar.every((op) => !op.style.shadow),
     `на мире ${overWorld.length}, на подложке ${insideBar.length}`,
+  );
+}
+
+// --- Крестик закрытия ----------------------------------------------------------
+
+{
+  const at = closeButtonRect(techTreeLayout(BASE_VIEW_W, BASE_VIEW_H, TECH_COLS, TECH_ROWS));
+
+  check(
+    'Крестик нарисован в заголовке оверлея',
+    pick(frame, 'icon').some((op) => op.key === 'close') &&
+      pick(frame, 'panel').some((op) => op.x === at.x && op.y === at.y),
+  );
+
+  // Счёт кредитов делит ряд заголовка с кнопкой. Правый край счёта считается
+  // по ИЗМЕРЕННОЙ ширине: шрифт системный, и число, влезающее здесь, на другой
+  // машине наехало бы на крестик.
+  const credits = pick(frame, 'text').find((op) => op.text.includes('₡') && op.y < at.y + at.h);
+  check(
+    'Счёт кредитов не наезжает на кнопку закрытия',
+    credits !== undefined && credits.x + credits.width <= at.x,
+    credits
+      ? `правый край ${(credits.x + credits.width).toFixed(1)} при кнопке с ${at.x}`
+      : 'счёта в заголовке нет',
+  );
+
+  // Наведение обязано быть ВИДНО: кнопка, не отвечающая на курсор, неотличима
+  // от рисунка.
+  const button = (view: OverlayView) => {
+    const surface = new RecordingSurface();
+    surface.begin();
+    drawResearchOverlay(surface, BASE_VIEW_W, BASE_VIEW_H, view);
+    surface.end();
+    return pick(surface.ops, 'panel').find((op) => op.x === at.x && op.y === at.y);
+  };
+  const idle = button(overlayView());
+  const hot = button(overlayView({ closeHovered: true }));
+  check(
+    'Наведение на крестик меняет его вид',
+    idle !== undefined && hot !== undefined && JSON.stringify(idle) !== JSON.stringify(hot),
   );
 }
 

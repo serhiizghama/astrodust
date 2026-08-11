@@ -169,7 +169,21 @@ export interface OverlayInput {
   readonly menuConfirmPressed: boolean;
   /** Нажатие левой кнопки. Покупает узел ПОД КУРСОРОМ, если он там есть. */
   readonly pointerPressed: boolean;
+  /** `Escape`. Только закрывает: открывать меню клавише отмены нечем. */
+  readonly menuClosePressed: boolean;
 }
+
+/**
+ * Что под курсором в открытом меню: номер узла, кнопка закрытия или ничего.
+ *
+ * ОДНО значение, а не два признака: курсор стоит ровно над одним, и сочетание
+ * «узел и крестик разом» бессмысленно. Отсюда же следует, что нажатие
+ * по крестику ничего не покупает, — не потому что закрытие разобрано раньше,
+ * а потому что покупать нечего.
+ *
+ * Считает цель рендер по своей раскладке: здесь пикселей нет.
+ */
+export type PointerTarget = number | 'close' | null;
 
 /**
  * Оверлей исследований: открыт ли он и какой узел выбран.
@@ -185,10 +199,28 @@ export class ResearchOverlay {
   open = false;
   private index = 0;
 
-  /** Одна клавиша открывает и закрывает: второй учить незачем. */
+  /** Одна клавиша открывает и закрывает: второй для ОТКРЫТИЯ учить незачем. */
   toggle(): boolean {
     this.open = !this.open;
     return this.open;
+  }
+
+  /** Закрыть. Уже закрытое меню закрытие не трогает. */
+  close(): void {
+    this.open = false;
+  }
+
+  /**
+   * Просит ли ввод закрыть меню: `Escape` или нажатие по крестику.
+   *
+   * Предикат, а не действие: состояние оверлея меняет игровой шаг, и меняет
+   * ДО раздачи ввода — иначе закрывающий шаг достаётся миру вместе
+   * с удерживаемой клавишей применения инструмента. Здесь, а не в шаге, живёт
+   * ЗНАЧЕНИЕ ввода: два из трёх способов закрытия клавиатурные, и проверить
+   * их можно только там, где их можно позвать без канваса.
+   */
+  static closeRequested(input: OverlayInput, target: PointerTarget): boolean {
+    return input.menuClosePressed || (input.pointerPressed && target === 'close');
   }
 
   get selectedIndex(): number {
@@ -218,14 +250,16 @@ export class ResearchOverlay {
    * где его можно позвать. Подтверждения покупки нет намеренно: повторная
    * покупка не бывает случайной, уже открытая технология не списывает ничего.
    *
-   * @param pointerNode узел под курсором, или `null` — курсор мимо узлов.
-   *   Считает его рендер по своей раскладке, здесь пикселей нет.
+   * Закрытия здесь нет: состояние оверлея меняется ДО раздачи ввода
+   * (`closeRequested`), и на закрывающем шаге сюда уже не заходят.
+   *
+   * @param target что под курсором: узел, крестик или ничего.
    */
   handle(
     input: OverlayInput,
     research: Research,
     account: CreditAccount,
-    pointerNode: number | null = null,
+    target: PointerTarget = null,
   ): void {
     if (input.menuUpPressed) this.move(0, -1);
     if (input.menuDownPressed) this.move(0, 1);
@@ -236,8 +270,8 @@ export class ResearchOverlay {
 
     // Нажатие мимо узлов не покупает НИЧЕГО: иначе промах по пустому месту
     // панели тратит счёт на технологию, в которую игрок не целился.
-    if (input.pointerPressed && pointerNode !== null) {
-      this.index = pointerNode;
+    if (input.pointerPressed && typeof target === 'number') {
+      this.index = target;
       this.buySelected(research, account);
     }
   }

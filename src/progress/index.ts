@@ -8,7 +8,7 @@
  * внутри — напрямую друг у друга. Что не перечислено здесь — не публично.
  */
 export { Research, ResearchOverlay, NO_UNLOCKS, statusNote } from './research';
-export type { ContentUnlocks, CreditAccount, TechStatus } from './research';
+export type { ContentUnlocks, CreditAccount, TechStatus, PointerTarget } from './research';
 export { TECHNOLOGIES, TECH_BY_ID, CONTENT, maxTuned } from './technologies';
 export type { Technology, TechEffect } from './technologies';
 export { TECH_NODES, TECH_EDGES, TECH_COLS, TECH_ROWS, stepTo } from './tech-layout';

@@ -7,6 +7,8 @@ import {
   techTreeSize,
   nodeOrigin,
   nodeAtPoint,
+  closeButtonRect,
+  overClose,
   drawResearchOverlay,
 } from '../src/render';
 import type { OverlayView, OverlayNode, UiOp } from '../src/render';
@@ -39,12 +41,15 @@ import {
   CONTENT,
   maxTuned,
 } from '../src/progress';
+import type { PointerTarget } from '../src/progress';
 import { TECH_TREE, UI } from '../src/config';
 import {
   PLAYER,
   FIXED_DT,
   BASE_VIEW_W,
   BASE_VIEW_H,
+  MAX_VIEW_W,
+  MAX_VIEW_H,
   DIG,
   VACUUM,
   SEPARATOR,
@@ -103,6 +108,7 @@ const first = luna();
     menuRightPressed: false,
     menuConfirmPressed: false,
     pointerPressed: false,
+    menuClosePressed: false,
   };
   const menu = (over: Partial<typeof NO_MENU> = {}) => ({ ...NO_MENU, ...over });
 
@@ -772,6 +778,100 @@ const first = luna();
     check('Оверлей закрывается той же клавишей', !ov.open);
   }
 
+  // --- Три способа закрытия ---
+  //
+  // Открывают меню намеренно и один раз, а закрыть его хотят из любого
+  // состояния и немедленно, в том числе не помня, чем открыли.
+
+  {
+    /**
+     * Тот же стык, что и в игровом шаге: состояние меняется ДО раздачи ввода,
+     * и на закрывающем шаге до `handle` дело не доходит. Проверять закрытие
+     * в другом порядке значило бы проверять другое.
+     */
+    function closeStep(
+      ov: ResearchOverlay,
+      input: ReturnType<typeof menu>,
+      target: PointerTarget = null,
+    ): void {
+      if (ov.open && ResearchOverlay.closeRequested(input, target)) ov.close();
+    }
+
+    const r = new Research();
+    const money = wallet(100000);
+    const ov = new ResearchOverlay();
+
+    ov.toggle();
+    closeStep(ov, menu({ menuClosePressed: true }));
+    check('Escape закрывает открытый оверлей', !ov.open);
+
+    closeStep(ov, menu({ menuClosePressed: true }));
+    check('Escape не открывает закрытый оверлей', !ov.open);
+
+    ov.toggle();
+    closeStep(ov, menu({ pointerPressed: true }), 'close');
+    check('Нажатие по крестику закрывает оверлей', !ov.open);
+
+    ov.toggle();
+    closeStep(ov, menu({ pointerPressed: true }), null);
+    check('Нажатие мимо крестика оверлей не закрывает', ov.open);
+
+    // Закрывающее нажатие не покупает НИЧЕГО. Счёт заведомо достаточен: иначе
+    // проверка прошла бы и на пустом кошельке, ничего не проверив.
+    const before = money.credits;
+    const opened = TECHNOLOGIES.filter((tc) => r.isOpen(tc.id)).length;
+    ov.handle(menu({ pointerPressed: true }), r, money, 'close');
+    closeStep(ov, menu({ menuClosePressed: true }));
+    check(
+      'Закрытие не списывает кредитов и не открывает технологий',
+      money.credits === before &&
+        TECHNOLOGIES.filter((tc) => r.isOpen(tc.id)).length === opened &&
+        !ov.open,
+      `${before} → ${money.credits} ₡`,
+    );
+  }
+
+  // Кнопка закрытия: одна геометрия на отрисовку и на попадание, и она лежит
+  // в заголовке — там, куда сетка узлов не доходит ни при каком размере кадра.
+
+  {
+    for (const [w, h, name] of [
+      [BASE_VIEW_W, BASE_VIEW_H, 'опорном'],
+      [MAX_VIEW_W, MAX_VIEW_H, 'максимальном'],
+    ] as const) {
+      const layout = techTreeLayout(w, h, TECH_COLS, TECH_ROWS);
+      const at = closeButtonRect(layout);
+
+      const inside =
+        at.x >= layout.x &&
+        at.y >= layout.y &&
+        at.x + at.w <= layout.x + layout.w &&
+        at.y + at.h <= layout.y + layout.h;
+      check(`Кнопка закрытия лежит внутри панели на ${name} кадре`, inside);
+
+      const overlapsNode = TECH_NODES.some((n) => {
+        const node = nodeOrigin(layout, n.col, n.row);
+        return (
+          at.x < node.x + layout.node &&
+          at.x + at.w > node.x &&
+          at.y < node.y + layout.node &&
+          at.y + at.h > node.y
+        );
+      });
+      check(`Кнопка закрытия не наезжает на узлы на ${name} кадре`, !overlapsNode);
+
+      const hitsSelf = overClose(at.x + (at.w >> 1), at.y + (at.h >> 1), layout);
+      const nodesFree = TECH_NODES.every((n) => {
+        const node = nodeOrigin(layout, n.col, n.row);
+        return !overClose(node.x + (layout.node >> 1), node.y + (layout.node >> 1), layout);
+      });
+      check(
+        `Попадание в кнопку считается там же, где она нарисована, на ${name} кадре`,
+        hitsSelf && nodesFree,
+      );
+    }
+  }
+
   // --- Модальность: персонаж стоит, мир идёт ---
 
   {
@@ -873,6 +973,7 @@ const first = luna();
         edges: TECH_EDGES,
         selected: 0,
         hovered: null,
+        closeHovered: false,
         // По умолчанию курсор УВЕДЁН в угол панели: кадры сравниваются между
         // собой, и стрелка посреди дерева попадала бы в каждое сравнение.
         pointerX: BASE_VIEW_W - 2,

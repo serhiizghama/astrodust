@@ -395,6 +395,47 @@ const { world } = first;
     input.endStep();
   }
 
+  // Сброс снимает и РАЗОВОЕ нажатие этого шага. Нажатие, пережившее сброс,
+  // достаётся миру тем же шагом — то есть ровно тот случай, ради которого
+  // сброс и существует: клик по крестику меню иначе ставит здание там, куда
+  // игрок нажал «закрыть».
+  {
+    win.emit('mousedown', { button: 0 });
+    down('Space');
+    const armed = input.mouseLeftJustPressed && input.toolPressed;
+
+    input.releaseAll();
+    const disarmed = !input.mouseLeftJustPressed && !input.toolPressed && !input.toolHeld;
+    win.emit('mouseup', { button: 0 });
+    up('Space');
+    input.endStep();
+
+    check(
+      'Ввод: сброс снимает и разовое нажатие, а не только удержание',
+      armed && disarmed,
+      `до сброса ${armed}, после ${disarmed}`,
+    );
+  }
+
+  // `Escape` — «закрыть открытое меню». Игра его читает, но НЕ отбирает
+  // у браузера: ею выходят из полноэкранного режима, и в нём браузер её
+  // всё равно не отдаёт.
+  {
+    const e = down('Escape');
+    const byKey = input.menuClosePressed;
+    const nothingElse = !input.researchTogglePressed && !input.menuConfirmPressed;
+    input.endStep();
+    const secondStep = input.menuClosePressed;
+    up('Escape');
+    input.endStep();
+
+    check(
+      'Ввод: Escape читается ровно один шаг и остаётся у браузера',
+      byKey && nothingElse && !secondStep && !e.prevented,
+      `нажата ${byKey}, следующий шаг ${secondStep}, подавлена ${e.prevented}`,
+    );
+  }
+
   // Не игровая клавиша остаётся браузеру.
   {
     const e = down('KeyZ');

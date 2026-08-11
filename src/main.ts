@@ -18,6 +18,7 @@ import {
   overBar,
   techTreeLayout,
   nodeAtPoint,
+  overClose,
 } from './render';
 import type { HudState, HudSlot, SlotAction, GhostView, OverlayView, FrameView } from './render';
 import {
@@ -30,6 +31,7 @@ import {
   TECH_COLS,
   TECH_ROWS,
 } from './progress';
+import type { PointerTarget } from './progress';
 import { Player, NO_INPUT, Inventory, LandingModule, BuildCatalogState } from './entities';
 import { generateLuna, MATERIALS, PORTABLE_MATERIALS } from './world';
 import { Digger, Vacuum, Builder, DebugPainter } from './systems';
@@ -85,6 +87,11 @@ let targetInReach = false;
  * и подсветка, и то, доходит ли мышиное применение инструмента до мира.
  */
 let hoveredSlot: number | null = null;
+/**
+ * Что под курсором в открытом меню: узел, крестик или ничего. Считается только
+ * при открытом оверлее — закрытое меню курсором не задевается.
+ */
+let pointerTarget: PointerTarget = null;
 /**
  * Узел дерева под курсором. Считается только при открытом оверлее — закрытое
  * меню курсором не задевается.
@@ -329,12 +336,7 @@ function applyBuilding(dir: { x: number; y: number }, cursorX: number, cursorY: 
  */
 const overlayState: GameState = {
   handleInput(): StepIntent {
-    // Узел под курсором считается ЗДЕСЬ, а не в кадре: по нему решается
-    // и подсветка, и то, что покупает нажатие мыши. Раскладка берётся
-    // у рендера — своей копии геометрии здесь нет.
-    const layout = techTreeLayout(display.width, display.height, TECH_COLS, TECH_ROWS);
-    hoveredNode = nodeAtPoint(input.mouseX, input.mouseY, layout, TECH_NODES);
-    overlay.handle(input, research, landingModule, hoveredNode);
+    overlay.handle(input, research, landingModule, pointerTarget);
     ghost = null;
     buildIssue = '';
     // Ввод принадлежит меню целиком, и панель под ним неактивна: попадание
@@ -347,20 +349,47 @@ const overlayState: GameState = {
   },
 };
 
+/**
+ * Что под курсором в открытом меню. Считается ОДИН РАЗ за шаг и служит обоим
+ * читателям — закрытию и покупке. Раскладка берётся у рендера: своей копии
+ * геометрии здесь нет.
+ *
+ * Крестик проверяется раньше узлов: он лежит в ряду заголовка, куда сетка
+ * не доходит, и порядок здесь означает лишь то, что кнопка сильнее пустого
+ * места.
+ */
+function overlayTarget(): PointerTarget {
+  const layout = techTreeLayout(display.width, display.height, TECH_COLS, TECH_ROWS);
+  if (overClose(input.mouseX, input.mouseY, layout)) return 'close';
+  return nodeAtPoint(input.mouseX, input.mouseY, layout, TECH_NODES);
+}
+
 function step(dt: number): void {
   simTime += dt;
 
-  // Клавиша оверлея читается ПЕРВОЙ и в обоих состояниях: она единственная,
-  // которая работает и в мире, и в меню.
-  if (input.researchTogglePressed) {
-    // Сброс удерживаемого — ТЕМ ЖЕ способом, что и при потере фокуса окном.
-    // Клавиша, зажатая в момент открытия, иначе оставляла бы персонажа бегущим
-    // всё время, пока игрок читает дерево.
+  pointerTarget = overlay.open ? overlayTarget() : null;
+  hoveredNode = typeof pointerTarget === 'number' ? pointerTarget : null;
+
+  // Состояние оверлея меняется ОДНИМ стыком и ДО раздачи ввода. Порядок
+  // «сначала закрыли, потом раздали» иначе отдаёт закрывающий шаг миру вместе
+  // с удерживаемой клавишей применения инструмента, а сброс после раздачи
+  // опаздывает ровно на тот шаг, ради которого он есть.
+  const wasOpen = overlay.open;
+  if (input.researchTogglePressed) overlay.toggle();
+  else if (wasOpen && ResearchOverlay.closeRequested(input, pointerTarget)) overlay.close();
+
+  if (overlay.open !== wasOpen) {
+    // Сброс — ТЕМ ЖЕ способом, что и при потере фокуса окном, и на ЛЮБОМ
+    // переходе, а не только на открытии: клавиша, зажатая при открытии, иначе
+    // оставляет персонажа бегущим, а кнопка, нажавшая крестик, доносит нажатие
+    // до мира и ставит здание там, куда игрок нажал «закрыть».
     input.releaseAll();
-    overlay.toggle();
     // Наведение живёт ровно столько же, сколько открытый оверлей: иначе
     // закрытое меню оставило бы за собой подсвеченный узел до следующего входа.
-    if (!overlay.open) hoveredNode = null;
+    if (!overlay.open) {
+      hoveredNode = null;
+      pointerTarget = null;
+    }
   }
 
   const intent = (overlay.open ? overlayState : playState).handleInput(dt);
@@ -387,6 +416,7 @@ function overlayView(): OverlayView | null {
     credits,
     selected: overlay.selectedIndex,
     hovered: hoveredNode,
+    closeHovered: pointerTarget === 'close',
     // Курсор берётся живым из позиции мыши, как и мировой крестик: иначе
     // на 144 Гц он отставал бы от неё на кадр.
     pointerX: input.mouseX,

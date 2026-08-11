@@ -88,6 +88,7 @@ const overlay: OverlayView = {
   credits: 1234,
   selected: 0,
   hovered: 1,
+  closeHovered: false,
   pointerX: BASE_VIEW_W >> 1,
   pointerY: BASE_VIEW_H >> 1,
   edges: TECH_EDGES,

@@ -230,3 +230,15 @@ const POINTER_ROWS = [
 export const POINTER_W = 8;
 export const POINTER_H = POINTER_ROWS.length;
 export const POINTER = icon('pointer', POINTER_ROWS, POINTER_W, POINTER_PALETTE);
+
+/**
+ * Крестик закрытия меню. Размер значка валюты, а не действия: он стоит
+ * в строке заголовка, и значок в 12 ячеек оттуда бы вылез.
+ *
+ * Спрайт, а не две линии слоя интерфейса: значки — часть языка игры, и второй
+ * способ их рисовать завёл бы вторую типографику значков.
+ */
+const CLOSE_ROWS = ['1.....1', '.1...1.', '..1.1..', '...1...', '..1.1..', '.1...1.', '1.....1'];
+
+export const CLOSE_ICON = CURRENCY_ICON;
+export const CLOSE = icon('close', CLOSE_ROWS, CLOSE_ICON);

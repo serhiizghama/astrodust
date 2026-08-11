@@ -28,6 +28,8 @@ export {
   techTreeSize,
   nodeOrigin,
   nodeAtPoint,
+  closeButtonRect,
+  overClose,
   gridOf,
   drawResearchOverlay,
 } from './overlay';

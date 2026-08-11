@@ -2,7 +2,7 @@ import { TECH_TREE, UI } from '../config';
 import { RAMP, css } from '../palette';
 import { fitText, bodyText, smallText, titleText, OVERLAY_PLATE } from './ui';
 import type { PanelStyle, UiSurface } from './ui';
-import { TECH_ICON, techIcon, POINTER } from './sprites/icons';
+import { TECH_ICON, techIcon, POINTER, CLOSE, CLOSE_ICON } from './sprites/icons';
 
 /**
  * Дерево технологий поверх кадра. Рисуется в СЛОЕ ИНТЕРФЕЙСА — векторно и в
@@ -68,6 +68,8 @@ export interface OverlayView {
   readonly selected: number;
   /** Узел под курсором, или `null`. Мыши не было — подсветки в кадре нет. */
   readonly hovered: number | null;
+  /** Наведён ли курсор на крестик: кнопка без отклика неотличима от рисунка. */
+  readonly closeHovered: boolean;
   /**
    * Курсор в координатах буфера кадра.
    *
@@ -246,6 +248,30 @@ export function nodeAtPoint(
   return null;
 }
 
+/**
+ * Кнопка закрытия: правый верхний угол панели, ряд заголовка.
+ *
+ * Сторона равна высоте этого ряда, поэтому кнопка ничего в раскладке не двигает
+ * (см. `TECH_TREE.close`). Отсюда её берут и отрисовка, и попадание курсора:
+ * вторая запись одной геометрии дала бы кнопку, нажимающуюся не там, где она
+ * нарисована.
+ */
+export function closeButtonRect(layout: TechTreeLayout): {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+} {
+  const size = TECH_TREE.close;
+  return { x: layout.x + layout.w - PAD - size, y: layout.y + PAD, w: size, h: size };
+}
+
+/** Попал ли курсор в кнопку закрытия. */
+export function overClose(x: number, y: number, layout: TechTreeLayout): boolean {
+  const at = closeButtonRect(layout);
+  return x >= at.x && x < at.x + at.w && y >= at.y && y < at.y + at.h;
+}
+
 /** Габариты сетки узлов по самому снапшоту: рендер не знает таблицы технологий. */
 export function gridOf(nodes: readonly { readonly col: number; readonly row: number }[]): {
   cols: number;
@@ -276,13 +302,21 @@ export function drawResearchOverlay(
   ui.panel(layout.x, layout.y, layout.w, layout.h, OVERLAY_PLATE);
 
   const left = layout.x + PAD;
-  const right = layout.x + layout.w - PAD;
 
   ui.text('ИССЛЕДОВАНИЯ', left, layout.y + PAD, titleText(RAMP.gray[9]));
+  drawCloseButton(ui, layout, view.closeHovered);
   // Счёт — тем же золотом, что и счётчик в углу кадра: одна валюта — один
   // цвет, где бы её ни показывали. Без счёта рядом цена узла не отвечает
   // на вопрос «могу ли я это купить».
-  ui.text(`${view.credits} ₡`, right, layout.y + PAD, titleText(RAMP.warm[4], { align: 'right' }));
+  //
+  // Правый край счёта — левый край кнопки с просветом: заголовок делят двое,
+  // и счёт, отсчитанный от края панели, лежал бы под крестиком.
+  ui.text(
+    `${view.credits} ₡`,
+    closeButtonRect(layout).x - TECH_TREE.closeGap,
+    layout.y + PAD,
+    titleText(RAMP.warm[4], { align: 'right' }),
+  );
 
   drawEdges(ui, layout, view);
   drawNodes(ui, layout, view);
@@ -304,6 +338,22 @@ export function drawResearchOverlay(
   // от неё, как и положено курсору, — иначе он указывал бы мимо того узла,
   // который считает `nodeAtPoint`.
   ui.icon(POINTER, Math.round(view.pointerX), Math.round(view.pointerY));
+}
+
+/**
+ * Крестик закрытия. Наведение — тем же голубым свечением, что и у узлов:
+ * «мышь здесь» в меню означает одно и то же, где бы курсор ни стоял.
+ */
+function drawCloseButton(ui: UiSurface, layout: TechTreeLayout, hovered: boolean): void {
+  const at = closeButtonRect(layout);
+  ui.panel(at.x, at.y, at.w, at.h, {
+    fill: css(RAMP.gray[hovered ? 4 : 2]),
+    stroke: css(RAMP.gray[5]),
+    strokeWidth: hovered ? UI.stroke.thick : UI.stroke.thin,
+    radius: UI.radius.slot,
+    ...(hovered ? { glow: HOVER_GLOW } : {}),
+  });
+  ui.icon(CLOSE, at.x + ((at.w - CLOSE_ICON) >> 1), at.y + ((at.h - CLOSE_ICON) >> 1));
 }
 
 /**
@@ -451,10 +501,13 @@ function drawInfoBar(ui: UiSurface, layout: TechTreeLayout, node: OverlayNode | 
     }
   }
 
+  // Названы только КЛАВИАТУРНЫЕ способы закрытия: крестик виден сам, и подпись
+  // к видимой кнопке — это место, отнятое у сведений об узле.
+  const hint = smallText(RAMP.gray[5]);
   ui.text(
-    'WASD — выбор   Space — купить   T — закрыть',
+    fitText(ui, 'WASD — выбор   Space — купить   T или Esc — закрыть', hint, room),
     left,
     top + 4 * UI.line,
-    smallText(RAMP.gray[5]),
+    hint,
   );
 }
