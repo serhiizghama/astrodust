@@ -20,6 +20,7 @@ const SUITES: Record<string, () => Promise<unknown>> = {
   'game-shell': () => import('./game-shell'),
   'material-simulation': () => import('./material-simulation'),
   'terrain-digging': () => import('./terrain-digging'),
+  'matter-grabber': () => import('./matter-grabber'),
   'player-inventory': () => import('./player-inventory'),
   'landing-module': () => import('./landing-module'),
   'building-placement': () => import('./building-placement'),

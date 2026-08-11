@@ -4,7 +4,7 @@ import { Camera } from './camera';
 import { World, MAT, MAT_CARRY } from '../world';
 import { SHADE_R, SHADE_G, SHADE_B, CONVEYOR_ROLLER_COLOR } from './material-colors';
 import { GRAIN } from './grain';
-import { BAYER, DITHER_MASK, DITHER_LEVELS } from './dither';
+import { BAYER, DITHER_MASK, DITHER_LEVELS, threshold } from './dither';
 import { Lightmap, LIGHT_NEUTRAL } from './lightmap';
 import { Backdrop } from './backdrop';
 import { RAMP } from '../palette';
@@ -243,6 +243,16 @@ export interface HudState {
   readonly capacity: number;
   readonly selected: string;
   /**
+   * Открыт ли пылесос. Ёмкость, которой у игрока ещё нет, в кадре
+   * не показывается: счётчик «0 из 4096» называет предел, до которого нечем
+   * дойти, и читается поломкой, а не целью.
+   */
+  readonly hasVacuum: boolean;
+  /** Комок в захвате: состав и заполнение. Видны ВСЕГДА — захват есть с первого кадра. */
+  readonly grabHeld: readonly { readonly name: string; readonly count: number }[];
+  readonly grabUsed: number;
+  readonly grabCapacity: number;
+  /**
    * Счёт кредитов — единственная валюта игры. Виден ВСЕГДА, а не только внутри
    * оверлея: это ответ на вопрос «что я сейчас могу открыть», и валюта,
    * которую видно только в меню, из этого решения выпадает.
@@ -257,6 +267,14 @@ export interface HudState {
    * отказа игроку учить незачем.
    */
   readonly ghost: GhostView | null;
+  /**
+   * Что сделает захват и каких ячеек это коснётся. `null` вне режима захвата.
+   *
+   * План приходит ГОТОВЫМ из шага, а не считается здесь: правило «набор или
+   * выброс» живёт в `systems`, и второй его экземпляр в рендере однажды
+   * разошёлся бы с первым — подсветка обещала бы не то, что произойдёт.
+   */
+  readonly grab: GrabView | null;
   /**
    * Подпись выбранного вида постройки. Пустая строка — не в режиме
    * строительства.
@@ -291,6 +309,43 @@ export interface GhostView {
    * ДО того, как она встанет, а смотрит он в место постановки, а не под панель.
    */
   readonly side: -1 | 0 | 1;
+}
+
+/**
+ * План захвата для кадра.
+ *
+ * `cells` — ЧУЖОЙ переиспользуемый буфер: пары `x, y` в координатах мира,
+ * значимы первые `count * 2` элементов. Копии здесь нет намеренно — план
+ * считается в шаге и рисуется тем же кадром, а копирование 338 чисел на кадр
+ * ради формальной неизменяемости не окупается.
+ */
+export interface GrabView {
+  readonly action: 'take' | 'drop' | 'none';
+  readonly cells: Int16Array;
+  readonly count: number;
+  /** Сторона квадрата в ячейках: контур рисуется по ней, а не по числу ячеек. */
+  readonly side: number;
+  readonly used: number;
+  readonly capacity: number;
+  /** Куда наведён квадрат, в координатах мира. */
+  readonly targetX: number;
+  readonly targetY: number;
+}
+
+function contents(items: readonly { readonly name: string; readonly count: number }[]): string {
+  return items.length > 0 ? items.map((c) => `${c.name} ${c.count}`).join('  ') : 'пусто';
+}
+
+/**
+ * Строка «что я несу»: захват всегда, инвентарь — только когда пылесос открыт.
+ *
+ * Отдельная функция, а не выражение по месту: правило «пустой ёмкости в кадре
+ * нет» проверяемо без браузера, и жить оно должно там, где его видно проверке.
+ */
+export function carryLine(hud: HudState): string {
+  const grab = `Захват ${hud.grabUsed}/${hud.grabCapacity}   ${contents(hud.grabHeld)}`;
+  if (!hud.hasVacuum) return grab;
+  return `${grab}   ·   Инвентарь ${hud.used}/${hud.capacity}   ${contents(hud.carried)}   Высыпать: ${hud.selected}`;
 }
 
 export interface MachineView {
@@ -394,6 +449,9 @@ export class Renderer {
     this.drawMachines(camera, hud.machines);
     this.drawPlayer(camera, player);
     if (hud.ghost) this.drawGhost(camera, hud.ghost);
+    // Подсветка захвата — ДО прицела: крестик обязан остаться поверх неё,
+    // иначе точка прицеливания теряется в залитом квадрате.
+    if (hud.grab) this.drawGrab(camera, hud.grab);
     this.drawAim(crosshairX, crosshairY, crosshairInReach, hud.collecting, hud.collectRadius);
 
     // Мир — на экран, и только потом интерфейс. Порядок обратный сломал бы
@@ -671,6 +729,73 @@ export class Renderer {
     }
   }
 
+  /**
+   * Захват: контур квадрата со шкалой заполнения по периметру и подсветка
+   * затрагиваемых ячеек.
+   *
+   * Исключение из правила «прицел показывает точку, а не обводит площадь»,
+   * по которому у копания и сбора предпросмотра нет. Держится на том, что
+   * вопросы разные: ширину копательной кисти игрок узнаёт, копнув, а
+   * пригодность ячейки и остаток места проверить нечем, кроме как потеряв
+   * комок. Обоснование целиком — в спеке `matter-grabber`.
+   */
+  private drawGrab(camera: Camera, grab: GrabView): void {
+    const take = grab.action === 'take';
+    // Разные СЕМЕЙСТВА лестницы, а не соседние ступени одного: «беру»
+    // и «кладу» различаются до нажатия, и различие обязано пережить
+    // и светлый реголит, и тёмную пещеру. Синий не путается с водой —
+    // выброс подсвечивает только пустые ячейки, а вода пустой не бывает.
+    const tint = take ? RAMP.green[4] : RAMP.blue[4];
+
+    // Через ячейку по Байеру: сплошная заливка закрыла бы вещество под собой,
+    // а вопрос захвата ровно про то, какое вещество он берёт.
+    for (let i = 0; i < grab.count; i++) {
+      const x = grab.cells[i * 2]! - camera.x;
+      const y = grab.cells[i * 2 + 1]! - camera.y;
+      if (threshold(x, y) >= 0.5) continue;
+      this.setPixel(x, y, tint);
+    }
+
+    this.drawGrabFrame(camera, grab, tint);
+  }
+
+  /**
+   * Контур квадрата, он же шкала заполнения: первая доля периметра — ярким
+   * тоном, остаток — тусклым.
+   *
+   * Периметр, а не заливка внутри: внутренность занята подсветкой ячеек,
+   * и второй слой поверх неё сделал бы нечитаемыми оба. Обход начинается
+   * с левого верхнего угла по часовой стрелке — направление произвольно,
+   * но постоянно, иначе шкала «дёргалась» бы между кадрами.
+   */
+  private drawGrabFrame(camera: Camera, grab: GrabView, tint: number): void {
+    const half = (grab.side - 1) >> 1;
+    const left = grab.targetX - half - camera.x;
+    const top = grab.targetY - half - camera.y;
+    const side = grab.side;
+    const perimeter = 4 * side - 4;
+    const filled = Math.round((grab.used / grab.capacity) * perimeter);
+
+    for (let k = 0; k < perimeter; k++) {
+      let x: number;
+      let y: number;
+      if (k < side) {
+        x = left + k;
+        y = top;
+      } else if (k < 2 * side - 1) {
+        x = left + side - 1;
+        y = top + (k - side + 1);
+      } else if (k < 3 * side - 2) {
+        x = left + side - 1 - (k - (2 * side - 2));
+        y = top + side - 1;
+      } else {
+        x = left;
+        y = top + side - 1 - (k - (3 * side - 3));
+      }
+      this.setPixel(x, y, k < filled ? tint : RAMP.gray[4]);
+    }
+  }
+
   private drawPlayer(camera: Camera, player: Player): void {
     const originX = Math.round(player.x + SPRITE_OFFSET_X - camera.x);
     const originY = Math.round(player.y + SPRITE_OFFSET_Y - camera.y);
@@ -782,16 +907,7 @@ export class Renderer {
     drawActionBar(this.ui, layout, hud.slots, hud.activeSlot, hud.hoveredSlot);
     drawCreditsCounter(this.ui, viewW, hud.credits);
 
-    const carried =
-      hud.carried.length > 0 ? hud.carried.map((c) => `${c.name} ${c.count}`).join('  ') : 'пусто';
-    drawBarLine(
-      this.ui,
-      viewW,
-      layout,
-      0,
-      `${hud.used}/${hud.capacity}   ${carried}   Высыпать: ${hud.selected}`,
-      RAMP.gray[9],
-    );
+    drawBarLine(this.ui, viewW, layout, 0, carryLine(hud), RAMP.gray[9]);
 
     // Вид постройки и причина отказа — ТОЛЬКО в режиме строительства и над
     // панелью, туда, куда игрок смотрит, выбирая место. Вне режима этих строк

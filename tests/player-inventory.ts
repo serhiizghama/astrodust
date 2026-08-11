@@ -23,8 +23,9 @@ import {
   PORTABLE_MATERIALS,
 } from '../src/world';
 import type { Rect } from '../src/geometry';
-import { Digger, Vacuum } from '../src/systems';
-import { Player, Inventory } from '../src/entities';
+import { Digger, Vacuum, Grabber } from '../src/systems';
+import { Player, Inventory, Grab } from '../src/entities';
+import { Research } from '../src/progress';
 import {
   PLAYER,
   FIXED_DT,
@@ -33,9 +34,10 @@ import {
   BASE_VIEW_H,
   DIG,
   VACUUM,
+  GRAB_CAPACITY,
   UI,
 } from '../src/config';
-import { aimDirection, actionTarget, ActionBarState } from '../src/core';
+import { aimDirection, actionTarget, ActionBarState, ToolMode } from '../src/core';
 import { check, luna, IDLE_SLOTS, pick, said } from './harness';
 import { box, count, settle, pending, quiet } from './fixtures/world';
 
@@ -428,7 +430,12 @@ const { spawn } = first;
   // --- Режим инструмента ---
 
   {
-    const tool = new ActionBarState();
+    // Пылесос куплен: правила выбора режима проверяются на открытом дереве,
+    // а закрытость слота — отдельным блоком ниже.
+    const opened = new Research();
+    opened.buy('vacuum', { credits: 10_000, spend: () => true });
+    const tool = new ActionBarState(opened);
+    const COLLECT = tool.slots.findIndex((s) => s?.mode === ToolMode.Collect);
     check(
       'Режим начинается с копания и виден выделенным слотом',
       tool.digging && !tool.collecting && tool.activeSlot === 0,
@@ -436,18 +443,18 @@ const { spawn } = first;
     );
 
     // Прямой выбор — за одно нажатие и без промежуточных режимов. Перебор
-    // до третьего слота потребовал бы двух.
-    tool.select(2);
+    // до слота сбора потребовал бы трёх.
+    tool.select(COLLECT);
     check(
       'Прямой выбор слота сбора — за одно нажатие',
-      tool.collecting && tool.activeSlot === 2,
+      tool.collecting && tool.activeSlot === COLLECT,
       `слот ${tool.activeSlot}`,
     );
     tool.select(0);
 
     // Пустой слот активным не становится: инструмент, который «ничего
     // не делает», неотличим от поломки.
-    tool.select(5);
+    tool.select(8);
     check(
       'Пустой слот не становится активным',
       tool.digging && tool.activeSlot === 0,
@@ -467,10 +474,10 @@ const { spawn } = first;
     const dug = digger.update(FIXED_DT, w, held && tool.digging, 40, 40, 40, 40);
     check('В режиме копания инструмент копает', dug > 0, `выемка ${dug}`);
 
-    tool.select(2);
+    tool.select(COLLECT);
     check(
       'Переключение режима видно сразу, до первого применения',
-      tool.collecting && !tool.digging && tool.activeSlot === 2,
+      tool.collecting && !tool.digging && tool.activeSlot === COLLECT,
       `слот ${tool.activeSlot}`,
     );
 
@@ -513,6 +520,84 @@ const { spawn } = first;
     }
   }
 
+  // --- Пылесос закрыт до исследования ---
+
+  {
+    const fresh = new ActionBarState(new Research());
+    const COLLECT = fresh.slots.findIndex((s) => s?.mode === ToolMode.Collect);
+
+    fresh.select(COLLECT);
+    check(
+      'До покупки режим сбора не выбирается ни прямым выбором',
+      !fresh.collecting && fresh.digging,
+      `слот ${fresh.activeSlot}`,
+    );
+
+    let visited = false;
+    for (let i = 0; i < 20; i++) {
+      fresh.cycle();
+      if (fresh.collecting) visited = true;
+    }
+    check('До покупки перебор в сбор не заводит', !visited);
+
+    // Захват при этом доступен с первого кадра: копать и не иметь чем унести —
+    // это тупик, а не начало партии.
+    fresh.select(fresh.slots.findIndex((s) => s?.mode === ToolMode.Grab));
+    check('Захват доступен без единой покупки', fresh.grabbing);
+
+    // Списки переносимого у сбора и захвата ОДИН И ТОТ ЖЕ: двух списков
+    // в игре быть не должно.
+    let mismatch = '';
+    for (const m of MATERIALS) {
+      const vw = box();
+      const gw = box();
+      for (let y = 35; y <= 45; y++) {
+        for (let x = 35; x <= 45; x++) {
+          vw.set(x, y, m.id);
+          gw.set(x, y, m.id);
+        }
+      }
+      const inv = new Inventory();
+      const buf = new Grab();
+      Vacuum.collect(vw, inv, 40, 40);
+      new Grabber().update(FIXED_DT, gw, buf, true, true, 40, 40, 40, 40);
+      if (inv.used > 0 !== buf.used > 0) mismatch += `${m.name} `;
+    }
+    check('Сбор и захват берут одни и те же вещества', mismatch === '', mismatch);
+  }
+
+  // --- Переносчики независимы ---
+
+  {
+    // Вещества разные, и высыпается ВЫБРАННОЕ: инвентарь несёт то, что стоит
+    // в переборе первым, иначе высыпание не найдёт чего высыпать и проверка
+    // пройдёт по ложной причине.
+    const w = box();
+    const inv = new Inventory();
+    const buf = new Grab();
+    inv.add(inv.selected, 20);
+    buf.add(MAT.IRIDIUM, 20);
+
+    new Vacuum().updateDump(FIXED_DT, w, inv, true, 40, 40, 40, 40);
+    check(
+      'Высыпание из инвентаря не трогает буфер захвата',
+      count(w, inv.selected) > 0 && count(w, MAT.IRIDIUM) === 0 && buf.count(MAT.IRIDIUM) === 20,
+      `в мире ${count(w, inv.selected)}, в захвате ${buf.used}`,
+    );
+
+    const w2 = box();
+    const inv2 = new Inventory();
+    const buf2 = new Grab();
+    inv2.add(MAT.PULP, 20);
+    buf2.add(MAT.IRIDIUM, 20);
+    new Grabber().update(FIXED_DT, w2, buf2, true, true, 40, 40, 40, 40);
+    check(
+      'Выброс из захвата не трогает инвентарь',
+      count(w2, MAT.IRIDIUM) === 20 && inv2.count(MAT.PULP) === 20 && buf2.used === 0,
+      `иридия в мире ${count(w2, MAT.IRIDIUM)}, пульпы в инвентаре ${inv2.count(MAT.PULP)}`,
+    );
+  }
+
   // --- Состояние игры в кадре ---
   //
   // Интерфейс рисуется в СВОЁМ слое, поэтому проверяется журнал поверхности,
@@ -537,7 +622,9 @@ const { spawn } = first;
 
     const hud: HudState = {
       slots: IDLE_SLOTS,
-      activeSlot: 2,
+      // Пылесос куплен: этот блок про строку инвентаря, а до покупки её
+      // в кадре нет вовсе.
+      activeSlot: IDLE_SLOTS.findIndex((s) => s.action === 'collect'),
       hoveredSlot: null,
       collecting: true,
       collectRadius: VACUUM.radius,
@@ -548,7 +635,12 @@ const { spawn } = first;
       credits: 1234,
       buildKind: '',
       buildIssue: '',
+      hasVacuum: true,
+      grabHeld: [],
+      grabUsed: 0,
+      grabCapacity: GRAB_CAPACITY,
       ghost: null,
+      grab: null,
       machines: [],
       overlay: null,
     };

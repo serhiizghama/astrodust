@@ -10,6 +10,7 @@
 export { Player, NO_INPUT } from './player';
 export type { PlayerInput } from './player';
 export { Inventory } from './inventory';
+export { Grab } from './grab';
 export { Building, BuildingRegistry, stampKind, hullForSide, kindLabel } from './buildings';
 export type { BuildingKind } from './buildings';
 export { BUILD_CATALOG, BuildCatalogState, isKindOpen, sectionKindByHull } from './catalog';

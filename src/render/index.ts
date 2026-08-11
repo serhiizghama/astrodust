@@ -9,13 +9,14 @@
  */
 export {
   Renderer,
+  carryLine,
   BRUSH_OUTLINE,
   VACUUM_OUTLINE,
   vacuumOutline,
   rollerOffset,
   MACHINE_STATE_COLORS,
 } from './renderer';
-export type { HudState, GhostView, FrameView } from './renderer';
+export type { HudState, GhostView, GrabView, FrameView } from './renderer';
 export { Camera } from './camera';
 export { Backdrop } from './backdrop';
 /**

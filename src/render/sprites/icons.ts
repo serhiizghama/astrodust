@@ -87,12 +87,63 @@ const COLLECT_ROWS = [
   '............',
 ];
 
+/**
+ * Захват: раскрытые клешни вокруг комка вещества.
+ *
+ * Форма отличается от сбора не деталью, а силуэтом: сбор — воронка, сужающаяся
+ * к низу, захват — две скобы по краям с грузом между ними. Слоты читаются
+ * боковым зрением, и различие обязано выживать в двенадцати пикселях.
+ */
+const GRAB_ROWS = [
+  '............',
+  '.22......22.',
+  '.21......12.',
+  '.21......12.',
+  '.21.3333.12.',
+  '.2133333312.',
+  '.2133333312.',
+  '.2133333312.',
+  '.2233333322.',
+  '..23333332..',
+  '...222222...',
+  '............',
+];
+
 const COIN_ROWS = ['..444..', '.43334.', '4333334', '4333334', '4333334', '.43334.', '..444..'];
+
+/**
+ * Палитра приглушённого значка: тот же рисунок на четыре ступени темнее.
+ *
+ * Приглушение ПАЛИТРОЙ, а не прозрачностью: слой интерфейса рисует значок
+ * ячейка в пиксель без альфы, и полупрозрачный значок пришлось бы заводить
+ * отдельной дорогой в поверхности ради одного состояния слота.
+ */
+const DIM_ICON_PALETTE = [
+  RAMP.gray[0],
+  RAMP.gray[4], // тело
+  RAMP.gray[1], // контур
+  RAMP.warm[1], // акцент
+  RAMP.warm[2],
+];
+
+/**
+ * Приглушённый двойник значка. Ключ СВОЙ: по ключу значок опознаётся в кэше
+ * растеризации, и общий ключ отдал бы закрытому слоту картинку доступного.
+ */
+function dimmed(src: UiIcon): UiIcon {
+  return { ...src, key: `${src.key}-locked`, palette: DIM_ICON_PALETTE };
+}
 
 export const DIG_ICON = icon('dig', DIG_ROWS, ACTION_ICON);
 export const BUILD_ICON = icon('build', BUILD_ROWS, ACTION_ICON);
 export const COLLECT_ICON = icon('collect', COLLECT_ROWS, ACTION_ICON);
+export const GRAB_ICON = icon('grab', GRAB_ROWS, ACTION_ICON);
 export const COIN_ICON = icon('coin', COIN_ROWS, CURRENCY_ICON);
+
+export const DIG_ICON_LOCKED = dimmed(DIG_ICON);
+export const BUILD_ICON_LOCKED = dimmed(BUILD_ICON);
+export const COLLECT_ICON_LOCKED = dimmed(COLLECT_ICON);
+export const GRAB_ICON_LOCKED = dimmed(GRAB_ICON);
 
 /**
  * Значки технологий. Того же размера, что и значки действий: второго размера
@@ -195,6 +246,9 @@ const TECH_FALLBACK_ROWS = [
  * место в узле читалось бы как поломка отрисовки.
  */
 const TECH_ICONS: Record<string, UiIcon> = {
+  // Тот же силуэт, что и у слота сбора: узел дерева и слот, который он
+  // открывает, обязаны опознаваться друг в друге без чтения подписи.
+  vacuum: icon('tech-vacuum', COLLECT_ROWS, TECH_ICON),
   conveyor: icon('tech-conveyor', TECH_CONVEYOR_ROWS, TECH_ICON),
   nozzle: icon('tech-nozzle', TECH_NOZZLE_ROWS, TECH_ICON),
   'nozzle-heavy': icon('tech-nozzle-heavy', TECH_NOZZLE_HEAVY_ROWS, TECH_ICON),

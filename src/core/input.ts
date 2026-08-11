@@ -1,4 +1,6 @@
 import { BASE_VIEW_W, BASE_VIEW_H, DIG } from '../config';
+import { CONTENT, NO_UNLOCKS } from '../progress';
+import type { ContentUnlocks } from '../progress';
 import { Display } from './display';
 
 /**
@@ -81,20 +83,39 @@ export const ToolMode = {
   Dig: 0,
   Collect: 1,
   Build: 2,
+  Grab: 3,
 } as const;
 
 export type ToolModeValue = (typeof ToolMode)[keyof typeof ToolMode];
 
 /**
+ * Запись слота панели действий.
+ *
+ * `requires` — идентификатор содержимого, без которого слот ЗАКРЫТ; тот же
+ * идентификатор, которым каталог построек спрашивает про конвейер. Условие
+ * данными, а не веткой: следующий инструмент за исследование обязан быть
+ * строкой этой таблицы.
+ */
+export interface ActionSlot {
+  readonly mode: ToolModeValue;
+  readonly requires: string | null;
+}
+
+/**
  * Раскладка слотов панели действий. Пустой слот — это `null`, а не отсутствие
  * записи: пустые слоты занимают место в раскладке кадра и показывают, что
  * место под будущее есть.
+ *
+ * Порядок: сначала два инструмента, которыми игрок располагает с первого кадра,
+ * затем стройка, затем закрытый до исследования сбор. Закрытый слот виден
+ * и занимает своё место — цель исследования, которую не видно до покупки,
+ * целью не является.
  */
-export const ACTION_SLOTS: readonly (ToolModeValue | null)[] = [
-  ToolMode.Dig,
-  ToolMode.Build,
-  ToolMode.Collect,
-  null,
+export const ACTION_SLOTS: readonly (ActionSlot | null)[] = [
+  { mode: ToolMode.Dig, requires: null },
+  { mode: ToolMode.Grab, requires: null },
+  { mode: ToolMode.Build, requires: null },
+  { mode: ToolMode.Collect, requires: CONTENT.VACUUM },
   null,
   null,
   null,
@@ -118,16 +139,26 @@ export class ActionBarState {
   readonly slots = ACTION_SLOTS;
   private index = 0;
 
+  /**
+   * Умолчание `NO_UNLOCKS` — то же, что у остальных читателей прогресса:
+   * проверке достаточно передать состояние партии, а не собирать дерево.
+   */
+  constructor(private readonly unlocks: ContentUnlocks = NO_UNLOCKS) {}
+
   get activeSlot(): number {
     return this.index;
   }
 
   get mode(): ToolModeValue {
-    return this.slots[this.index]!;
+    return this.slots[this.index]!.mode;
   }
 
   get digging(): boolean {
     return this.mode === ToolMode.Dig;
+  }
+
+  get grabbing(): boolean {
+    return this.mode === ToolMode.Grab;
   }
 
   get collecting(): boolean {
@@ -139,19 +170,31 @@ export class ActionBarState {
   }
 
   /**
+   * Можно ли выбрать слот прямо сейчас.
+   *
+   * Спрашивается КАЖДЫЙ РАЗ, а не запоминается при старте: покупка обязана
+   * открыть слот немедленно, без перезапуска.
+   */
+  available(slot: number): boolean {
+    const entry = this.slots[slot];
+    if (!entry) return false;
+    return entry.requires === null || this.unlocks.has(entry.requires);
+  }
+
+  /**
    * Выбрать слот напрямую.
    *
-   * Пустой слот активным не становится: инструмент, который «ничего не делает»,
-   * неотличим от поломки, и прежний выбор остаётся в силе.
+   * Пустой и закрытый слоты активными не становятся: инструмент, который
+   * «ничего не делает», неотличим от поломки, и прежний выбор остаётся в силе.
    */
   select(slot: number): void {
     if (slot < 0 || slot >= this.slots.length) return;
-    if (this.slots[slot] === null) return;
+    if (!this.available(slot)) return;
     this.index = slot;
   }
 
   /**
-   * Следующий НЕПУСТОЙ слот по кругу.
+   * Следующий ДОСТУПНЫЙ слот по кругу — мимо пустых и мимо закрытых.
    *
    * Перебор списком, а не переключатель: добавление режима MUST NOT требовать
    * новой клавиши, иначе раскладка растёт вместе с числом зданий.
@@ -160,7 +203,7 @@ export class ActionBarState {
     const n = this.slots.length;
     for (let step = 1; step <= n; step++) {
       const next = (this.index + step) % n;
-      if (this.slots[next] !== null) {
+      if (this.available(next)) {
         this.index = next;
         return;
       }

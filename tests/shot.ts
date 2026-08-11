@@ -32,6 +32,7 @@ import {
   CONVEYOR,
   BUILD_MODULE,
   SIM_HZ,
+  GRAB_CAPACITY,
 } from '../src/config';
 import type { Display } from '../src/core';
 import { IDLE_SLOTS } from './harness';
@@ -223,7 +224,12 @@ const hud: HudState = {
   credits: 1234,
   buildKind: '',
   buildIssue: '',
+  hasVacuum: false,
+  grabHeld: [],
+  grabUsed: 0,
+  grabCapacity: GRAB_CAPACITY,
   ghost: null,
+  grab: null,
   machines: [],
   overlay: null,
 };

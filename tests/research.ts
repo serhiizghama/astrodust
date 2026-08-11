@@ -54,6 +54,7 @@ import {
   VACUUM,
   SEPARATOR,
   SIM_HZ,
+  GRAB_CAPACITY,
 } from '../src/config';
 import { check, luna, pick, said, saysLike, amountAt } from './harness';
 
@@ -112,6 +113,7 @@ const first = luna();
   };
   const menu = (over: Partial<typeof NO_MENU> = {}) => ({ ...NO_MENU, ...over });
 
+  const VACUUM_TECH = 'vacuum';
   const CONVEYOR_TECH = 'conveyor-belt';
   const WIDE = 'wide-nozzle';
   const HEAVY = 'heavy-nozzle';
@@ -160,6 +162,63 @@ const first = luna();
       reached.size === TECHNOLOGIES.length,
       `достижимо ${reached.size} из ${TECHNOLOGIES.length}`,
     );
+
+    // Апгрейд кисти без самой кисти покупается вслепую: радиус меняется
+    // в профиле, а в мире не меняется ничего.
+    check(
+      'Расширения кисти сбора требуют пылесоса',
+      tech(WIDE).requires.includes(VACUUM_TECH) && tech(HEAVY).requires.includes(WIDE),
+      `широкий раструб требует: ${tech(WIDE).requires.join(', ')}`,
+    );
+
+    const vacuumEffect = tech(VACUUM_TECH).effect;
+    check(
+      'Пылесос — корень дерева и открывает содержимое',
+      tech(VACUUM_TECH).requires.length === 0 &&
+        vacuumEffect.kind === 'unlock' &&
+        vacuumEffect.content === CONTENT.VACUUM,
+    );
+
+    // Пылесос закрыт, и до него возит только захват. Цена, до которой нечем
+    // дойти, заперла бы партию целиком, поэтому первая покупка меряется
+    // в полных комках самого дешёвого вещества.
+    const cheapest = Math.min(
+      ...TECHNOLOGIES.filter((t) => t.requires.length === 0).map((t) => t.cost),
+    );
+    const perTrip = GRAB_CAPACITY * MAT_CREDIT_RATE[MAT.REGOLITH_LOOSE]!;
+    const trips = Math.ceil(cheapest / perTrip);
+    check(
+      'Первая покупка достижима за небольшое число ходок захватом',
+      trips > 0 && trips <= 8,
+      `${trips} комков реголита по ${perTrip} ₡ при цене ${cheapest} ₡`,
+    );
+  }
+
+  // --- Технология открывает инструмент тем же видом эффекта ---
+
+  {
+    const r = new Research();
+    const wallet = { credits: 10_000, spend: () => true };
+    const before = r.has(CONTENT.VACUUM);
+    r.buy(VACUUM_TECH, wallet);
+    check(
+      'Покупка пылесоса открывает содержимое немедленно',
+      !before && r.has(CONTENT.VACUUM) && r.isOpen(VACUUM_TECH),
+    );
+
+    // Вид эффекта у инструмента ТОТ ЖЕ, что у постройки: третьего вида нет.
+    check(
+      'Инструмент и постройка открываются одним видом эффекта',
+      tech(VACUUM_TECH).effect.kind === tech(CONVEYOR_TECH).effect.kind,
+    );
+
+    const poor = new Research();
+    const empty = { credits: 0, spend: () => false };
+    poor.buy(WIDE, empty);
+    check(
+      'Раструб без пылесоса не покупается ни при каком счёте',
+      !poor.buy(WIDE, { credits: 1_000_000, spend: () => true }) && !poor.isOpen(WIDE),
+    );
   }
 
   // --- Профиль настроек ---
@@ -187,7 +246,10 @@ const first = luna();
     // Профили независимы: один экземпляр не глобальная переменная под другим
     // именем, и покупка в одной партии не трогает другую.
     const other = new Research();
-    other.buy(WIDE, wallet(tech(WIDE).cost));
+    const otherPurse = wallet(tech(VACUUM_TECH).cost + tech(WIDE).cost);
+    // Раструб требует пылесоса: апгрейд кисти покупается только после самой кисти.
+    other.buy(VACUUM_TECH, otherPurse);
+    other.buy(WIDE, otherPurse);
     check(
       'Профили независимы: покупка в одном состоянии не трогает другое',
       other.tuning.collectRadius !== fresh.tuning.collectRadius && fresh.tuning.isBase,
@@ -252,7 +314,7 @@ const first = luna();
     );
     check(
       'После открытия предпосылки покупка проходит',
-      r.buy(WIDE, money) && r.buy(HEAVY, money) && r.isOpen(HEAVY),
+      r.buy(VACUUM_TECH, money) && r.buy(WIDE, money) && r.buy(HEAVY, money) && r.isOpen(HEAVY),
     );
   }
 
@@ -318,6 +380,8 @@ const first = luna();
     const beforeCells = vac.updateSuck(FIXED_DT, beforeWorld, inv, true, 40, 40, 40, 40);
 
     const money = wallet(100000);
+    // Пылесос — предпосылка раструба: без него апгрейд кисти не покупается.
+    r.buy(VACUUM_TECH, money);
     r.buy(WIDE, money);
     const afterInv = new Inventory();
     const afterVac = new Vacuum(r.tuning);
@@ -718,7 +782,23 @@ const first = luna();
     }
 
     // Покупка подтверждением с клавиатуры.
-    while (ov.selected.id !== CONVEYOR_TECH) ov.move(0, -1);
+    //
+    // Дойти до ленты СЕТКОЙ, а не одной вертикалью: шаг по строкам не выводит
+    // из колонки, и стоило раструбу уехать в колонку глубже, как обход вверх
+    // перестал доходить до цели и повис. Шагов не больше, чем клеток сетки, —
+    // навигация, которая не дошла, обязана падать проверкой, а не висеть.
+    const belt = TECH_NODES[TECHNOLOGIES.findIndex((t) => t.id === CONVEYOR_TECH)]!;
+    for (let step = 0; step < TECH_COLS * TECH_ROWS; step++) {
+      if (ov.selected.id === CONVEYOR_TECH) break;
+      const at = TECH_NODES[ov.selectedIndex]!;
+      if (at.col !== belt.col) ov.move(at.col < belt.col ? 1 : -1, 0);
+      else ov.move(0, at.row < belt.row ? 1 : -1);
+    }
+    check(
+      'Обход клавишами доходит до ленты',
+      ov.selected.id === CONVEYOR_TECH,
+      `выбран ${ov.selected.name}`,
+    );
     const beforeBuy = money.credits;
     ov.handle(menu({ menuConfirmPressed: true }), r, money);
     check(
@@ -1216,10 +1296,13 @@ const first = luna();
         );
         const openAt = tech(CONVEYOR_TECH);
         r2.buy(CONVEYOR_TECH, wallet(openAt.cost));
+        // Доступный пример — КОРЕНЬ дерева: у раструба теперь есть предпосылка,
+        // и при закрытом пылесосе объяснять ему как раз есть что.
         check(
           'Купленному и доступному объяснять нечего',
           statusNote(openAt, r2.status(openAt, 100000), 100000, r2).kind === 'none' &&
-            statusNote(tech(WIDE), r2.status(tech(WIDE), 100000), 100000, r2).kind === 'none',
+            statusNote(tech(VACUUM_TECH), r2.status(tech(VACUUM_TECH), 100000), 100000, r2).kind ===
+              'none',
         );
       }
 

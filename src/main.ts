@@ -1,4 +1,4 @@
-import { WORLD_SEED, BUILD_AIM_DISTANCE, PLAYER } from './config';
+import { WORLD_SEED, BUILD_AIM_DISTANCE, PLAYER, GRAB } from './config';
 import {
   Display,
   Input,
@@ -20,10 +20,19 @@ import {
   nodeAtPoint,
   overClose,
 } from './render';
-import type { HudState, HudSlot, SlotAction, GhostView, OverlayView, FrameView } from './render';
+import type {
+  HudState,
+  HudSlot,
+  SlotAction,
+  GhostView,
+  GrabView,
+  OverlayView,
+  FrameView,
+} from './render';
 import {
   Research,
   ResearchOverlay,
+  CONTENT,
   TECHNOLOGIES,
   statusNote,
   TECH_NODES,
@@ -36,13 +45,14 @@ import {
   Player,
   NO_INPUT,
   Inventory,
+  Grab,
   LandingModule,
   BuildCatalogState,
   kindLabel,
 } from './entities';
 import type { BuildingKind } from './entities';
 import { generateLuna, MATERIALS, PORTABLE_MATERIALS } from './world';
-import { Digger, Vacuum, Builder, BuildRun, DebugPainter } from './systems';
+import { Digger, Vacuum, Grabber, Builder, BuildRun, DebugPainter } from './systems';
 import type { BuildPreview } from './systems';
 import { Game } from './app';
 import type { GameState, StepIntent } from './app';
@@ -79,10 +89,14 @@ const buildings = game.buildings;
 const renderer = new Renderer(display, world, surface, WORLD_SEED, new CanvasSurface(display));
 const digger = new Digger();
 const vacuum = new Vacuum(research.tuning);
+const grabber = new Grabber();
 const painter = new DebugPainter();
-const tool = new ActionBarState();
+// Панель спрашивает исследования, открыт ли слот: закрытый до покупки режим —
+// это строка раскладки, а не ветка кода.
+const tool = new ActionBarState(research);
 const catalog = new BuildCatalogState(research);
 const inventory = new Inventory();
+const grab = new Grab();
 
 // Звук — читатель, а не участник: он получает счётчики уже отработавшего шага
 // и ничего в мире не трогает.
@@ -95,6 +109,11 @@ let targetInReach = false;
  * и подсветка, и то, доходит ли мышиное применение инструмента до мира.
  */
 let hoveredSlot: number | null = null;
+/**
+ * План захвата для кадра. Считается в шаге вместе с применением — из одного
+ * вызова, чтобы подсветка не могла разойтись с тем, что произойдёт.
+ */
+let grabView: GrabView | null = null;
 /**
  * Что под курсором в открытом меню: узел, крестик или ничего. Считается только
  * при открытом оверлее — закрытое меню курсором не задевается.
@@ -123,6 +142,27 @@ let buildIssue = '';
  * быстрее.
  */
 let simTime = 0;
+
+/**
+ * План захвата, обёрнутый для кадра.
+ *
+ * Берётся у инструмента ПОСЛЕ применения и без повторного счёта: `plan` внутри
+ * `update` уже отработал, и второй вызов дал бы картинку уже изменённого мира —
+ * подсветку того, что сейчас взяли, вместо того, что возьмут.
+ */
+function grabPlanView(targetX: number, targetY: number): GrabView {
+  const plan = grabber.lastPlan;
+  return {
+    action: plan.action,
+    cells: plan.cells,
+    count: plan.count,
+    side: GRAB.side,
+    used: grab.used,
+    capacity: grab.capacity,
+    targetX,
+    targetY,
+  };
+}
 
 /** Причина отказа словами. Все они про место и исправимы прямо сейчас. */
 function placementIssueText(preview: BuildPreview): string {
@@ -246,6 +286,27 @@ const playState: GameState = {
       aim.x,
       aim.y,
     );
+
+    // Захват считает план ВСЕГДА, пока выбран его режим, а не только при
+    // нажатии: тот же план кормит подсветку, и она обязана показывать решение
+    // до того, как игрок нажмёт.
+    if (tool.grabbing) {
+      grabber.update(
+        dt,
+        world,
+        grab,
+        input.toolPressed,
+        input.toolHeld,
+        player.centerX,
+        player.centerY,
+        aim.x,
+        aim.y,
+        game.occupant,
+      );
+      grabView = grabPlanView(aim.x, aim.y);
+    } else {
+      grabView = null;
+    }
 
     applyBuilding(dir, cursorX, cursorY);
 
@@ -476,6 +537,9 @@ const overlayState: GameState = {
   handleInput(): StepIntent {
     overlay.handle(input, research, landingModule, pointerTarget);
     ghost = null;
+    // Подсветка захвата гаснет вместе с контуром постройки: открытый оверлей
+    // забирает ввод целиком, и обещать действие, которого не будет, нельзя.
+    grabView = null;
     buildIssue = '';
     // Ввод принадлежит меню целиком, и панель под ним неактивна: попадание
     // курсора не считается вовсе.
@@ -586,28 +650,43 @@ function overlayView(): OverlayView | null {
  * и дублировать их ради отрисовки означало бы завести второй источник правды,
  * который однажды разойдётся с первым.
  */
+/** Вид действия по режиму. Разбор ПОЛНЫЙ: новый режим обязан попасть в кадр. */
+const SLOT_ACTIONS: Record<number, SlotAction> = {
+  [ToolMode.Dig]: 'dig',
+  [ToolMode.Grab]: 'grab',
+  [ToolMode.Build]: 'build',
+  [ToolMode.Collect]: 'collect',
+};
+
 /**
- * Слоты панели для кадра: подпись клавиши и вид действия.
- *
- * Собирается ОДИН РАЗ, а не на кадр: раскладка слотов постоянна, а меняются
- * только активный и наведённый. Подпись десятого слота — `0`: на клавиатуре
- * ноль стоит после девятки.
+ * Подписи клавиш и виды действий: раскладка слотов постоянна и считается один
+ * раз. Подпись десятого слота — `0`: на клавиатуре ноль стоит после девятки.
  */
-const HUD_SLOTS: readonly HudSlot[] = tool.slots.map((mode, i) => ({
-  key: `${(i + 1) % 10}`,
-  action:
-    mode === null
-      ? null
-      : mode === ToolMode.Dig
-        ? ('dig' as SlotAction)
-        : mode === ToolMode.Build
-          ? ('build' as SlotAction)
-          : ('collect' as SlotAction),
-}));
+const SLOT_LABELS: readonly { key: string; action: SlotAction | null }[] = tool.slots.map(
+  (entry, i) => ({
+    key: `${(i + 1) % 10}`,
+    action: entry === null ? null : SLOT_ACTIONS[entry.mode]!,
+  }),
+);
+
+/**
+ * Слоты панели для кадра.
+ *
+ * Собираются НА КАДР, а не один раз: закрытость слота снимается покупкой,
+ * и застывший снимок оставил бы пылесос закрытым по виду до перезагрузки.
+ * Постоянная часть при этом посчитана заранее — меняется только признак.
+ */
+function hudSlots(): readonly HudSlot[] {
+  return SLOT_LABELS.map((slot, i) => ({
+    key: slot.key,
+    action: slot.action,
+    locked: slot.action !== null && !tool.available(i),
+  }));
+}
 
 function hudState(): HudState {
   return {
-    slots: HUD_SLOTS,
+    slots: hudSlots(),
     activeSlot: tool.activeSlot,
     hoveredSlot,
     collecting: tool.collecting,
@@ -619,10 +698,18 @@ function hudState(): HudState {
     used: inventory.used,
     capacity: inventory.capacity,
     selected: inventory.selectedName,
+    hasVacuum: research.has(CONTENT.VACUUM),
+    grabHeld: PORTABLE_MATERIALS.filter((id) => grab.count(id) > 0).map((id) => ({
+      name: MATERIALS[id]!.name,
+      count: grab.count(id),
+    })),
+    grabUsed: grab.used,
+    grabCapacity: grab.capacity,
     credits: landingModule.credits,
     buildKind: tool.building ? buildKindLabel() : '',
     buildIssue: tool.building ? buildIssue : '',
     ghost,
+    grab: grabView,
     machines: buildings.all.map((b) => ({
       x: b.x,
       y: b.y,

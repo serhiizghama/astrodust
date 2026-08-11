@@ -307,23 +307,27 @@ const { spawn } = first;
 
   {
     const tool = new ActionBarState();
+    // ОТКРЫТЫХ режимов, а не всех: сбор закрыт до покупки пылесоса, и перебор
+    // его не посещает.
+    const open = tool.slots.filter((_, i) => tool.available(i)).length;
     const seen: number[] = [tool.mode];
-    for (let i = 0; i < 2; i++) {
+    for (let i = 0; i < open - 1; i++) {
       tool.cycle();
       seen.push(tool.mode);
     }
     tool.cycle();
     check(
-      'Режимов три, перебираются по кругу одной клавишей и возвращаются к первому',
-      seen.length === 3 &&
-        new Set(seen).size === 3 &&
+      'Открытые режимы перебираются по кругу одной клавишей и возвращаются к первому',
+      seen.length === open &&
+        new Set(seen).size === open &&
         tool.mode === seen[0] &&
         tool.mode === ToolMode.Dig,
       seen.join(' → ') + ' → ' + tool.mode,
     );
 
-    // В режиме строительства инструмент не копает и не собирает.
-    tool.select(1);
+    // В режиме строительства инструмент не копает и не собирает. Номер слота
+    // берётся из раскладки: порядок правится в одном месте.
+    tool.select(tool.slots.findIndex((e) => e?.mode === ToolMode.Build));
     check(
       'Слот строительства выбирается напрямую',
       tool.building && !tool.digging && !tool.collecting,

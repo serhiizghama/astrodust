@@ -28,9 +28,10 @@ import {
   MAX_VIEW_W,
   MAX_VIEW_H,
   VACUUM,
-  HUD,
+  GRAB_CAPACITY,
 } from '../src/config';
 import type { Display } from '../src/core';
+import { IDLE_SLOTS } from './harness';
 
 /**
  * Размер кадра — величина рантайма, поэтому замеряются оба края диапазона:
@@ -59,10 +60,7 @@ const player = new Player(spawn.x, spawn.y);
  * рисуется она всегда — значит, и в замер обязана входить.
  */
 const hud: HudState = {
-  slots: Array.from({ length: HUD.slots }, (_, i) => ({
-    key: `${(i + 1) % 10}`,
-    action: i === 0 ? 'dig' : i === 1 ? 'build' : i === 2 ? 'collect' : null,
-  })),
+  slots: IDLE_SLOTS,
   activeSlot: 0,
   hoveredSlot: null,
   collecting: false,
@@ -71,10 +69,15 @@ const hud: HudState = {
   used: 0,
   capacity: VACUUM.capacity,
   selected: 'Реголит',
+  hasVacuum: false,
+  grabHeld: [],
+  grabUsed: 0,
+  grabCapacity: GRAB_CAPACITY,
   credits: 0,
   buildKind: '',
   buildIssue: '',
   ghost: null,
+  grab: null,
   machines: [],
   overlay: null,
 };

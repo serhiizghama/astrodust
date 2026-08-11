@@ -18,16 +18,34 @@ import { RAMP, css } from '../palette';
 import { fitText, bodyText, smallText, BAR_PLATE } from './ui';
 import type { PanelStyle, UiIcon, UiSurface } from './ui';
 import { CREDITS_TONE, drawCredits } from './credits';
-import { ACTION_ICON, DIG_ICON, BUILD_ICON, COLLECT_ICON } from './sprites/icons';
+import {
+  ACTION_ICON,
+  DIG_ICON,
+  GRAB_ICON,
+  BUILD_ICON,
+  COLLECT_ICON,
+  DIG_ICON_LOCKED,
+  GRAB_ICON_LOCKED,
+  BUILD_ICON_LOCKED,
+  COLLECT_ICON_LOCKED,
+} from './sprites/icons';
 
 /** Что делает слот. Строка, а не режим из `core`: рендер не решает, чем копают. */
-export type SlotAction = 'dig' | 'build' | 'collect';
+export type SlotAction = 'dig' | 'grab' | 'build' | 'collect';
 
 export interface HudSlot {
   /** Подпись клавиши прямого выбора. */
   readonly key: string;
   /** `null` — слот пуст и зарезервирован. */
   readonly action: SlotAction | null;
+  /**
+   * Слот закрыт до исследования: значок на месте, выбрать нельзя.
+   *
+   * Отдельно от пустого: пустой — место под будущее, закрытый — цель, которую
+   * игрок уже видит и может себе купить. Одинаковый вид сделал бы из второго
+   * первое.
+   */
+  readonly locked: boolean;
 }
 
 /** Раскладка панели действий в ячейках кадра. */
@@ -48,8 +66,17 @@ export interface HudLayout {
 
 const ACTION_ICONS: Record<SlotAction, UiIcon> = {
   dig: DIG_ICON,
+  grab: GRAB_ICON,
   build: BUILD_ICON,
   collect: COLLECT_ICON,
+};
+
+/** Те же значки для закрытого слота: рисунок тот, тон приглушённый. */
+const ACTION_ICONS_LOCKED: Record<SlotAction, UiIcon> = {
+  dig: DIG_ICON_LOCKED,
+  grab: GRAB_ICON_LOCKED,
+  build: BUILD_ICON_LOCKED,
+  collect: COLLECT_ICON_LOCKED,
 };
 
 /**
@@ -68,6 +95,22 @@ const SLOT_PLAIN: PanelStyle = {
 const SLOT_EMPTY: PanelStyle = {
   fill: css(RAMP.gray[2], UI.alpha.slot),
   stroke: css(RAMP.gray[1], UI.alpha.edge),
+  strokeWidth: UI.stroke.thin,
+  radius: UI.radius.slot,
+};
+
+/**
+ * Закрытый слот: заливка тёмная, как у пустого, но обводка ЗАМЕТНАЯ.
+ *
+ * Разведён с обоими соседями и с каждым — двумя средствами. От доступного:
+ * заливка темнее и обводка приглушена. От пустого: обводка светлее на четыре
+ * ступени и значок нарисован — пустому рисовать нечего. Значок приглушённый:
+ * цель, которую не видно до покупки, целью не является, но и путать её
+ * с готовым инструментом нельзя.
+ */
+const SLOT_LOCKED: PanelStyle = {
+  fill: css(RAMP.gray[2], UI.alpha.slot),
+  stroke: css(RAMP.gray[5], UI.alpha.edge),
   strokeWidth: UI.stroke.thin,
   radius: UI.radius.slot,
 };
@@ -154,24 +197,29 @@ export function drawActionBar(
   for (let i = 0; i < layout.slots; i++) {
     const slot = slots[i];
     const action = slot?.action ?? null;
+    const locked = slot?.locked ?? false;
     const x = layout.slotX + i * layout.slotStep;
     const y = layout.slotY;
     const size = layout.slotSize;
     const active = i === activeSlot;
     const hovered = i === hoveredSlot;
 
+    // Закрытость сильнее наведения: слот, подсвечивающийся под курсором так же,
+    // как доступный, обещает выбор, которого не будет.
     const style = active
       ? SLOT_ACTIVE
-      : hovered
-        ? SLOT_HOVER
-        : action === null
-          ? SLOT_EMPTY
-          : SLOT_PLAIN;
+      : locked
+        ? SLOT_LOCKED
+        : hovered
+          ? SLOT_HOVER
+          : action === null
+            ? SLOT_EMPTY
+            : SLOT_PLAIN;
     ui.panel(x, y, size, size, style);
 
     if (action !== null) {
       ui.icon(
-        ACTION_ICONS[action],
+        (locked ? ACTION_ICONS_LOCKED : ACTION_ICONS)[action],
         x + ((size - ACTION_ICON) >> 1),
         y + ((size - ACTION_ICON) >> 1) + HUD.iconDropY,
       );

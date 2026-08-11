@@ -4,7 +4,7 @@
  * Запуск — `npm test` (все наборы) или `npm test -- <имя>` (один набор).
  */
 import { generateLuna, MATERIALS, PORTABLE_MATERIALS } from '../src/world';
-import { WORLD_SEED, VACUUM } from '../src/config';
+import { WORLD_SEED, VACUUM, GRAB_CAPACITY } from '../src/config';
 import { COIN_KEY } from '../src/render';
 import type { HudState, HudSlot, UiOp } from '../src/render';
 import type { Input } from '../src/core';
@@ -103,7 +103,9 @@ export const asInput = (f: FakeInput) => f as unknown as Input;
  */
 export const IDLE_SLOTS: readonly HudSlot[] = Array.from({ length: HUD.slots }, (_, i) => ({
   key: `${(i + 1) % 10}`,
-  action: i === 0 ? 'dig' : i === 1 ? 'build' : i === 2 ? 'collect' : null,
+  action: i === 0 ? 'dig' : i === 1 ? 'grab' : i === 2 ? 'build' : i === 3 ? 'collect' : null,
+  // Сбор закрыт до покупки пылесоса — это и есть состояние начала партии.
+  locked: i === 3,
 }));
 
 /** Интерфейс в начале партии — для проверок, которым важен не HUD. */
@@ -117,10 +119,15 @@ export const IDLE_HUD: HudState = {
   used: 0,
   capacity: VACUUM.capacity,
   selected: MATERIALS[PORTABLE_MATERIALS[0]!]!.name,
+  hasVacuum: false,
+  grabHeld: [],
+  grabUsed: 0,
+  grabCapacity: GRAB_CAPACITY,
   credits: 0,
   buildKind: '',
   buildIssue: '',
   ghost: null,
+  grab: null,
   machines: [],
   overlay: null,
 };

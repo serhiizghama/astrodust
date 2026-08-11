@@ -86,8 +86,12 @@ console.log(
   // Строительство: разом активный слот, вид постройки и — при негодном месте —
   // причина отказа. Наведение мышью на соседний слот: подсветка обязана
   // отличаться от выделения.
-  await page.keyboard.press('Digit2');
-  await page.mouse.move(css(layout.slotX + 2 * layout.slotStep + 9), css(layout.slotY + 9));
+  //
+  // Стройка на ТРЕТЬЕМ слоте, а наводимся на второй: четвёртый занят закрытым
+  // сбором, а закрытость сильнее наведения — подсветки на нём не увидеть,
+  // и снимок перестал бы показывать то, ради чего сделан.
+  await page.keyboard.press('Digit3');
+  await page.mouse.move(css(layout.slotX + layout.slotStep + 9), css(layout.slotY + 9));
   await page.waitForTimeout(300);
 
   await page.screenshot({ path: `shots/ui-hud${suffix}.png` });

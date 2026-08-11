@@ -41,11 +41,13 @@ src/
 │                   hud (панель действий и счётчик), overlay (дерево
 │                   технологий графом), material-colors, sprites/
 │
-├─ systems/         геймплейные сервисы: digging, vacuum, builder, painter.
-│                   Применяют действие игрока к миру — слой НАД миром и сущностями
+├─ systems/         геймплейные сервисы: digging, vacuum, grabber, builder,
+│                   painter. Применяют действие игрока к миру — слой НАД миром
+│                   и сущностями
 │
-├─ entities/        player, inventory, buildings (реестр + база), separator,
-│                   conveyor, catalog (что можно строить), landing-module
+├─ entities/        player, inventory, grab (буфер захвата), buildings
+│                   (реестр + база), separator, conveyor, catalog (что можно
+│                   строить), landing-module
 ├─ progress/        research (покупки за кредиты), technologies (таблица),
 │                   tech-layout (раскладка графа из предпосылок), tuning (профиль)
 │
@@ -82,6 +84,7 @@ src/
 | Новый цвет | `palette.ts` → `RAMP`. Цветов вне `RAMP` в игре нет |
 | Новая клавиша | `core/input.ts` + `game-shell` спека. Клавиша обязательна только для мирового цикла (ход, инструмент, слот, режим, вещество, высыпание, открыть/закрыть меню); указательное действие может остаться на одной мыши |
 | Новое действие в слоте панели | `ACTION_SLOTS` в `core/input.ts` + значок в `render/sprites/icons.ts`. Клавиша слота уже есть: цифровой ряд занят весь |
+| Инструмент за исследование | `requires` в записи слота (`ACTION_SLOTS`) + строка в `progress/technologies.ts` с эффектом `unlock`. Закрытый слот виден и приглушён; веток по имени технологии нет |
 | Кегль, цвет или вид интерфейса | `UI` в `config.ts` (кегли, радиусы, тени, прозрачности) и `render/ui/skin.ts` (общий вид). Ширина строки нигде не задаётся: она измеряется |
 | Новый мир | `world/worlds/<name>.ts` + `WorldProfile`. Гравитация и палитра — свойства мира, не константы |
 

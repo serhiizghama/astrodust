@@ -19,5 +19,5 @@ export {
   actionTarget,
   cursorSide,
 } from './input';
-export type { ToolModeValue } from './input';
+export type { ToolModeValue, ActionSlot } from './input';
 export { GameLoop } from './loop';

@@ -33,6 +33,8 @@ import {
   cursorSide,
   AimSourceTracker,
   ActionBarState,
+  ACTION_SLOTS,
+  ToolMode,
 } from '../src/core';
 import { check, UNLOCKED, luna, FakeInput, asInput } from './harness';
 import { readdirSync, readFileSync } from 'node:fs';
@@ -538,11 +540,12 @@ const { world } = first;
     // а не путь, которым лента стала доступна.
     const catalog = new BuildCatalogState(UNLOCKED);
 
-    // Слот строительства — прямым выбором, за одно нажатие.
-    const digit = down('Digit2');
+    // Слот строительства — прямым выбором, за одно нажатие. Цифра берётся
+    // из раскладки, а не выписывается: порядок слотов правится в одном месте.
+    const digit = down(`Digit${ACTION_SLOTS.findIndex((e) => e?.mode === ToolMode.Build) + 1}`);
     const slot = input.slotPressed;
     if (slot !== null) tool.select(slot);
-    up('Digit2');
+    up(`Digit${ACTION_SLOTS.findIndex((e) => e?.mode === ToolMode.Build) + 1}`);
     input.endStep();
 
     let picked = false;
@@ -1044,9 +1047,11 @@ const { world } = first;
     const tool = new ActionBarState();
     const wasDigging = tool.digging;
     tool.cycle();
+    // Что именно за копанием, здесь неважно: проверяется, что переключатель
+    // сработал НА ЭТОМ шаге, а не то, каким по счёту стоит следующий режим.
     check(
       'Порядок шага: смена режима видна немедленно, а не со следующего шага',
-      wasDigging && !tool.digging && tool.building,
+      wasDigging && !tool.digging && tool.activeSlot !== 0,
       `слот ${tool.activeSlot}, копание ${tool.digging}`,
     );
   }

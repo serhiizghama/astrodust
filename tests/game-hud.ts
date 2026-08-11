@@ -15,11 +15,14 @@ import {
   slotAtPoint,
   overBar,
   drawResearchOverlay,
+  carryLine,
   COIN_KEY,
 } from '../src/render';
 import type { HudState, HudLayout, UiOp, PanelStyle, OverlayView } from '../src/render';
 import type { Display } from '../src/core';
 import { ActionBarState, ToolMode } from '../src/core';
+import { Research, NO_UNLOCKS } from '../src/progress';
+import type { ContentUnlocks } from '../src/progress';
 import { Player, kindLabel, CONVEYOR_KIND, SEPARATOR_KIND } from '../src/entities';
 import {
   BASE_VIEW_W,
@@ -30,11 +33,14 @@ import {
   HUD,
   UI,
 } from '../src/config';
-import { check, luna, IDLE_HUD, pick, said, saysLike, amountAt } from './harness';
+import { check, luna, IDLE_HUD, IDLE_SLOTS, pick, said, saysLike, amountAt } from './harness';
 import { TECHNOLOGIES, TECH_NODES, TECH_EDGES } from '../src/progress';
 
 const first = luna();
 const { spawn } = first;
+
+/** Слот стройки в новой раскладке. Номер берётся из таблицы, а не выписывается. */
+const BUILD_SLOT = IDLE_SLOTS.findIndex((s) => s.action === 'build');
 
 // --- Раскладка ---
 
@@ -128,32 +134,36 @@ const { spawn } = first;
 // --- Состояние выбора ---
 
 {
-  const bar = new ActionBarState();
+  // Всё открыто: панель до появления закрытых слотов и после покупки пылесоса
+  // ведёт себя одинаково, и правила выбора проверяются на ней.
+  const ALL: ContentUnlocks = { has: () => true };
+  const bar = new ActionBarState(ALL);
   check(
-    'Слоты: копание, строительство, сбор — остальные пусты',
+    'Слоты: копание, захват, стройка, сбор — остальные пусты',
     bar.slots.length === HUD.slots &&
-      bar.slots[0] === ToolMode.Dig &&
-      bar.slots[1] === ToolMode.Build &&
-      bar.slots[2] === ToolMode.Collect &&
-      bar.slots.slice(3).every((s) => s === null),
-    bar.slots.map((s) => (s === null ? '·' : s)).join(''),
+      bar.slots[0]?.mode === ToolMode.Dig &&
+      bar.slots[1]?.mode === ToolMode.Grab &&
+      bar.slots[2]?.mode === ToolMode.Build &&
+      bar.slots[3]?.mode === ToolMode.Collect &&
+      bar.slots.slice(4).every((s) => s === null),
+    bar.slots.map((s) => (s === null ? '·' : s.mode)).join(''),
   );
 
-  // Прямой выбор — за ОДНО нажатие: перебор до третьего слота потребовал бы двух.
-  bar.select(2);
-  check('Слоты: прямой выбор за одно нажатие', bar.collecting && bar.activeSlot === 2);
+  // Прямой выбор — за ОДНО нажатие: перебор до четвёртого слота потребовал бы трёх.
+  bar.select(3);
+  check('Слоты: прямой выбор за одно нажатие', bar.collecting && bar.activeSlot === 3);
 
   // Пустой слот активным не становится: инструмент, который «ничего не делает»,
   // неотличим от поломки.
   bar.select(7);
   check(
     'Слоты: пустой слот не становится активным',
-    bar.collecting && bar.activeSlot === 2,
+    bar.collecting && bar.activeSlot === 3,
     `слот ${bar.activeSlot}`,
   );
   bar.select(-1);
   bar.select(HUD.slots);
-  check('Слоты: номер за пределами ряда ничего не меняет', bar.activeSlot === 2);
+  check('Слоты: номер за пределами ряда ничего не меняет', bar.activeSlot === 3);
 
   // Перебор идёт только по непустым и возвращается к началу.
   const filled = bar.slots.filter((s) => s !== null).length;
@@ -169,6 +179,74 @@ const { spawn } = first;
       visited.length === filled &&
       visited.every((s) => bar.slots[s] !== null),
     visited.join(' → '),
+  );
+}
+
+// --- Закрытый слот ---
+
+{
+  // Начало партии: пылесос не куплен, слот сбора виден, но выбрать его нельзя.
+  const bar = new ActionBarState(NO_UNLOCKS);
+  const collectSlot = bar.slots.findIndex((s) => s?.mode === ToolMode.Collect);
+
+  check(
+    'Закрытый слот: сбор закрыт до покупки, остальные открыты',
+    !bar.available(collectSlot) &&
+      bar.available(0) &&
+      bar.available(1) &&
+      bar.available(2) &&
+      !bar.available(4),
+    `сбор в слоте ${collectSlot}`,
+  );
+
+  bar.select(collectSlot);
+  check(
+    'Закрытый слот: прямой выбор не проходит',
+    bar.digging && bar.activeSlot === 0,
+    `слот ${bar.activeSlot}`,
+  );
+
+  // Перебор обходит закрытый так же, как пустой: слот, в который перебор
+  // заводит, обязан работать.
+  const seen: number[] = [];
+  for (let i = 0; i < HUD.slots; i++) {
+    bar.cycle();
+    seen.push(bar.activeSlot);
+  }
+  check('Закрытый слот: перебор его не посещает', !seen.includes(collectSlot), seen.join(' → '));
+
+  // Покупка снимает закрытость немедленно и НЕ двигает клавиши: слот тот же.
+  const research = new Research();
+  const account = { credits: 10_000, spend: () => true };
+  research.buy('vacuum', account);
+  const opened = new ActionBarState(research);
+  opened.select(collectSlot);
+  check(
+    'Закрытый слот: покупка открывает его тем же номером',
+    opened.available(collectSlot) && opened.collecting && opened.activeSlot === collectSlot,
+    `слот ${opened.activeSlot}`,
+  );
+}
+
+// --- Строка над панелью ---
+
+{
+  // Ёмкость, которой у игрока ещё нет, в кадре не показывается: «0/4096»
+  // называет предел, до которого нечем дойти.
+  const before = carryLine(IDLE_HUD);
+  const after = carryLine({ ...IDLE_HUD, hasVacuum: true });
+  check(
+    'Строка: инвентарь появляется вместе с пылесосом',
+    !before.includes('Инвентарь') &&
+      !before.includes(`${IDLE_HUD.capacity}`) &&
+      after.includes('Инвентарь') &&
+      after.includes(`${IDLE_HUD.capacity}`),
+    before,
+  );
+  check(
+    'Строка: захват виден с первого кадра',
+    before.includes('Захват') && before.includes(`${IDLE_HUD.grabCapacity}`),
+    before,
   );
 }
 
@@ -244,9 +322,12 @@ const { spawn } = first;
     // Значок у каждого непустого слота: панель читается боковым зрением,
     // а текст размером с ноготь не читается вовсе.
     const icons = pick(base, 'icon').filter((op) => op.y >= layout.slotY);
+    // Закрытый слот значок ТОЖЕ рисует, только приглушённый: цель, которую
+    // не видно до покупки, целью не является.
+    const filled = IDLE_SLOTS.filter((s) => s.action !== null).length;
     check(
       'Кадр: у каждого непустого слота свой значок',
-      icons.length === 3 && new Set(icons.map((op) => op.key)).size === 3,
+      icons.length === filled && new Set(icons.map((op) => op.key)).size === filled,
       icons.map((op) => op.key).join(' '),
     );
   }
@@ -343,8 +424,12 @@ const { spawn } = first;
 
   // Строка инвентаря стоит НАД панелью и в неё не залезает.
   {
-    const filled = shoot({ carried: [{ name: 'Пульпа', count: 138 }], used: 138 });
-    const line = pick(filled, 'text').find((op) => op.text.includes('Пульпа'));
+    const withPulp = shoot({
+      hasVacuum: true,
+      carried: [{ name: 'Пульпа', count: 138 }],
+      used: 138,
+    });
+    const line = pick(withPulp, 'text').find((op) => op.text.includes('Пульпа'));
     check(
       'Кадр: строка инвентаря лежит над панелью и на неё не заходит',
       line !== undefined && line.y + UI.line <= layout.y,
@@ -354,9 +439,9 @@ const { spawn } = first;
 
   // Вид постройки и причина отказа — ТОЛЬКО в режиме строительства.
   {
-    const building = shoot({ activeSlot: 1, buildKind: 'Сепаратор' });
+    const building = shoot({ activeSlot: BUILD_SLOT, buildKind: 'Сепаратор' });
     const refused = shoot({
-      activeSlot: 1,
+      activeSlot: BUILD_SLOT,
       buildKind: 'Сепаратор',
       buildIssue: 'нет опоры',
     });
@@ -395,7 +480,7 @@ const { spawn } = first;
       );
 
       // Подпись со стороной доходит до кадра целиком, а не обрезается до вида.
-      const shown = shoot({ activeSlot: 1, buildKind: right });
+      const shown = shoot({ activeSlot: BUILD_SLOT, buildKind: right });
       check(
         'Кадр: подпись со стороной попадает над панель целиком',
         pick(shown, 'text').some((op) => op.text === right),
@@ -418,7 +503,7 @@ const { spawn } = first;
   // не зависит, и это то, ради чего слои разделены.
   {
     const before = pixels.slice();
-    shoot({ activeSlot: 1, buildKind: 'Сепаратор', hoveredSlot: 3 }, 60);
+    shoot({ activeSlot: BUILD_SLOT, buildKind: 'Сепаратор', hoveredSlot: 3 }, 60);
     const after = pixels.slice();
     let changed = 0;
     for (let i = 0; i < before.length; i += 4) {
