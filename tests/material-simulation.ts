@@ -10,11 +10,13 @@ import {
   MAT_YIELD_RATE,
   MatterState,
   MATERIALS,
+  MAT_CARRY_DEPTH,
+  MAX_CARRY_DEPTH,
 } from '../src/world';
 import type { Rect } from '../src/geometry';
 import { Vacuum, DebugPainter } from '../src/systems';
 import { Player, Inventory } from '../src/entities';
-import { PLAYER, CHUNK_SIZE, DIG } from '../src/config';
+import { PLAYER, CHUNK_SIZE, DIG, CONVEYOR } from '../src/config';
 import { check, luna } from './harness';
 import { box, count, settle, pending, quiet } from './fixtures/world';
 
@@ -1168,5 +1170,175 @@ const first = luna();
         `реголит ${dry.width}×${dry.height}, пульпа ${wet.width}×${wet.height}`,
       );
     }
+  }
+}
+
+{
+  // --- Перенос сыпучего несущей поверхностью ---
+  //
+  // Правило проверяется ЧЕРЕЗ ТАБЛИЦУ, а не через конвейер: перенос — свойство
+  // поверхности, и лента здесь лишь единственная запись, у которой оно ненулевое.
+  // Что именно везёт лента, спрашивает `tests/conveyor.ts`.
+
+  const SURFACE = MAT.CONVEYOR_RIGHT;
+  const DEPTH = MAT_CARRY_DEPTH[SURFACE]!;
+  const BELT_Y = 60;
+
+  /** Мир с несущей поверхностью в строке `BELT_Y` и столбиком груза над ней. */
+  function carrier(height: number, at = 40, material = MAT.REGOLITH_LOOSE): World {
+    const w = box(96, 96);
+    for (let x = 10; x <= 80; x++) w.set(x, BELT_Y, SURFACE);
+    for (let k = 1; k <= height; k++) w.set(at, BELT_Y - k, material);
+    return w;
+  }
+
+  /** Столбик груза в колонке: снизу вверх, начиная от поверхности. */
+  function column(w: World, at: number, height: number, material: number): boolean[] {
+    const rows: boolean[] = [];
+    for (let k = 1; k <= height; k++) rows.push(w.get(at, BELT_Y - k) === material);
+    return rows;
+  }
+
+  function steps(w: World, n: number): Simulation {
+    const sim = new Simulation();
+    for (let i = 0; i < n; i++) sim.update(w, null);
+    return sim;
+  }
+
+  check(
+    'Глубина полосы задана таблицей и ненулевая только у несущих поверхностей',
+    DEPTH > 0 && MATERIALS.every((m) => (m.carry === 0) === (m.carryDepth === 0)),
+    `глубина ${DEPTH}, наибольшая по таблице ${MAX_CARRY_DEPTH}`,
+  );
+
+  // Полоса едет ЦЕЛИКОМ и на одних и тех же шагах: столбик ровно в глубину
+  // полосы смещается весь, а не нижним рядом.
+  {
+    const w = carrier(DEPTH);
+    steps(w, CONVEYOR.stepsPerCell);
+    const moved = column(w, 41, DEPTH, MAT.REGOLITH_LOOSE);
+    const left = column(w, 40, DEPTH, MAT.REGOLITH_LOOSE);
+    check(
+      'Полоса едет целиком: все ряды столбика в глубину полосы смещаются разом',
+      moved.every(Boolean) && !left.some(Boolean),
+      `на новом месте ${moved.filter(Boolean).length} из ${DEPTH}, на старом ${left.filter(Boolean).length}`,
+    );
+  }
+
+  // Ряды полосы не расползаются по диагонали: свободные диагонали рядом есть,
+  // но полоса остаётся полосой, иначе очередь на поверхности невозможна.
+  {
+    const w = carrier(DEPTH);
+    steps(w, CONVEYOR.stepsPerCell * 8);
+    let offBand = 0;
+    for (let y = 0; y < 96; y++) {
+      for (let x = 0; x < 96; x++) {
+        if (w.get(x, y) !== MAT.REGOLITH_LOOSE) continue;
+        if (y > BELT_Y - 1 || y < BELT_Y - DEPTH) offBand++;
+      }
+    }
+    check(
+      'Ни один ряд полосы не скатывается по диагонали: все остались в её рядах',
+      offBand === 0 && count(w, MAT.REGOLITH_LOOSE) === DEPTH,
+      `вне полосы ${offBand}, всего ${count(w, MAT.REGOLITH_LOOSE)}`,
+    );
+  }
+
+  // Выше полосы — обычные правила сыпучего: куча оседает, а не едет целиком.
+  {
+    const extra = 2;
+    const w = carrier(DEPTH + extra);
+    steps(w, CONVEYOR.stepsPerCell);
+    const band = column(w, 41, DEPTH, MAT.REGOLITH_LOOSE);
+    // Ряды выше полосы за полосой не поехали: на новом месте их нет.
+    let rode = 0;
+    for (let k = DEPTH + 1; k <= DEPTH + extra; k++) {
+      if (w.get(41, BELT_Y - k) === MAT.REGOLITH_LOOSE) rode++;
+    }
+    check(
+      'Выше полосы груз не везётся: полоса уехала, а лежащее над ней — нет',
+      band.every(Boolean) && rode === 0,
+      `полоса ${band.filter(Boolean).length} из ${DEPTH}, уехало сверх полосы ${rode}`,
+    );
+    check(
+      'Куча выше полосы ничего не теряет',
+      count(w, MAT.REGOLITH_LOOSE) === DEPTH + extra,
+      `${count(w, MAT.REGOLITH_LOOSE)} из ${DEPTH + extra}`,
+    );
+  }
+
+  // Разрыв под ячейкой прерывает столбик: ячейка над пустотой не лежит
+  // на поверхности, а падает.
+  {
+    const w = box(96, 96);
+    for (let x = 10; x <= 80; x++) w.set(x, BELT_Y, SURFACE);
+    // Груз на второй строке над поверхностью, под ним пусто.
+    w.set(40, BELT_Y - 2, MAT.REGOLITH_LOOSE);
+    steps(w, 1);
+    check(
+      'Разрыв под ячейкой отменяет перенос: она падает, а не едет вбок',
+      w.get(40, BELT_Y - 1) === MAT.REGOLITH_LOOSE,
+      `оказалась на (${40}, ${BELT_Y - 2}) ${MATERIALS[w.get(40, BELT_Y - 2)]!.name}`,
+    );
+  }
+
+  // Глубину решает НАЙДЕННАЯ поверхность, а не автомат: та же полоса на другой
+  // глубине везёт другое число рядов, и правку симуляции это не требует.
+  {
+    const saved = MAT_CARRY_DEPTH[SURFACE]!;
+    MAT_CARRY_DEPTH[SURFACE] = 1;
+    const w = carrier(saved);
+    steps(w, CONVEYOR.stepsPerCell);
+    MAT_CARRY_DEPTH[SURFACE] = saved;
+    const moved = column(w, 41, saved, MAT.REGOLITH_LOOSE).filter(Boolean).length;
+    check(
+      'Мельче объявленной глубины поверхность тянет ровно столько рядов, сколько сказано',
+      moved === 1,
+      `при глубине 1 уехало рядов: ${moved}`,
+    );
+  }
+
+  // Пустая поверхность не будит чанки и ничего не стоит: спуск начинается
+  // от груза, а не от поверхности.
+  {
+    const w = box(96, 96);
+    for (let x = 10; x <= 80; x++) w.set(x, BELT_Y, SURFACE);
+    const sim = steps(w, 200);
+    check(
+      'Пустая несущая поверхность бесплатна: шаг не обходит ни одной ячейки',
+      sim.lastCellsVisited === 0,
+      `обойдено ${sim.lastCellsVisited}`,
+    );
+  }
+
+  // Перенос ничего не создаёт и не уничтожает — на смеси веществ и много шагов.
+  {
+    const w = carrier(DEPTH, 40, MAT.REGOLITH_LOOSE);
+    for (let k = 1; k <= DEPTH; k++) w.set(30, BELT_Y - k, MAT.PULP);
+    for (let k = 1; k <= DEPTH; k++) w.set(50, BELT_Y - k, MAT.IRIDIUM);
+    const before = [MAT.REGOLITH_LOOSE, MAT.PULP, MAT.IRIDIUM].map((m) => count(w, m));
+    steps(w, CONVEYOR.stepsPerCell * 40);
+    const after = [MAT.REGOLITH_LOOSE, MAT.PULP, MAT.IRIDIUM].map((m) => count(w, m));
+    check(
+      'Перенос сохраняет вещество: количество ячеек каждого материала то же',
+      before.every((n, i) => n === after[i]),
+      `${before.join('/')} → ${after.join('/')}`,
+    );
+  }
+
+  // Повторяемость: одинаковое начало и одинаковая последовательность шагов
+  // дают идентичные сетки. Хеша координат в правиле нет, гейт глобальный.
+  {
+    const a = carrier(DEPTH);
+    const b = carrier(DEPTH);
+    steps(a, CONVEYOR.stepsPerCell * 17);
+    steps(b, CONVEYOR.stepsPerCell * 17);
+    let diff = 0;
+    for (let i = 0; i < a.cells.length; i++) if (a.cells[i] !== b.cells[i]) diff++;
+    check(
+      'Перенос повторяем: две одинаковые прогонки дают одну сетку',
+      diff === 0,
+      `расхождений ${diff}`,
+    );
   }
 }

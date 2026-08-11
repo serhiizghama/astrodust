@@ -7,7 +7,13 @@
  * Это ЕДИНСТВЕННЫЙ вход в подсистему извне: снаружи импортируют отсюда,
  * внутри — напрямую друг у друга. Что не перечислено здесь — не публично.
  */
-export { Renderer, carryLine, rollerOffset, MACHINE_STATE_COLORS } from './renderer';
+export {
+  Renderer,
+  carryLine,
+  rollerOffset,
+  MACHINE_STATE_COLORS,
+  AREA_DASH_COLORS,
+} from './renderer';
 export type { HudState, GhostView, GrabView, FrameView } from './renderer';
 export { Camera } from './camera';
 export { Backdrop } from './backdrop';

@@ -1,4 +1,5 @@
-import { BUILD_MODULE } from '../config';
+import { BUILD_MODULE, DIG } from '../config';
+import type { Rect } from '../geometry';
 import { World, MAT, MAT_STATE, MatterState } from '../world';
 import { Digger } from './digging';
 import { stampKind, sectionKindByHull, isKindOpen, hullForSide } from '../entities';
@@ -79,6 +80,7 @@ export class BuildRun {
   private start: { x: number; y: number } | null = null;
   private moved = false;
   private onExisting = false;
+  private areaRun = false;
 
   /**
    * @param onExisting стояло ли что-то под началом жеста. Запоминается
@@ -86,11 +88,16 @@ export class BuildRun {
    * в любом случае, и отличить клик по ленте от клика по пустому месту уже
    * нечем — а различаются они противоположными действиями, сносом и
    * постановкой.
+   * @param area держал ли игрок модификатор области в момент нажатия.
+   * Запоминается здесь и до конца жеста не меняется: модификатор, нажатый
+   * посреди укладки, иначе превращал бы уже положенное в выделение — тот же
+   * довод, по которому строка протяжки берётся из начала жеста.
    */
-  begin(x: number, y: number, onExisting: boolean): void {
+  begin(x: number, y: number, onExisting: boolean, area = false): void {
     this.start = { x, y };
     this.moved = false;
     this.onExisting = onExisting;
+    this.areaRun = area;
   }
 
   /**
@@ -108,10 +115,16 @@ export class BuildRun {
     this.start = null;
     this.moved = false;
     this.onExisting = false;
+    this.areaRun = false;
   }
 
   get anchor(): { x: number; y: number } | null {
     return this.start;
+  }
+
+  /** Жест выделяет область сноса, а не кладёт линию. Решено на нажатии. */
+  get isArea(): boolean {
+    return this.start !== null && this.areaRun;
   }
 
   /** Жест идёт, но прицел ни разу не покинул клетку начала — то есть это клик. */
@@ -275,6 +288,105 @@ export class Builder {
 
     const left = side > 0 ? from : from - (count - 1) * BUILD_MODULE;
     return { y: row, x: count > 0 ? left : from, count, side, issue };
+  }
+
+  /**
+   * Прямоугольник областного сноса: два угла жеста, притянутые к сетке модуля
+   * и обрезанные дальностью руки.
+   *
+   * Обрезается САМА рамка, а не найденное в ней потом: круг руки выпуклый,
+   * поэтому рамка, четыре угловые клетки которой достижимы, достижима целиком,
+   * и `razeArea` про дальность уже не спрашивает. Тот же приём, что у линии,
+   * обрывающейся на первой недостижимой секции: игрок видит, докуда достаёт.
+   *
+   * Нулевая ширина — не достать даже клетку начала жеста.
+   */
+  static areaPreview(
+    playerCX: number,
+    playerCY: number,
+    anchorX: number,
+    anchorY: number,
+    targetX: number,
+    targetY: number,
+  ): Rect {
+    const ax = Builder.snap(anchorX);
+    const ay = Builder.snap(anchorY);
+    const tx = Builder.snap(targetX);
+    const ty = Builder.snap(targetY);
+    const stepX = tx >= ax ? 1 : -1;
+    const stepY = ty >= ay ? 1 : -1;
+    // Сжимать дальше дальности незачем, и цикл этим же ограничен сверху.
+    const span = Math.floor(DIG.reach / BUILD_MODULE) + 1;
+    let nx = Math.min(span, Math.abs(tx - ax) / BUILD_MODULE + 1);
+    let ny = Math.min(span, Math.abs(ty - ay) / BUILD_MODULE + 1);
+
+    for (;;) {
+      const x = stepX > 0 ? ax : ax - (nx - 1) * BUILD_MODULE;
+      const y = stepY > 0 ? ay : ay - (ny - 1) * BUILD_MODULE;
+      const rect = { x, y, w: nx * BUILD_MODULE, h: ny * BUILD_MODULE };
+      if (Builder.areaInReach(playerCX, playerCY, rect)) return rect;
+      if (nx === 1 && ny === 1) return { x, y, w: 0, h: 0 };
+      if (nx >= ny) nx--;
+      else ny--;
+    }
+  }
+
+  /** Достижимы ли все четыре угла рамки — то есть и всё, что между ними. */
+  private static areaInReach(px: number, py: number, r: Rect): boolean {
+    const right = r.x + r.w - 1;
+    const bottom = r.y + r.h - 1;
+    return (
+      Digger.inReach(px, py, r.x, r.y) &&
+      Digger.inReach(px, py, right, r.y) &&
+      Digger.inReach(px, py, r.x, bottom) &&
+      Digger.inReach(px, py, right, bottom)
+    );
+  }
+
+  /**
+   * Сносит всё, что игрок построил внутри рамки. Порода, сыпучее и корпус
+   * посадочного модуля не в счёт: это снос, а не второй инструмент копания.
+   *
+   * Два прохода, потому что границы у построек берутся из разных мест: у здания
+   * они записаны в реестре, у секции их нет вовсе и выводятся из сетки. Реестр
+   * перебирается СПИСКОМ, а не поиском по каждой клетке: зданий десятки,
+   * а клеток в рамке сотни.
+   *
+   * Дальность здесь не проверяется — рамка приходит уже обрезанной
+   * (`areaPreview`).
+   *
+   * @returns сколько построек исчезло. Ноль — рамка пуста, и это НЕ отказ.
+   */
+  static razeArea(world: World, registry: BuildingRegistry, area: Rect): number {
+    if (area.w === 0 || area.h === 0) return 0;
+    let razed = 0;
+
+    // Копия списка: снос вынимает запись из реестра прямо во время обхода.
+    // Пересечение, а не вложенность: постройка, задетая краем, сносится
+    // целиком — половина здания в сетке это обломок, которого не заказывали.
+    for (const b of [...registry.all]) {
+      const hits =
+        b.x < area.x + area.w &&
+        b.x + b.kind.width > area.x &&
+        b.y < area.y + area.h &&
+        b.y + b.kind.height > area.y;
+      if (!hits) continue;
+      Builder.demolish(world, registry, b);
+      razed++;
+    }
+
+    // Рамка выровнена по сетке модуля, поэтому шаг по клеткам попадает ровно
+    // в углы секций, и одной ячейки клетки довольно, чтобы узнать её вид.
+    for (let y = area.y; y < area.y + area.h; y += BUILD_MODULE) {
+      for (let x = area.x; x < area.x + area.w; x += BUILD_MODULE) {
+        const section = sectionKindByHull(world.get(x, y));
+        if (section === null) continue;
+        Builder.razeSection(world, section, x, y);
+        razed++;
+      }
+    }
+
+    return razed;
   }
 
   /**

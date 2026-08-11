@@ -3,7 +3,7 @@ import { Simulation } from '../src/world';
 import { Builder } from '../src/systems';
 import { LandingModule, Separator, OUTLET_ROW, OUTLET_FROM, OUTLET_TO } from '../src/entities';
 import { TECHNOLOGIES } from '../src/progress';
-import { FIXED_DT, SEPARATOR } from '../src/config';
+import { FIXED_DT, SEPARATOR, BUILD_MODULE } from '../src/config';
 import { check } from './harness';
 import { ground, count, settle } from './fixtures/world';
 import { BX, BY, scene, build, feed } from './fixtures/separator';
@@ -62,6 +62,23 @@ import { BX, BY, scene, build, feed } from './fixtures/separator';
       }
     }
     check('Цвета одиннадцати веществ попарно различны', clashes === '', clashes);
+  }
+
+  // --- Геометрия против общего модуля ---
+  //
+  // Машина от смены модуля не меняется вовсе, но держится это на кратности,
+  // а не на удаче: и корпус, и окно, и ноги обязаны ложиться на общую сетку —
+  // иначе лента, подведённая к машине, стыкуется с ней со сдвигом.
+  {
+    const legW = (SEPARATOR.width - SEPARATOR.window) >> 1;
+    check(
+      'Корпус, окно и ноги машины кратны общему модулю',
+      SEPARATOR.width % BUILD_MODULE === 0 &&
+        SEPARATOR.height % BUILD_MODULE === 0 &&
+        SEPARATOR.window % BUILD_MODULE === 0 &&
+        legW % BUILD_MODULE === 0,
+      `корпус ${SEPARATOR.width}×${SEPARATOR.height}, окно ${SEPARATOR.window}, нога ${legW}, модуль ${BUILD_MODULE}`,
+    );
   }
 
   // --- Приёмная грань ---

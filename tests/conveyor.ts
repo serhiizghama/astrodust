@@ -7,7 +7,14 @@ import {
   CONVEYOR_ROLLER_COLOR,
 } from '../src/render';
 import type { Display } from '../src/core';
-import { MAT, MAT_SOLID, MAT_CREDIT_RATE, MAT_CARRY, MATERIALS } from '../src/world';
+import {
+  MAT,
+  MAT_SOLID,
+  MAT_CREDIT_RATE,
+  MAT_CARRY,
+  MAT_CARRY_DEPTH,
+  MATERIALS,
+} from '../src/world';
 import type { Rect } from '../src/geometry';
 import { Digger, Vacuum, Builder, BuildRun } from '../src/systems';
 import {
@@ -224,33 +231,34 @@ const first = luna();
   }
 
   {
-    // Куча поверх ленты: подошва лежит на ленте, верхний слой — на подошве,
-    // и ленты под ним нет. Он обязан вести себя как обычное сыпучее.
+    // Столбик в полполосы едет ЦЕЛИКОМ: верхние ряды уезжают вместе с подошвой,
+    // а не осыпаются с движущегося ряда назад по диагонали.
     const w = sandbox();
+    const depth = MAT_CARRY_DEPTH[MAT.CONVEYOR_RIGHT]!;
     belt(w, 40, 10, 110, MAT.CONVEYOR_RIGHT);
-    w.set(51, 39, MAT.ROCK);
-    w.set(50, 39, MAT.PULP);
-    w.set(50, 38, MAT.REGOLITH_LOOSE);
-    run(w, 60);
+    for (let k = 1; k <= depth; k++) w.set(50, 40 - k, MAT.REGOLITH_LOOSE);
+    run(w, STEP);
+    let moved = 0;
+    for (let k = 1; k <= depth; k++) if (w.get(51, 40 - k) === MAT.REGOLITH_LOOSE) moved++;
     check(
-      'На куче поверх ленты подошва стоит на месте, а верхний слой скатывается по диагонали',
-      w.get(50, 39) === MAT.PULP && w.get(49, 39) === MAT.REGOLITH_LOOSE,
-      `подошва ${MATERIALS[w.get(50, 39)]!.name}, верх на (49,39) ${MATERIALS[w.get(49, 39)]!.name}`,
+      'Лента везёт полосу, а не ряд: столбик в полполосы уезжает целиком',
+      moved === depth,
+      `уехало ${moved} рядов из ${depth}`,
     );
   }
 
   {
-    // Верхний слой не едет вместе с подошвой: перенос читается из ячейки ПОД
-    // грузом, а под ним лежит не лента, а такое же сыпучее.
+    // Куча выше полосы: до верхних рядов лента не достаёт, и они подчиняются
+    // обычным правилам сыпучего.
     const w = sandbox();
+    const depth = MAT_CARRY_DEPTH[MAT.CONVEYOR_RIGHT]!;
     belt(w, 40, 10, 110, MAT.CONVEYOR_RIGHT);
-    w.set(50, 39, MAT.REGOLITH_LOOSE);
-    w.set(50, 38, MAT.PULP);
-    run(w, 1);
+    for (let k = 1; k <= depth + 1; k++) w.set(50, 40 - k, MAT.REGOLITH_LOOSE);
+    run(w, STEP);
     check(
-      'Едет только подошва: верхний слой по горизонтали не сместился',
-      w.get(51, 39) === MAT.REGOLITH_LOOSE && w.get(50, 39) === MAT.PULP,
-      `подошва на (51,39) ${MATERIALS[w.get(51, 39)]!.name}`,
+      'Выше полосы груз лентой не везётся',
+      w.get(51, 40 - depth - 1) !== MAT.REGOLITH_LOOSE,
+      `над полосой на (51,${40 - depth - 1}) ${MATERIALS[w.get(51, 40 - depth - 1)]!.name}`,
     );
   }
 
@@ -506,10 +514,20 @@ const first = luna();
       CONVEYOR_KIND.width === BUILD_MODULE && CONVEYOR_KIND.height === BUILD_MODULE,
       `${CONVEYOR_KIND.width}×${CONVEYOR_KIND.height}, модуль ${BUILD_MODULE}`,
     );
+    // Оба предела названы тем, что защищают: проход персонажа и просвет под
+    // выпускным окном. Прежней «половины хитбокса» больше нет — она выводилась
+    // из вдвое меньшего модуля и сама по себе не защищала ничего.
     check(
-      'Лента не выше половины персонажа и пролезает под окно машины',
-      CONVEYOR_KIND.height * 2 <= PLAYER.hitboxH && CONVEYOR_KIND.height < SEPARATOR.legs,
+      'Секция строго ниже персонажа и строго ниже просвета под окном машины',
+      CONVEYOR_KIND.height < PLAYER.hitboxH && CONVEYOR_KIND.height < SEPARATOR.legs,
       `секция ${CONVEYOR_KIND.height}, персонаж ${PLAYER.hitboxH}, просвет ${SEPARATOR.legs}`,
+    );
+    // Полоса — половина секции: везёт лента, а не одна её строка.
+    check(
+      'Лента тянет полосу в половину секции, а не один ряд',
+      MAT_CARRY_DEPTH[MAT.CONVEYOR_RIGHT] === CONVEYOR_KIND.height / 2 &&
+        MAT_CARRY_DEPTH[MAT.CONVEYOR_LEFT] === MAT_CARRY_DEPTH[MAT.CONVEYOR_RIGHT],
+      `глубина ${MAT_CARRY_DEPTH[MAT.CONVEYOR_RIGHT]}, секция ${CONVEYOR_KIND.height}`,
     );
 
     // Все виды стоят по ОДНОЙ сетке модуля: центрирования на прицеле нет
@@ -604,14 +622,18 @@ const first = luna();
   {
     const w = sandbox();
     const registry = new BuildingRegistry();
-    for (let i = 0; i < 6; i++) lay(w, registry, 1, 20 + i * SZ, 32);
-    w.set(21, 31, MAT.REGOLITH_LOOSE);
+    // Координаты по СЕТКЕ: круглое число само по себе на границу секции
+    // не попадает, и груз оказался бы замурован внутри корпуса.
+    const top = Builder.snap(32);
+    const from = Builder.snap(20);
+    for (let i = 0; i < 6; i++) lay(w, registry, 1, from + i * SZ, top);
+    w.set(from + 3, top - 1, MAT.REGOLITH_LOOSE);
     run(w, STEP * 10);
     const at = findOne(w, MAT.REGOLITH_LOOSE);
     check(
       'Груз едет по верхнему ряду секции, а не внутри неё',
-      at !== null && at.y === 31 && at.x === 31,
-      at ? `(${at.x},${at.y})` : 'потерялся',
+      at !== null && at.y === top - 1 && at.x === from + 3 + 10,
+      at ? `(${at.x},${at.y}), ждали (${from + 13},${top - 1})` : 'потерялся',
     );
   }
 
@@ -769,8 +791,8 @@ const first = luna();
 
     // Ленты высотой в СЕКЦИЮ и по сетке модуля: ролики занимают середину
     // корпуса, и лента в одну строку их не показала бы вовсе.
-    const BELT_RIGHT_Y = 100;
-    const BELT_LEFT_Y = 120;
+    const BELT_RIGHT_Y = Builder.snap(100);
+    const BELT_LEFT_Y = Builder.snap(120);
     const w = new World(400, 240, first.world.profile);
     const surface = new Int16Array(400);
     for (let x = 10; x < 300; x++) {
@@ -838,10 +860,13 @@ const first = luna();
       for (let sx = 20; sx < 150 - BUILD_MODULE; sx++) {
         if (right0[sx] !== right0[sx + BUILD_MODULE]) repeats = false;
       }
+      // Доля роликов в окне — ширина ролика к периоду; расхождение не больше
+      // одного ролика, потому что окно обрезает крайние с обеих сторон.
+      const expected = (130 * CONVEYOR.rollerWidth) / BUILD_MODULE;
       check(
         'Ряд роликов повторяется с шагом секции',
-        repeats && stripes * BUILD_MODULE >= 130 * CONVEYOR.rollerWidth - BUILD_MODULE,
-        `повтор ${repeats}, роликов ${stripes} из 130`,
+        repeats && Math.abs(stripes - expected) <= CONVEYOR.rollerWidth,
+        `повтор ${repeats}, роликов ${stripes} из 130, ждали ~${expected.toFixed(1)}`,
       );
     }
     check(
@@ -959,7 +984,7 @@ const first = luna();
     const beltFrom = Builder.snap(56);
     // Последняя секция обязана упираться в упор: незакрытый хвост означает,
     // что груз сваливается с ленты, не доехав до зоны.
-    const beltTo = Builder.snap(ZONE.x + ZONE.w - BUILD_MODULE);
+    const beltTo = Builder.snap(ZONE.x + ZONE.w - 1);
     for (let x = beltFrom; x <= beltTo; x += SZ) {
       lay(w, registry, 1, x, beltTop);
     }

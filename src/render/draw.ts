@@ -79,6 +79,43 @@ export function strokeRect(
 }
 
 /**
+ * Штриховой периметр: два чередующихся цвета одной длины.
+ *
+ * Штрих ДВУХЦВЕТНЫЙ, а не «цвет и просвет». Замер на кадре: один цвет отказа
+ * поверх спёкшегося реголита даёт перепад яркости 8.5 из 255 — рамка исчезает
+ * ровно там, где её чаще всего тянут. Пара, разнесённая по яркости, оставляет
+ * контраст на любом фоне: где не виден светлый штрих, виден тёмный.
+ *
+ * Фаза считается от угла самого прямоугольника, а не от начала кадра: у рамки,
+ * штрихи которой ползут при её растягивании, читается мерцание, а не граница.
+ */
+export function dashRect(
+  px: Uint8ClampedArray,
+  w: number,
+  h: number,
+  x: number,
+  y: number,
+  rw: number,
+  rh: number,
+  dash: number,
+  color: number,
+  altColor: number,
+): void {
+  if (rw <= 0 || rh <= 0) return;
+  const period = dash * 2;
+  for (let i = 0; i < rw; i++) {
+    const c = i % period < dash ? color : altColor;
+    setPixel(px, w, h, x + i, y, c);
+    setPixel(px, w, h, x + i, y + rh - 1, c);
+  }
+  for (let i = 1; i < rh - 1; i++) {
+    const c = i % period < dash ? color : altColor;
+    setPixel(px, w, h, x, y + i, c);
+    setPixel(px, w, h, x + rw - 1, y + i, c);
+  }
+}
+
+/**
  * Спрайт по индексам палитры. Индекс 0 прозрачен всегда — это соглашение
  * формата, а не свойство конкретной картинки.
  */

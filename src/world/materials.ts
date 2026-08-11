@@ -16,6 +16,7 @@
  */
 
 import { RAMP } from '../palette';
+import { CONVEYOR } from '../config';
 
 /** Агрегатное состояние: определяет, какой набор правил применяет симуляция. */
 export const MatterState = {
@@ -105,6 +106,15 @@ export interface Material {
    */
   readonly carry: -1 | 0 | 1;
   /**
+   * Сколько рядов груза тянет эта поверхность, считая вверх от неё самой.
+   * Ноль у всех, кроме несущих.
+   *
+   * Поле таблицы, а не константа автомата, — по той же причине, что и `carry`:
+   * вторая несущая поверхность вправе тянуть другое число рядов, и правило
+   * обязано спрашивать глубину так же, как спрашивает направление.
+   */
+  readonly carryDepth: number;
+  /**
    * Сколько света вещество отдаёт вокруг себя, 0..15. Ноль — не светится.
    *
    * Свойство ВЕЩЕСТВА, а не отрисовки: лава светит потому, что она лава, и
@@ -165,6 +175,7 @@ const base = {
   diggable: true,
   creditRate: 0,
   carry: 0 as -1 | 0 | 1,
+  carryDepth: 0,
   emit: 0,
 };
 
@@ -189,6 +200,9 @@ const CONVEYOR_BASE = {
   state: MatterState.Solid,
   // Куплена за кредиты: промах кистью не должен рвать ленту посередине.
   diggable: false,
+  // Полоса — свойство ленты, а не автомата; число выводится в `config.ts`
+  // из размера секции.
+  carryDepth: CONVEYOR.carryDepth,
 };
 
 export const MATERIALS: readonly Material[] = [
@@ -488,6 +502,14 @@ export const MAT_CREDIT_RATE = new Uint16Array(size);
  */
 export const MAT_CARRY = new Int8Array(size);
 /**
+ * Сколько рядов груза тянет поверхность. Ноль — не несущая.
+ *
+ * Отдельно от `MAT_CARRY`, хотя обнуляются они вместе: правило спускается
+ * по столбику и сравнивает найденную глубину с пройденным расстоянием, то есть
+ * читает её как число, а не как признак.
+ */
+export const MAT_CARRY_DEPTH = new Uint8Array(size);
+/**
  * Светимость вещества, 0..15. Ноль — не светится.
  *
  * Отдельный массив, потому что карта освещённости обходит по нему ячейки
@@ -509,8 +531,17 @@ for (const m of MATERIALS) {
   MAT_DIGGABLE[m.id] = m.diggable ? 1 : 0;
   MAT_CREDIT_RATE[m.id] = m.creditRate;
   MAT_CARRY[m.id] = m.carry;
+  MAT_CARRY_DEPTH[m.id] = m.carryDepth;
   MAT_EMIT[m.id] = m.emit;
 }
+
+/**
+ * Наибольшая глубина полосы по таблице — верхняя граница спуска по столбику.
+ *
+ * Считается ЗДЕСЬ, один раз: без неё столбик высотой в экран обходился бы
+ * целиком под каждой сыпучей ячейкой, которой некуда падать.
+ */
+export const MAX_CARRY_DEPTH = MATERIALS.reduce((d, m) => Math.max(d, m.carryDepth), 0);
 
 /**
  * Что персонаж может носить в инвентаре — в порядке таблицы.

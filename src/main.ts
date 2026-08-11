@@ -401,6 +401,21 @@ function applyBuilding(dir: { x: number; y: number }, cursorX: number, cursorY: 
     buildAim.y = Builder.groundedTargetY(catalog.kind, player.y, PLAYER.hitboxH);
   }
 
+  // Областной снос — свой жест рядом с протяжкой, и выбранный вид ему безразличен:
+  // внутри рамки оказывается что попало. Ветка выбирается модификатором В МОМЕНТ
+  // нажатия и до отпускания не меняется: `Alt`, нажатый посреди укладки, иначе
+  // превращал бы уже положенное в выделение.
+  //
+  // Клавиатурного пути к рамке этим и нет: удерживаемый `Alt` делает нажатие
+  // клавиши сочетанием, и до `toolPressed` оно не доходит вовсе (`core/input`).
+  if (input.toolPressed && input.areaModifier) {
+    run.begin(buildAim.x, buildAim.y, false, true);
+  }
+  if (run.isArea) {
+    applyAreaGesture(buildAim.x, buildAim.y);
+    return;
+  }
+
   const kind = catalog.kind;
   if (kind.create === null) {
     applySectionGesture(kind, buildAim.x, buildAim.y);
@@ -420,7 +435,7 @@ function applyBuilding(dir: { x: number; y: number }, cursorX: number, cursorY: 
     buildAim.y,
     research,
   );
-  ghost = { ...preview, side: 0 };
+  ghost = { ...preview, side: 0, area: false };
   buildIssue = placementIssueText(preview);
 
   if (input.toolPressed) {
@@ -434,6 +449,32 @@ function applyBuilding(dir: { x: number; y: number }, cursorX: number, cursorY: 
       buildAim.y,
       research,
     );
+  }
+}
+
+/**
+ * Жест областного сноса: во время жеста рамка только показывается, сносит она
+ * на ОТПУСКАНИИ.
+ *
+ * По ходу жеста сносить нельзя: рамка растёт и сжимается, пока игрок ведёт
+ * мышью, и снос по ходу убирал бы то, что игрок ещё только обводит взглядом.
+ * У протяжки довод обратный — там кладут по ходу, потому что положенное лишнее
+ * убирается тем же жестом, а снесённое лишнее не возвращается ничем.
+ */
+function applyAreaGesture(aimX: number, aimY: number): void {
+  const anchor = run.anchor;
+  if (anchor === null) return;
+  run.note(aimX, aimY);
+
+  const area = Builder.areaPreview(player.centerX, player.centerY, anchor.x, anchor.y, aimX, aimY);
+  // Рамка нулевой ширины — не достать даже клетку начала: показывать нечего,
+  // и сносить тоже.
+  ghost = area.w === 0 ? null : { ...area, ok: false, side: 0, area: true };
+  buildIssue = '';
+
+  if (!input.toolHeld) {
+    Builder.razeArea(world, buildings, area);
+    run.end();
   }
 }
 
@@ -482,7 +523,7 @@ function applySectionGesture(kind: BuildingKind, aimX: number, aimY: number): vo
       aimY,
       research,
     );
-    ghost = { ...preview, side: preview.issue === null ? input.buildSide : 0 };
+    ghost = { ...preview, side: preview.issue === null ? input.buildSide : 0, area: false };
     buildIssue = placementIssueText(preview);
     return;
   }
@@ -502,7 +543,7 @@ function applySectionGesture(kind: BuildingKind, aimX: number, aimY: number): vo
       anchor.y,
       research,
     );
-    ghost = { ...preview, side: 0 };
+    ghost = { ...preview, side: 0, area: false };
     buildIssue = placementIssueText(preview);
     if (!input.toolHeld) {
       Builder.apply(
@@ -538,6 +579,7 @@ function applySectionGesture(kind: BuildingKind, aimX: number, aimY: number): vo
     h: kind.height,
     ok: line.count > 0,
     side: line.count > 0 ? line.side : 0,
+    area: false,
   };
   buildIssue = placementIssueText({
     x: line.x,

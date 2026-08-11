@@ -1,7 +1,13 @@
-import { Camera, Renderer, RecordingSurface, MACHINE_STATE_COLORS } from '../src/render';
+import {
+  Camera,
+  Renderer,
+  RecordingSurface,
+  MACHINE_STATE_COLORS,
+  AREA_DASH_COLORS,
+} from '../src/render';
 import type { HudState } from '../src/render';
 import type { Display } from '../src/core';
-import { MAT, MAT_SOLID, Simulation } from '../src/world';
+import { MAT, MAT_SOLID, Simulation, World } from '../src/world';
 import { Digger, Vacuum, Builder } from '../src/systems';
 import { Player, Inventory, LandingModule, BuildingRegistry } from '../src/entities';
 import {
@@ -220,6 +226,187 @@ const { spawn } = first;
       stored === 3 && count(w, MAT.PULP) === 3,
       `было в машине ${stored}, в мире ${count(w, MAT.PULP)}`,
     );
+  }
+
+  // --- Областной снос ---
+  //
+  // Рамка — форма УЖЕ описанного сноса, а не второй механизм: правила для каждой
+  // найденной постройки те же, меняется только их число за жест.
+
+  {
+    /**
+     * Сцена под рамку: машина и лента из секций рядом с ней, всё в пределах
+     * руки персонажа, стоящего в середине.
+     */
+    function factory(): {
+      world: World;
+      registry: BuildingRegistry;
+      px: number;
+      py: number;
+      beltY: number;
+      beltFrom: number;
+      sections: number;
+    } {
+      const { world: w, registry } = scene();
+      build(w, registry);
+      // Лента идёт вбок от машины, по её верхней строке: под машиной места нет
+      // — там пол сцены, а рамке нужны обе постройки в пределах одной руки.
+      const beltY = BY;
+      const beltFrom = BX + SEPARATOR.width;
+      const sections = 4;
+      for (let i = 0; i < sections; i++) {
+        const x = beltFrom + i * BUILD_MODULE;
+        Builder.apply(w, registry, CONVEYOR_KIND, x, beltY, x, beltY, UNLOCKED, 1);
+      }
+      // Персонаж — посередине между машиной и лентой: рука достаёт до обеих.
+      return {
+        world: w,
+        registry,
+        px: BX + (SEPARATOR.width >> 1),
+        py: (BY + beltY) >> 1,
+        beltY,
+        beltFrom,
+        sections,
+      };
+    }
+
+    /** Рамка вокруг всей фабрики: от угла машины до конца ленты. */
+    function whole(f: ReturnType<typeof factory>): ReturnType<typeof Builder.areaPreview> {
+      return Builder.areaPreview(
+        f.px,
+        f.py,
+        BX,
+        BY,
+        f.beltFrom + (f.sections - 1) * BUILD_MODULE,
+        f.beltY,
+      );
+    }
+
+    {
+      const f = factory();
+      const hullsBefore = count(f.world, MAT.CONVEYOR_RIGHT);
+      const razed = Builder.razeArea(f.world, f.registry, whole(f));
+      check(
+        'Область сносит всё построенное внутри за один жест',
+        razed === 1 + f.sections &&
+          f.registry.count === 0 &&
+          count(f.world, MAT.SEPARATOR_HULL) === 0 &&
+          count(f.world, MAT.CONVEYOR_RIGHT) === 0,
+        `снесено ${razed}, зданий ${f.registry.count}, корпуса ${count(f.world, MAT.SEPARATOR_HULL)}, ленты ${hullsBefore} → ${count(f.world, MAT.CONVEYOR_RIGHT)}`,
+      );
+    }
+
+    // Порода, груз и корпус посадочного модуля рамкой не задеваются: это снос,
+    // а не второй инструмент копания.
+    {
+      const f = factory();
+      // Порода — пол сцены, груз — реголит на ленте, корпус модуля — рядом.
+      f.world.set(f.beltFrom + 1, f.beltY - 1, MAT.REGOLITH_LOOSE);
+      f.world.set(f.beltFrom + 2, f.beltY - 1, MAT.REGOLITH_LOOSE);
+      for (let dx = 0; dx < BUILD_MODULE; dx++) {
+        f.world.set(f.beltFrom + dx, f.beltY - 2, MAT.MODULE_HULL);
+      }
+      const rock = count(f.world, MAT.ROCK);
+      Builder.razeArea(f.world, f.registry, whole(f));
+      check(
+        'Порода, груз и корпус модуля рамкой не задеты',
+        count(f.world, MAT.ROCK) === rock &&
+          count(f.world, MAT.REGOLITH_LOOSE) === 2 &&
+          count(f.world, MAT.MODULE_HULL) === BUILD_MODULE,
+        `породы ${rock} → ${count(f.world, MAT.ROCK)}, груза ${count(f.world, MAT.REGOLITH_LOOSE)}, модуля ${count(f.world, MAT.MODULE_HULL)}`,
+      );
+    }
+
+    // Вид каталога на область не влияет: внутри рамки оказывается что попало,
+    // и сверять каждое найденное с выбранным значило бы, что один жест убирает
+    // разное в зависимости от того, что игрок собирался строить.
+    {
+      const f = factory();
+      const razed = Builder.razeArea(f.world, f.registry, whole(f));
+      check(
+        'Рамка сносит и машину, и ленту разом — выбранный вид ни при чём',
+        razed === 1 + f.sections && f.registry.count === 0,
+        `снесено ${razed}`,
+      );
+    }
+
+    // Постройка, задетая краем, сносится ЦЕЛИКОМ: половина здания в сетке —
+    // это обломок, которого игрок не заказывал.
+    {
+      const f = factory();
+      const corner = Builder.areaPreview(
+        f.px,
+        f.py,
+        BX + SEPARATOR.width - 1,
+        BY + SEPARATOR.height - 1,
+        BX + SEPARATOR.width - 1,
+        BY + SEPARATOR.height - 1,
+      );
+      const razed = Builder.razeArea(f.world, f.registry, corner);
+      check(
+        'Задетая краем рамки машина исчезает целиком',
+        razed === 1 && f.registry.count === 0 && count(f.world, MAT.SEPARATOR_HULL) === 0,
+        `снесено ${razed}, корпуса осталось ${count(f.world, MAT.SEPARATOR_HULL)}`,
+      );
+    }
+
+    // Накопленное возвращается и из области: правила самого сноса те же.
+    {
+      const f = factory();
+      feed(f.world, 3);
+      (f.registry.all[0] as Separator).update(f.world, FIXED_DT);
+      const stored = (f.registry.all[0] as Separator).stored;
+      Builder.razeArea(f.world, f.registry, whole(f));
+      check(
+        'Накопленное возвращается в мир и при областном сносе',
+        stored === 3 && count(f.world, MAT.PULP) === 3,
+        `было в машине ${stored}, в мире ${count(f.world, MAT.PULP)}`,
+      );
+    }
+
+    // Пустая рамка — не отказ: обвести чистое место не за что наказывать.
+    {
+      const f = factory();
+      // Чистый воздух над машиной: рамка обводит место, где ничего не стоит.
+      const air = BY - BUILD_MODULE * 2;
+      const empty = Builder.areaPreview(f.px, f.py, BX, air, BX + BUILD_MODULE, air);
+      const cells = f.world.cells.slice();
+      const razed = Builder.razeArea(f.world, f.registry, empty);
+      let changed = 0;
+      for (let i = 0; i < cells.length; i++) if (cells[i] !== f.world.cells[i]) changed++;
+      check(
+        'Пустая рамка ничего не меняет и отказом не считается',
+        razed === 0 && changed === 0 && f.registry.count === 1,
+        `снесено ${razed}, ячеек изменилось ${changed}`,
+      );
+    }
+
+    // Рамка обрезается дальностью руки — той же, что у копания и постановки.
+    {
+      const f = factory();
+      const far = Builder.areaPreview(f.px, f.py, f.px, f.py, f.px + DIG.reach * 4, f.py);
+      const corner = { x: far.x + far.w - 1, y: far.y + far.h - 1 };
+      check(
+        'Рамка не выходит за дальность руки',
+        far.w > 0 &&
+          far.w < DIG.reach * 4 &&
+          Digger.inReach(f.px, f.py, corner.x, corner.y) &&
+          !Digger.inReach(f.px, f.py, corner.x + BUILD_MODULE, corner.y),
+        `ширина ${far.w}, дальний угол (${corner.x},${corner.y}) при дальности ${DIG.reach}`,
+      );
+
+      // За пределом дальности ничего не сносится: секция, до которой рука
+      // не достаёт, остаётся стоять.
+      const outX = Builder.snap(f.px + DIG.reach + BUILD_MODULE * 2);
+      Builder.apply(f.world, f.registry, CONVEYOR_KIND, outX, f.beltY, outX, f.beltY, UNLOCKED, 1);
+      const wide = Builder.areaPreview(f.px, f.py, f.px, f.beltY, outX, f.beltY);
+      Builder.razeArea(f.world, f.registry, wide);
+      check(
+        'За пределом дальности рамка ничего не сносит',
+        f.world.get(outX, f.beltY) === MAT.CONVEYOR_RIGHT,
+        `в дальней секции ${f.world.get(outX, f.beltY)}`,
+      );
+    }
   }
 
   // --- Корпус не трогается инструментами ---
@@ -545,7 +732,7 @@ const { spawn } = first;
       crosshairX: 160,
       crosshairY: 90,
       crosshairInReach: true,
-      hud: hud({ ghost: { ...rect, ok: true, side: 0 } }),
+      hud: hud({ ghost: { ...rect, ok: true, side: 0, area: false } }),
       fps: 0,
     });
     const okPixels = countPixels(MACHINE_STATE_COLORS.working);
@@ -556,7 +743,7 @@ const { spawn } = first;
       crosshairX: 160,
       crosshairY: 90,
       crosshairInReach: true,
-      hud: hud({ ghost: { ...rect, ok: false, side: 0 } }),
+      hud: hud({ ghost: { ...rect, ok: false, side: 0, area: false } }),
       fps: 0,
     });
     const badPixels = countPixels(MACHINE_STATE_COLORS.blocked);
@@ -567,6 +754,51 @@ const { spawn } = first;
       okPixels === perimeter && badPixels === perimeter,
       `годный ${okPixels}, негодный ${badPixels} при периметре ${perimeter}`,
     );
+
+    // Рамка области отличима от контура постройки НЕ размером: она штриховая,
+    // и оба её цвета — с лестницы отказа.
+    {
+      renderer.render({
+        camera: camera,
+        player: new Player(spawn.x, spawn.y),
+        crosshairX: 160,
+        crosshairY: 90,
+        crosshairInReach: true,
+        hud: hud({ ghost: { ...rect, ok: false, side: 0, area: true } }),
+        fps: 0,
+      });
+      // Считаем по ВЕРХНЕЙ стороне рамки, а не по кадру: тёмная ступень
+      // лестницы встречается в мире и сама по себе, и подсчёт по всему кадру
+      // мерил бы породу, а не контур.
+      const sx = rect.x - camera.x;
+      const sy = rect.y - camera.y;
+      let bright = 0;
+      let dark = 0;
+      for (let dx = 0; dx < rect.w; dx++) {
+        const i = (sy * BASE_VIEW_W + sx + dx) * 4;
+        const c = (pixels[i]! << 16) | (pixels[i + 1]! << 8) | pixels[i + 2]!;
+        if (c === AREA_DASH_COLORS[0]) bright++;
+        else if (c === AREA_DASH_COLORS[1]) dark++;
+      }
+      check(
+        'Рамка области рисуется штрихом, а не сплошным периметром',
+        bright + dark === rect.w && bright === dark,
+        `по верхней стороне светлых ${bright}, тёмных ${dark} из ${rect.w}`,
+      );
+
+      // Различимость на любом фоне: худший фон — ровно между двумя цветами
+      // штриха, и даже там перепад до ближайшего из них велик.
+      const lum = (c: number): number =>
+        0.299 * ((c >> 16) & 0xff) + 0.587 * ((c >> 8) & 0xff) + 0.114 * (c & 0xff);
+      const a = lum(AREA_DASH_COLORS[0]);
+      const b = lum(AREA_DASH_COLORS[1]);
+      const worst = Math.abs(a - b) / 2;
+      check(
+        'Штрих различим на любом фоне: цвета разнесены по яркости',
+        worst >= 50,
+        `яркости ${a.toFixed(0)} и ${b.toFixed(0)}, худший перепад ${worst.toFixed(0)} из 255`,
+      );
+    }
 
     // Состояние машины видно НА САМОЙ машине, а не только в строке состояния.
     const machine = { ...rect, progress: 0.5 } as const;

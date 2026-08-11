@@ -389,6 +389,11 @@ export class Input {
     const modified = e.ctrlKey || e.metaKey || e.altKey;
     if (GAME_KEYS.has(e.code) && !modified) e.preventDefault();
     this.hasInteracted = true;
+    // `Alt` поднимает `altKey` собственным нажатием, поэтому в удержания он
+    // записывается ДО отсечки сочетаний — иначе она вычеркнула бы модификатор
+    // вместе с сочетаниями, и удержание не читалось бы никогда. В `pressed`
+    // он не попадает: разового действия у него нет.
+    if (e.code === 'AltLeft' || e.code === 'AltRight') this.held.add(e.code);
     if (modified) return;
     if (e.repeat) return; // автоповтор ОС не должен считаться новым нажатием
     // Источник переключается ДО учёта самой клавиши: нажатие пробела означает
@@ -581,6 +586,19 @@ export class Input {
    */
   get buildSide(): -1 | 1 {
     return this.isHeld('ShiftLeft') || this.isHeld('ShiftRight') ? -1 : 1;
+  }
+
+  /**
+   * Удерживается ли модификатор ОБЛАСТНОГО сноса. Жест протяжки один и тот же,
+   * и различает укладку от выделения только то, что игрок держит.
+   *
+   * Как и `Shift`, `Alt` не входит в `GAME_KEYS`, браузеру не подавляется
+   * и нажатием с ним игровая клавиша не считается (`onKeyDown` отсеивает
+   * сочетания целиком): сочетания с ним принадлежат системе, а игре нужен
+   * только факт удержания на событии мыши.
+   */
+  get areaModifier(): boolean {
+    return this.isHeld('AltLeft') || this.isHeld('AltRight');
   }
 
   /** Открыть или закрыть оверлей исследований. */

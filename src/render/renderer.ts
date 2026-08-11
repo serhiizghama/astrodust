@@ -1,4 +1,4 @@
-import { CONVEYOR, BUILD_MODULE, SIM_HZ, SHADING, UI } from '../config';
+import { CONVEYOR, BUILD_MODULE, AREA_DASH, SIM_HZ, SHADING, UI } from '../config';
 import { Display } from '../core';
 import { Camera } from './camera';
 import { World, MAT, MAT_CARRY } from '../world';
@@ -14,7 +14,7 @@ import { BAYER, DITHER_MASK, DITHER_LEVELS, threshold } from './dither';
 import { Lightmap, LIGHT_NEUTRAL } from './lightmap';
 import { Backdrop } from './backdrop';
 import { RAMP } from '../palette';
-import { setPixel, fillRect, strokeRect, blit } from './draw';
+import { setPixel, fillRect, strokeRect, dashRect, blit } from './draw';
 import { smallText } from './ui';
 import type { UiSurface } from './ui';
 import { hudLayout, drawActionBar, drawCreditsCounter, drawBarLine } from './hud';
@@ -149,6 +149,15 @@ export const MACHINE_STATE_COLORS = {
   blocked: RAMP.rust[5],
 } as const;
 
+/**
+ * Второй цвет штриха рамки сноса — тёмный край той же лестницы отказа.
+ *
+ * Инвариант: пара разнесена по яркости так, что на ЛЮБОМ фоне контрастен
+ * хотя бы один из двух. Один цвет отказа поверх спёкшегося реголита давал
+ * перепад 8.5 из 255 — рамка пропадала. Держит `tests/building-placement.ts`.
+ */
+export const AREA_DASH_COLORS = [MACHINE_STATE_COLORS.blocked, RAMP.rust[0]] as const;
+
 const ROLLER_R = (CONVEYOR_ROLLER_COLOR >> 16) & 0xff;
 const ROLLER_G = (CONVEYOR_ROLLER_COLOR >> 8) & 0xff;
 const ROLLER_B = CONVEYOR_ROLLER_COLOR & 0xff;
@@ -162,11 +171,6 @@ export function rollerOffset(time: number): number {
   return Math.floor((time * SIM_HZ) / CONVEYOR.stepsPerCell);
 }
 
-/**
- * Маска ряда внутри секции. Модуль — степень двойки ровно ради этой маски:
- * ряд берётся в горячем цикле на каждый пиксель ленты, и деление там дороже.
- */
-const MODULE_MASK = BUILD_MODULE - 1;
 /** Ряды секции, занятые роликами: середина корпуса. */
 const ROLLER_FROM = CONVEYOR.rollerInset;
 const ROLLER_TO = BUILD_MODULE - CONVEYOR.rollerInset;
@@ -266,6 +270,14 @@ export interface GhostView {
    * ДО того, как она встанет, а смотрит он в место постановки, а не под панель.
    */
   readonly side: -1 | 0 | 1;
+  /**
+   * Контур означает СНОС ОБЛАСТИ, а не будущую постройку.
+   *
+   * Оба — прямоугольники под курсором, и различать их обязано что-то, кроме
+   * размера: одинаковые, они означали бы, что игрок не отличает «здесь встанет»
+   * от «здесь исчезнет» до того, как отпустит кнопку.
+   */
+  readonly area: boolean;
 }
 
 /**
@@ -493,8 +505,10 @@ export class Renderer {
       const bayerRow = (wy & DITHER_MASK) << 2;
       const lightRow = (wy >> LIGHT_SHIFT) * lightCols;
       // Ряд роликов внутри секции. Считается РАЗ НА СТРОКУ: `wy` на всю строку
-      // один, а условие проверяется на каждый пиксель ленты.
-      const rollerRow = (wy & MODULE_MASK) >= ROLLER_FROM && (wy & MODULE_MASK) < ROLLER_TO;
+      // один, а условие проверяется на каждый пиксель ленты. Остаток здесь
+      // поэтому и допустим — модулю не нужно быть степенью двойки.
+      const rowInSection = wy % BUILD_MODULE;
+      const rollerRow = rowInSection >= ROLLER_FROM && rowInSection < ROLLER_TO;
 
       const rowStart = rowBase + camX;
       let prev = cells[rowStart - 1];
@@ -561,8 +575,10 @@ export class Renderer {
       const bayerRow = (wy & DITHER_MASK) << 2;
       const lightRow = (wy >> LIGHT_SHIFT) * lightCols;
       // Ряд роликов внутри секции. Считается РАЗ НА СТРОКУ: `wy` на всю строку
-      // один, а условие проверяется на каждый пиксель ленты.
-      const rollerRow = (wy & MODULE_MASK) >= ROLLER_FROM && (wy & MODULE_MASK) < ROLLER_TO;
+      // один, а условие проверяется на каждый пиксель ленты. Остаток здесь
+      // поэтому и допустим — модулю не нужно быть степенью двойки.
+      const rowInSection = wy % BUILD_MODULE;
+      const rollerRow = rowInSection >= ROLLER_FROM && rowInSection < ROLLER_TO;
 
       const rowStart = rowBase + camX;
       let prev = cells[rowStart - 1];
@@ -653,6 +669,26 @@ export class Renderer {
    * тот же язык, что у прицела, и второй учить не надо.
    */
   private drawGhost(camera: Camera, ghost: GhostView): void {
+    // Рамка сноса — ШТРИХ лестницей отказа: той же, которой уже сказано «здесь
+    // исчезнет». Годности у неё нет — пустая рамка отказом не считается, —
+    // поэтому цвету нечего было бы показывать вторым значением, и он весь
+    // уходит на различимость.
+    if (ghost.area) {
+      dashRect(
+        this.display.pixels,
+        this.display.width,
+        this.display.height,
+        ghost.x - camera.x,
+        ghost.y - camera.y,
+        ghost.w,
+        ghost.h,
+        AREA_DASH,
+        AREA_DASH_COLORS[0],
+        AREA_DASH_COLORS[1],
+      );
+      return;
+    }
+
     const color = ghost.ok ? MACHINE_STATE_COLORS.working : MACHINE_STATE_COLORS.blocked;
     strokeRect(
       this.display.pixels,

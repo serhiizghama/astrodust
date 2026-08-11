@@ -1,6 +1,6 @@
 import { World, MAT } from '../src/world';
 import { Camera } from '../src/render';
-import { Digger, Builder } from '../src/systems';
+import { Digger, Builder, BuildRun } from '../src/systems';
 import {
   LandingModule,
   BuildingRegistry,
@@ -639,6 +639,64 @@ const { world } = first;
     up('Space');
     input.endStep();
     check('Ввод: сброс кончает жест вместе с удержанием', afterReset);
+  }
+
+  // --- Модификатор области ---
+  //
+  // `Alt` отличает выделение рамки от протяжки, кладущей ленту: жест один
+  // и тот же, и различает их только то, что игрок держит.
+  {
+    const before = input.areaModifier;
+    // Собственное нажатие `Alt` само поднимает `altKey` — ровно так его отдаёт
+    // браузер, и удержание обязано читаться несмотря на общее правило
+    // «сочетание принадлежит браузеру».
+    const alt = Object.assign(keyEvent('AltLeft'), { altKey: true });
+    win.emit('keydown', alt);
+    const held = input.areaModifier;
+    const heldNextStep = (input.endStep(), input.areaModifier);
+    check(
+      'Ввод: Alt читается как УДЕРЖАНИЕ и держится на следующих шагах',
+      !before && held && heldNextStep,
+      `до ${before}, при удержании ${held}, на следующем шаге ${heldNextStep}`,
+    );
+    check(
+      'Ввод: Alt не отбирается у браузера — сочетания с ним принадлежат системе',
+      !alt.prevented,
+    );
+
+    // Сам по себе модификатор ничего не меняет ни в мире, ни в выборе
+    // инструмента, а клавиша, нажатая с ним, игровой не считается.
+    const withAlt = Object.assign(keyEvent('Digit3'), { altKey: true });
+    win.emit('keydown', withAlt);
+    check(
+      'Ввод: нажатие с Alt игровым не считается и браузеру остаётся',
+      input.slotPressed === null && !withAlt.prevented && !input.toolPressed,
+      `слот ${input.slotPressed}, подавлено ${withAlt.prevented}`,
+    );
+    win.emit('keyup', keyEvent('Digit3'));
+
+    up('AltLeft');
+    const released = input.areaModifier;
+    input.endStep();
+    check('Ввод: отпускание снимает модификатор области', !released);
+  }
+
+  // Ветка жеста выбирается модификатором В МОМЕНТ нажатия и до отпускания
+  // не меняется: `Alt`, нажатый посреди укладки, иначе превращал бы уже
+  // положенное в выделение.
+  {
+    const laying = new BuildRun();
+    laying.begin(BUILD_MODULE, BUILD_MODULE, false, false);
+    laying.note(BUILD_MODULE * 4, BUILD_MODULE);
+    check('Жест: начатый без модификатора областью не становится', !laying.isArea);
+
+    const framing = new BuildRun();
+    framing.begin(BUILD_MODULE, BUILD_MODULE, false, true);
+    framing.note(BUILD_MODULE * 4, BUILD_MODULE);
+    check('Жест: начатый с модификатором остаётся областью до конца', framing.isArea);
+
+    framing.end();
+    check('Жест: кончился — области больше нет', !framing.isArea);
   }
 
   // --- Прокладка ленты одним жестом ---
