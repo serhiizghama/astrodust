@@ -5,9 +5,10 @@
  */
 import { generateLuna, MATERIALS, PORTABLE_MATERIALS } from '../src/world';
 import { WORLD_SEED, VACUUM } from '../src/config';
+import { COIN_KEY } from '../src/render';
 import type { HudState, HudSlot, UiOp } from '../src/render';
 import type { Input } from '../src/core';
-import { HUD } from '../src/config';
+import { HUD, UI } from '../src/config';
 
 let failures = 0;
 let total = 0;
@@ -47,6 +48,33 @@ export function said(ops: readonly UiOp[]): string[] {
 /** Есть ли в кадре надпись, содержащая подстроку. */
 export function saysLike(ops: readonly UiOp[], part: string): boolean {
   return pick(ops, 'text').some((op) => op.text.includes(part));
+}
+
+/**
+ * Сумма в кадре: число со значком валюты слева от него, просветом общего вида
+ * и по центру строки.
+ *
+ * Один поиск на все наборы: «деньги выглядят везде одинаково» ничего не значит,
+ * если каждый набор опознаёт сумму по-своему.
+ *
+ * @returns значок и надпись суммы, или `null` — такой суммы в кадре нет
+ */
+export function amountAt(
+  ops: readonly UiOp[],
+  amount: number,
+): { text: Extract<UiOp, { kind: 'text' }>; icon: Extract<UiOp, { kind: 'icon' }> } | null {
+  const value = `${amount}`;
+  const coins = pick(ops, 'icon').filter((op) => op.key === COIN_KEY);
+  for (const text of pick(ops, 'text')) {
+    if (text.text !== value) continue;
+    const icon = coins.find(
+      (ic) =>
+        Math.abs(ic.x + ic.w + UI.coinGap - text.x) < 0.001 &&
+        Math.abs(ic.y + ic.h / 2 - (text.y + text.style.size / 2)) < 0.001,
+    );
+    if (icon) return { text, icon };
+  }
+  return null;
 }
 
 /** Заглушка ввода с тем же контрактом, что у настоящего Input. */

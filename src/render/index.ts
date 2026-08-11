@@ -74,6 +74,12 @@ export type {
   LineStyle,
   ScreenTarget,
 } from './ui';
+/**
+ * Общий вид денежной суммы. Публичен РАДИ ПРОВЕРКИ: «деньги выглядят везде
+ * одинаково» проверяется только тем, кто знает, как они выглядят, и той же
+ * дорогой, которой рисуются.
+ */
+export { CREDITS_TONE, COIN_KEY, measureCredits, drawCredits } from './credits';
 export { CONVEYOR_STRIPE_COLOR, MAT_SHADES } from './material-colors';
 export { BAYER, DITHER_LEVELS } from './dither';
 export { Lightmap, LIGHT_NEUTRAL } from './lightmap';

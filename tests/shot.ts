@@ -400,7 +400,8 @@ for (const shot of SHOTS) {
   const camera = new Camera(world.width, world.height);
   camera.snapTo((left + right) / 2, 194);
   const player = new Player(150, 204 - PLAYER.hitboxH);
-  const hudBelt: HudState = { ...hud, activeSlot: 1, buildKind: 'Конвейер ▶ 32 ₡' };
+  // Цены у постройки нет: ограничивает её только технология.
+  const hudBelt: HudState = { ...hud, activeSlot: 1, buildKind: 'Конвейер ▶' };
 
   // Два кадра подряд: время различается ровно на один шаг переноса, поэтому
   // на верхней ленте полоса сдвинута вправо, на средней — влево.

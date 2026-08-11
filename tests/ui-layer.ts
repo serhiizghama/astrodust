@@ -18,14 +18,18 @@ import {
   smallText,
   titleText,
   hudLayout,
+  drawCredits,
+  measureCredits,
+  CREDITS_TONE,
+  COIN_KEY,
 } from '../src/render';
 import type { HudState, OverlayView, OverlayNode, TextStyle, UiOp } from '../src/render';
 import type { Display } from '../src/core';
 import { Player } from '../src/entities';
-import { RAMP } from '../src/palette';
+import { RAMP, css } from '../src/palette';
 import { UI, BASE_VIEW_W, BASE_VIEW_H, WORLD_SEED } from '../src/config';
 import { TECHNOLOGIES, TECH_NODES, TECH_EDGES, TECH_COLS, TECH_ROWS } from '../src/progress';
-import { check, luna, IDLE_HUD, pick } from './harness';
+import { check, luna, IDLE_HUD, pick, amountAt } from './harness';
 
 const first = luna();
 const { spawn } = first;
@@ -55,7 +59,7 @@ function overlayView(over: Partial<OverlayView> = {}): OverlayView {
     icon: tc.icon,
     col: TECH_NODES[i]!.col,
     row: TECH_NODES[i]!.row,
-    note: 'нужно ещё 7 ₡',
+    note: { kind: 'short', amount: 7 },
   }));
   return {
     credits: 1234,
@@ -291,6 +295,97 @@ const [hudFrame, frame]: UiOp[][] = (() => {
   );
 }
 
+// --- Денежная сумма ------------------------------------------------------------
+
+{
+  // Форма ОДНА везде: значок валюты, просвет, число. Каждый значок валюты
+  // в кадре обязан стоять при своём числе — значок сам по себе суммой не был бы.
+  const coins = pick(frame, 'icon').filter((op) => op.key === COIN_KEY);
+  const paired = coins.filter((ic) =>
+    pick(frame, 'text').some(
+      (op) =>
+        Math.abs(ic.x + ic.w + UI.coinGap - op.x) < 0.001 &&
+        Math.abs(ic.y + ic.h / 2 - (op.y + op.style.size / 2)) < 0.001,
+    ),
+  );
+  check(
+    'Каждая сумма кадра нарисована одним значком валюты и числом при нём',
+    coins.length >= 2 && paired.length === coins.length,
+    `значков ${coins.length}, при числе ${paired.length}`,
+  );
+
+  // Счётчик в углу кадра и сумма внутри оверлея — та же форма. Кадр без
+  // оверлея показывает счётчик, кадр с оверлеем — и его, и цены.
+  check(
+    'Счётчик кадра и суммы оверлея обозначены одинаково',
+    pick(hudFrame, 'icon').some((op) => op.key === COIN_KEY) &&
+      coins.length > pick(hudFrame, 'icon').filter((op) => op.key === COIN_KEY).length,
+    `в кадре ${pick(hudFrame, 'icon').filter((op) => op.key === COIN_KEY).length}, с оверлеем ${coins.length}`,
+  );
+
+  // Знак валюты буквой не существует: два обозначения одних и тех же денег
+  // игрок читал бы как две валюты.
+  const glyph = pick(frame, 'text').filter((op) => op.text.includes('₡'));
+  check(
+    'Буквенного знака валюты в кадре нет',
+    glyph.length === 0,
+    glyph.map((op) => op.text).join(', ') || `надписей ${pick(frame, 'text').length}`,
+  );
+
+  // Кегль числа задаёт МЕСТО, размер значка один на все места: спрайт
+  // пиксельный, и дробный множитель смял бы ему сетку.
+  const sizes = new Set(
+    coins
+      .map(
+        (ic) =>
+          pick(frame, 'text').find((op) => Math.abs(ic.x + ic.w + UI.coinGap - op.x) < 0.001)!.style
+            .size,
+      )
+      .filter(Boolean),
+  );
+  check(
+    'Числа сумм набраны разными кеглями шкалы, значок у всех один',
+    sizes.size >= 2 &&
+      [...sizes].every((s) => (Object.values(UI.text) as number[]).includes(s)) &&
+      new Set(coins.map((ic) => `${ic.w}x${ic.h}`)).size === 1,
+    `кеглей ${[...sizes].join(', ')}, размеров значка ${new Set(coins.map((ic) => ic.w)).size}`,
+  );
+}
+
+{
+  // Ширина суммы ИЗМЕРЯЕТСЯ и прижимается вся группа: выравнивание по правому
+  // краю держит край при любом числе знаков, а значок не вылезает за место.
+  const surface = new RecordingSurface();
+  const style: TextStyle = bodyText(CREDITS_TONE, { align: 'right' });
+  surface.begin();
+  drawCredits(surface, 7, 100, 0, style);
+  drawCredits(surface, 123456, 100, 20, style);
+  const short = amountAt(surface.ops, 7);
+  const long = amountAt(surface.ops, 123456);
+  check(
+    'Правый край суммы держится при смене числа знаков, значок уходит влево',
+    short !== null &&
+      long !== null &&
+      Math.abs(short.text.x + short.text.width - 100) < 0.001 &&
+      Math.abs(long.text.x + long.text.width - 100) < 0.001 &&
+      long.icon.x < short.icon.x,
+    `${short?.icon.x.toFixed(1)} и ${long?.icon.x.toFixed(1)}`,
+  );
+  check(
+    'Ширина суммы — измеренная: значок, просвет, число',
+    long !== null &&
+      Math.abs(
+        measureCredits(surface, 123456, style) - (long.text.x + long.text.width - long.icon.x),
+      ) < 0.001,
+    `${measureCredits(surface, 123456, style).toFixed(2)}`,
+  );
+  check(
+    'Тон валюты один и взят из набора',
+    short !== null && short.text.style.color === css(CREDITS_TONE) && PALETTE.has(CREDITS_TONE),
+    short?.text.style.color ?? '',
+  );
+}
+
 // --- Крестик закрытия ----------------------------------------------------------
 
 {
@@ -305,12 +400,17 @@ const [hudFrame, frame]: UiOp[][] = (() => {
   // Счёт кредитов делит ряд заголовка с кнопкой. Правый край счёта считается
   // по ИЗМЕРЕННОЙ ширине: шрифт системный, и число, влезающее здесь, на другой
   // машине наехало бы на крестик.
-  const credits = pick(frame, 'text').find((op) => op.text.includes('₡') && op.y < at.y + at.h);
+  // Счёт ищется в РЯДУ ЗАГОЛОВКА: счётчик в углу кадра показывает то же число
+  // тем же видом, и поиск по всему кадру нашёл бы его.
+  const header = frame.filter(
+    (op) => (op.kind === 'text' || op.kind === 'icon') && op.y >= at.y && op.y < at.y + at.h,
+  );
+  const credits = amountAt(header, 1234);
   check(
     'Счёт кредитов не наезжает на кнопку закрытия',
-    credits !== undefined && credits.x + credits.width <= at.x,
+    credits !== null && credits.text.x + credits.text.width <= at.x,
     credits
-      ? `правый край ${(credits.x + credits.width).toFixed(1)} при кнопке с ${at.x}`
+      ? `правый край ${(credits.text.x + credits.text.width).toFixed(1)} при кнопке с ${at.x}`
       : 'счёта в заголовке нет',
   );
 

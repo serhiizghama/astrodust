@@ -7,8 +7,17 @@
  * проверяется журнал поверхности: что нарисовано, где и чем одно состояние
  * отличается от другого.
  */
-import { Camera, Renderer, RecordingSurface, hudLayout, slotAtPoint, overBar } from '../src/render';
-import type { HudState, HudLayout, UiOp, PanelStyle } from '../src/render';
+import {
+  Camera,
+  Renderer,
+  RecordingSurface,
+  hudLayout,
+  slotAtPoint,
+  overBar,
+  drawResearchOverlay,
+  COIN_KEY,
+} from '../src/render';
+import type { HudState, HudLayout, UiOp, PanelStyle, OverlayView } from '../src/render';
 import type { Display } from '../src/core';
 import { ActionBarState, ToolMode } from '../src/core';
 import { Player } from '../src/entities';
@@ -21,7 +30,8 @@ import {
   HUD,
   UI,
 } from '../src/config';
-import { check, luna, IDLE_HUD, pick, said, saysLike } from './harness';
+import { check, luna, IDLE_HUD, pick, said, saysLike, amountAt } from './harness';
+import { TECHNOLOGIES, TECH_NODES, TECH_EDGES } from '../src/progress';
 
 const first = luna();
 const { spawn } = first;
@@ -238,6 +248,61 @@ const { spawn } = first;
       'Кадр: у каждого непустого слота свой значок',
       icons.length === 3 && new Set(icons.map((op) => op.key)).size === 3,
       icons.map((op) => op.key).join(' '),
+    );
+  }
+
+  // Счётчик кредитов — ОБЩИЙ вид суммы: тот же значок и та же вёрстка, что
+  // у цен в оверлее. Собственного обозначения валюты у панели нет, иначе счёт
+  // в углу и цена под узлом читаются как разные величины.
+  {
+    const counter = amountAt(shoot({ credits: 2536 }), 2536);
+
+    const menu = new RecordingSurface();
+    const view: OverlayView = {
+      credits: 2536,
+      nodes: TECHNOLOGIES.map((tc, i) => ({
+        name: tc.name,
+        description: tc.description,
+        cost: tc.cost,
+        usage: tc.usage,
+        status: 'available',
+        kind: tc.effect.kind,
+        icon: tc.icon,
+        col: TECH_NODES[i]!.col,
+        row: TECH_NODES[i]!.row,
+        note: { kind: 'none' },
+      })),
+      edges: TECH_EDGES,
+      selected: 0,
+      hovered: null,
+      closeHovered: false,
+      pointerX: 0,
+      pointerY: 0,
+    };
+    menu.begin();
+    drawResearchOverlay(menu, BASE_VIEW_W, BASE_VIEW_H, view);
+    menu.end();
+    const price = amountAt(menu.ops, TECHNOLOGIES[0]!.cost);
+
+    check(
+      'Кадр: счётчик кредитов и цена в оверлее нарисованы одним значком валюты',
+      counter !== null &&
+        price !== null &&
+        counter.icon.key === COIN_KEY &&
+        price.icon.key === COIN_KEY &&
+        counter.icon.w === price.icon.w,
+      `${counter?.icon.key ?? 'нет счётчика'} против ${price?.icon.key ?? 'нет цены'}`,
+    );
+
+    // Ореол обязателен: счёт лежит прямо на мире, а мир под ним любой. Правый
+    // край — на месте: счётчик, прыгающий по углу на каждой сотне, читается
+    // хуже неподвижного.
+    check(
+      'Кадр: счётчик прижат к правому краю кадра и идёт с ореолом',
+      counter !== null &&
+        counter.text.style.shadow === true &&
+        Math.abs(counter.text.x + counter.text.width - (BASE_VIEW_W - HUD.counterMargin)) < 0.001,
+      counter ? `правый край ${(counter.text.x + counter.text.width).toFixed(1)}` : 'нет счётчика',
     );
   }
 

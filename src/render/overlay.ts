@@ -1,8 +1,10 @@
 import { TECH_TREE, UI } from '../config';
 import { RAMP, css } from '../palette';
 import { fitText, bodyText, smallText, titleText, OVERLAY_PLATE } from './ui';
-import type { PanelStyle, UiSurface } from './ui';
+import type { TextStyle, PanelStyle, UiSurface } from './ui';
+import { CREDITS_TONE, drawCredits, measureCredits } from './credits';
 import { TECH_ICON, techIcon, POINTER, CLOSE, CLOSE_ICON } from './sprites/icons';
+import type { TechNote } from '../progress';
 
 /**
  * Дерево технологий поверх кадра. Рисуется в СЛОЕ ИНТЕРФЕЙСА — векторно и в
@@ -18,6 +20,10 @@ import { TECH_ICON, techIcon, POINTER, CLOSE, CLOSE_ICON } from './sprites/icons
  *
  * Дерево — ГРАФ, а не список: список отвечает «что можно купить сейчас»,
  * но не отвечает, что за чем стоит и куда ведёт развитие.
+ *
+ * Счёт, цены и недостающая сумма набраны общим видом денег (`credits.ts`) —
+ * тем же, что и счётчик в углу кадра: оверлей открыт поверх него, и второе
+ * обозначение тех же денег читалось бы как вторая валюта.
  *
  * Геометрия считается ОДИН РАЗ (`techTreeLayout`) и служит обоим читателям —
  * отрисовке и попаданию курсора. Две записи одной геометрии дают интерфейс,
@@ -46,13 +52,17 @@ export interface OverlayNode {
   readonly col: number;
   readonly row: number;
   /**
-   * Причина недоступности словами: «нужно ещё N ₡» или «требует: X».
+   * Причина недоступности: нехватка с суммой или неоткрытые предпосылки.
    *
-   * Словами, а не только цветом. Цвет отвечает «нельзя» и не отвечает
-   * «почему», а причины требуют разных действий: «не хватает кредитов»
-   * лечится работой, «закрыта предпосылкой» — другой покупкой.
+   * Значением, а не строкой: слова и обозначение суммы выбирает рендер —
+   * сумма обязана быть нарисована тем же видом, что и счёт в углу кадра,
+   * а из готовой строки значок валюты уже не достать.
+   *
+   * Называется она словами, а не только цветом: цвет отвечает «нельзя»
+   * и не отвечает «почему», а причины требуют разных действий — «не хватает
+   * кредитов» лечится работой, «закрыта предпосылкой» другой покупкой.
    */
-  readonly note: string;
+  readonly note: TechNote;
 }
 
 /** Связь: индексы узлов в `nodes`, от предпосылки к зависящему узлу. */
@@ -148,6 +158,12 @@ const MARGIN_BOTTOM = 56;
 const PAD = 6;
 /** Просвет между подписями соседних колонок. */
 const LABEL_GAP = 6;
+
+/** Состояние вместо цены: с купленной технологии денег больше не берут. */
+const OPEN_LABEL = 'открыта';
+/** Слова причины. Сумму к первой дописывает общий вид суммы, а не эта строка. */
+const NOTE_SHORT = 'нужно ещё';
+const NOTE_LOCKED = 'требует: ';
 
 export interface TechTreeLayout {
   /** Подложка оверлея. */
@@ -305,17 +321,19 @@ export function drawResearchOverlay(
 
   ui.text('ИССЛЕДОВАНИЯ', left, layout.y + PAD, titleText(RAMP.gray[9]));
   drawCloseButton(ui, layout, view.closeHovered);
-  // Счёт — тем же золотом, что и счётчик в углу кадра: одна валюта — один
-  // цвет, где бы её ни показывали. Без счёта рядом цена узла не отвечает
-  // на вопрос «могу ли я это купить».
+  // Счёт — общим видом суммы, тем же, что и счётчик в углу кадра: оверлей
+  // открыт ПОВЕРХ него, оба видны разом, и второе обозначение одних и тех же
+  // денег игрок читал бы как вторую валюту. Без счёта рядом цена узла
+  // не отвечает на вопрос «могу ли я это купить».
   //
   // Правый край счёта — левый край кнопки с просветом: заголовок делят двое,
   // и счёт, отсчитанный от края панели, лежал бы под крестиком.
-  ui.text(
-    `${view.credits} ₡`,
+  drawCredits(
+    ui,
+    view.credits,
     closeButtonRect(layout).x - TECH_TREE.closeGap,
     layout.y + PAD,
-    titleText(RAMP.warm[4], { align: 'right' }),
+    titleText(CREDITS_TONE, { align: 'right' }),
   );
 
   drawEdges(ui, layout, view);
@@ -444,13 +462,15 @@ function drawNodes(ui: UiSurface, layout: TechTreeLayout, view: OverlayView): vo
       nameStyle,
     );
 
+    // «Открыта» — состояние, а не сумма: денег с купленной технологии больше
+    // не берут, и значок валюты рядом с этим словом обещал бы трату.
     const costStyle = smallText(COST_COLOR[node.status], { align: 'center' });
-    ui.text(
-      fitText(ui, node.status === 'open' ? 'открыта' : `${node.cost} ₡`, costStyle, room),
-      center,
-      at.y + size + TECH_TREE.labelGap + UI.line,
-      costStyle,
-    );
+    const costY = at.y + size + TECH_TREE.labelGap + UI.line;
+    if (node.status === 'open') {
+      ui.text(fitText(ui, OPEN_LABEL, costStyle, room), center, costY, costStyle);
+    } else {
+      drawCredits(ui, node.cost, center, costY, costStyle);
+    }
   }
 }
 
@@ -484,8 +504,9 @@ function drawInfoBar(ui: UiSurface, layout: TechTreeLayout, node: OverlayNode | 
 
   if (node) {
     ui.text(node.name, left, top, bodyText(RAMP.gray[9], { weight: 'bold' }));
-    const cost = node.status === 'open' ? 'открыта' : `${node.cost} ₡`;
-    ui.text(cost, right, top, bodyText(COST_COLOR[node.status], { align: 'right' }));
+    const costStyle = bodyText(COST_COLOR[node.status], { align: 'right' });
+    if (node.status === 'open') ui.text(OPEN_LABEL, right, top, costStyle);
+    else drawCredits(ui, node.cost, right, top, costStyle);
 
     const description = bodyText(RAMP.gray[7]);
     ui.text(fitText(ui, node.description, description, room), left, top + UI.line, description);
@@ -495,10 +516,7 @@ function drawInfoBar(ui: UiSurface, layout: TechTreeLayout, node: OverlayNode | 
     const usage = bodyText(RAMP.gray[6]);
     ui.text(fitText(ui, node.usage, usage, room), left, top + 2 * UI.line, usage);
 
-    if (node.note) {
-      const note = bodyText(COST_COLOR[node.status]);
-      ui.text(fitText(ui, node.note, note, room), left, top + 3 * UI.line, note);
-    }
+    drawNote(ui, node, left, top + 3 * UI.line, room);
   }
 
   // Названы только КЛАВИАТУРНЫЕ способы закрытия: крестик виден сам, и подпись
@@ -510,4 +528,24 @@ function drawInfoBar(ui: UiSurface, layout: TechTreeLayout, node: OverlayNode | 
     top + 4 * UI.line,
     hint,
   );
+}
+
+/**
+ * Причина недоступности: слова из рендера и сумма общим видом.
+ *
+ * Обрезается СЛОВО, а не сумма: сумма — то, ради чего строка и написана,
+ * и «нужно ещё …» без числа не отвечает ни на что. Просвет между ними —
+ * измеренный пробел этого же кегля, а не своя константа.
+ */
+function drawNote(ui: UiSurface, node: OverlayNode, left: number, y: number, room: number): void {
+  const style: TextStyle = bodyText(COST_COLOR[node.status]);
+  if (node.note.kind === 'short') {
+    const sum = measureCredits(ui, node.note.amount, style);
+    const gap = ui.measure(' ', style);
+    const words = fitText(ui, NOTE_SHORT, style, room - sum - gap);
+    ui.text(words, left, y, style);
+    drawCredits(ui, node.note.amount, left + ui.measure(words, style) + gap, y, style);
+  } else if (node.note.kind === 'locked') {
+    ui.text(fitText(ui, NOTE_LOCKED + node.note.missing.join(', '), style, room), left, y, style);
+  }
 }

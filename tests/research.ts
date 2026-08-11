@@ -10,6 +10,7 @@ import {
   closeButtonRect,
   overClose,
   drawResearchOverlay,
+  COIN_KEY,
 } from '../src/render';
 import type { OverlayView, OverlayNode, UiOp } from '../src/render';
 import { RAMP, css } from '../src/palette';
@@ -55,7 +56,7 @@ import {
   SEPARATOR,
   SIM_HZ,
 } from '../src/config';
-import { check, luna, pick, said, saysLike } from './harness';
+import { check, luna, pick, said, saysLike, amountAt } from './harness';
 
 const first = luna();
 
@@ -965,7 +966,7 @@ const first = luna();
         icon: tc.icon,
         col: TECH_NODES[i]!.col,
         row: TECH_NODES[i]!.row,
-        note: '',
+        note: { kind: 'none' },
       }));
       return {
         credits: 1234,
@@ -1043,21 +1044,34 @@ const first = luna();
       );
     }
 
+    /**
+     * Строка цены под узлом: число суммы и значок валюты слева от него.
+     *
+     * Ищется по СВОЕМУ узлу, а не по тексту: узлы одной строки стоят на одном
+     * y, а цены двух технологий могут совпасть — поиск по числу нашёл бы соседа.
+     */
+    function costRow(ops: readonly UiOp[], i: number) {
+      const at = nodeOrigin(treeLayout, TECH_NODES[i]!.col, TECH_NODES[i]!.row);
+      const y = at.y + treeLayout.node + TECH_TREE.labelGap + UI.line;
+      const centre = at.x + treeLayout.node / 2;
+      const near = (x: number): boolean => Math.abs(x - centre) < treeLayout.colStep / 2;
+      return {
+        text: pick(ops, 'text').find((op) => op.y === y && near(op.x + op.width / 2)),
+        coin: pick(ops, 'icon').find(
+          (op) =>
+            op.key === COIN_KEY &&
+            Math.abs(op.y + op.h / 2 - (y + UI.text.small / 2)) < 0.001 &&
+            near(op.x + op.w / 2),
+        ),
+      };
+    }
+
     // Причина отказа разведена ЦВЕТОМ ПОДПИСИ: «не хватает» золотом валюты,
-    // «закрыто предпосылкой» — приглушённым серым.
+    // «закрыто предпосылкой» — приглушённым серым. Общий вид суммы задаёт
+    // форму и порядок, а не отменяет кодировку состояния цветом.
     {
-      // Подпись ищется по СВОЕМУ узлу, а не по строке: узлы одной строки стоят
-      // на одном y, и поиск по нему нашёл бы соседа.
-      function costColor(ops: readonly UiOp[], i: number): string | undefined {
-        const at = nodeOrigin(treeLayout, TECH_NODES[i]!.col, TECH_NODES[i]!.row);
-        const y = at.y + treeLayout.node + TECH_TREE.labelGap + UI.line;
-        const centre = at.x + treeLayout.node / 2;
-        return pick(ops, 'text').find(
-          (op) => op.y === y && Math.abs(op.x + op.width / 2 - centre) < 0.001,
-        )?.style.color;
-      }
-      const poor = costColor(base, 2);
-      const blocked = costColor(base, 3);
+      const poor = costRow(base, 2).text?.style.color;
+      const blocked = costRow(base, 3).text?.style.color;
       check(
         'Нехватка кредитов и закрытая предпосылка различаются цветом подписи',
         poor === css(RAMP.warm[4]) && blocked === css(RAMP.gray[5]),
@@ -1066,16 +1080,40 @@ const first = luna();
     }
 
     // Цена видна у КАЖДОГО некупленного узла и без наведения: вопрос
-    // «на что мне хватает» задаётся ко всему дереву сразу.
+    // «на что мне хватает» задаётся ко всему дереву сразу. Показана она общим
+    // видом суммы — тем же, что и счёт в углу кадра.
     {
-      const missing = view()
-        .nodes.filter((n) => n.status !== 'open')
-        .filter((n) => !saysLike(base, `${n.cost} ₡`));
-      const opened = view().nodes.filter((n) => n.status === 'open');
+      const nodes = view().nodes;
+      const missing = nodes
+        .map((n, i) => ({ n, row: costRow(base, i) }))
+        .filter(
+          ({ n, row }) =>
+            n.status !== 'open' && (row.coin === undefined || row.text?.text !== `${n.cost}`),
+        );
+      const opened = nodes
+        .map((n, i) => ({ status: n.status, row: costRow(base, i) }))
+        .filter(({ status }) => status === 'open');
       check(
-        'Цена нарисована у некупленных узлов без наведения, у купленного — «открыта»',
-        missing.length === 0 && (opened.length === 0 || saysLike(base, 'открыта')),
-        `без цены ${missing.length}`,
+        'Цена у некупленных узлов нарисована значком и числом, у купленного — «открыта»',
+        missing.length === 0 &&
+          opened.every(({ row }) => row.text?.text === 'открыта' && row.coin === undefined),
+        `без суммы ${missing.length}, куплённых ${opened.length}`,
+      );
+
+      // Сумма шире буквенного знака, и в шаг колонки она обязана помещаться:
+      // подписи соседних колонок не имеют права сойтись в одну строку.
+      const wide = nodes
+        .map((_, i) => costRow(base, i))
+        .filter(
+          (row) =>
+            row.coin !== undefined &&
+            row.text !== undefined &&
+            row.text.x + row.text.width - row.coin.x > treeLayout.colStep,
+        );
+      check(
+        'Сумма под узлом помещается в шаг колонки',
+        wide.length === 0,
+        `шире шага ${wide.length}`,
       );
     }
 
@@ -1148,35 +1186,42 @@ const first = luna();
         `${said(base).length} надписей в кадре`,
       );
 
-      const noted = shoot({ nodes: view().nodes.map((n) => ({ ...n, note: 'нужно ещё 7 ₡' })) });
+      // Причина нехватки: слова и НЕДОСТАЮЩАЯ СУММА тем же видом, что и счёт
+      // в углу кадра. Число 7 в кадре одно — цен такого размера нет.
+      const noted = shoot({
+        nodes: view().nodes.map((n) => ({ ...n, note: { kind: 'short' as const, amount: 7 } })),
+      });
       check(
-        'Полоса сведений показывает причину словами, а не только цветом',
-        saysLike(noted, 'нужно ещё 7 ₡') && !saysLike(base, 'нужно ещё'),
+        'Полоса сведений показывает причину словами и суммой общего вида',
+        saysLike(noted, 'нужно ещё') && amountAt(noted, 7) !== null && !saysLike(base, 'нужно ещё'),
+        `${amountAt(noted, 7) === null ? 'суммы нет' : 'сумма со значком'}`,
       );
 
       // Слова причины: недостающая СУММА, а не цена, и предпосылки поимённо.
+      // Значением, а не строкой: обозначение денег выбирает слой интерфейса.
       {
         const r2 = new Research();
         const poorAt = tech(CONVEYOR_TECH);
         const short = poorAt.cost - 100;
+        const poorNote = statusNote(poorAt, r2.status(poorAt, short), short, r2);
         check(
           'Полоса при нехватке называет недостающую сумму, а не цену',
-          statusNote(poorAt, r2.status(poorAt, short), short, r2) === `нужно ещё 100 ₡`,
-          statusNote(poorAt, r2.status(poorAt, short), short, r2),
+          poorNote.kind === 'short' && poorNote.amount === 100,
+          JSON.stringify(poorNote),
         );
         const blockedAt = tech(HEAVY);
         const note = statusNote(blockedAt, r2.status(blockedAt, 100000), 100000, r2);
         check(
           'Полоса при закрытой предпосылке называет её по имени',
-          note.includes(tech(WIDE).name),
-          note,
+          note.kind === 'locked' && note.missing.includes(tech(WIDE).name),
+          JSON.stringify(note),
         );
         const openAt = tech(CONVEYOR_TECH);
         r2.buy(CONVEYOR_TECH, wallet(openAt.cost));
         check(
           'Купленному и доступному объяснять нечего',
-          statusNote(openAt, r2.status(openAt, 100000), 100000, r2) === '' &&
-            statusNote(tech(WIDE), r2.status(tech(WIDE), 100000), 100000, r2) === '',
+          statusNote(openAt, r2.status(openAt, 100000), 100000, r2).kind === 'none' &&
+            statusNote(tech(WIDE), r2.status(tech(WIDE), 100000), 100000, r2).kind === 'none',
         );
       }
 

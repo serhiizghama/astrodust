@@ -2,6 +2,9 @@
  * Постоянный интерфейс поверх кадра: панель действий, счётчик валюты, строки
  * состояния внизу.
  *
+ * Как выглядят деньги, здесь не решается: счётчик берёт общий вид суммы
+ * (`credits.ts`), тот же, каким набраны цены в оверлее.
+ *
  * Геометрия панели считается ОДИН РАЗ на кадр и служит обоим читателям —
  * отрисовке и попаданию курсора. Две записи одной геометрии дают интерфейс,
  * который выглядит нажатым не там, где нажимается.
@@ -14,14 +17,8 @@ import { HUD, UI } from '../config';
 import { RAMP, css } from '../palette';
 import { fitText, bodyText, smallText, BAR_PLATE } from './ui';
 import type { PanelStyle, UiIcon, UiSurface } from './ui';
-import {
-  ACTION_ICON,
-  CURRENCY_ICON,
-  DIG_ICON,
-  BUILD_ICON,
-  COLLECT_ICON,
-  COIN_ICON,
-} from './sprites/icons';
+import { CREDITS_TONE, drawCredits } from './credits';
+import { ACTION_ICON, DIG_ICON, BUILD_ICON, COLLECT_ICON } from './sprites/icons';
 
 /** Что делает слот. Строка, а не режим из `core`: рендер не решает, чем копают. */
 export type SlotAction = 'dig' | 'build' | 'collect';
@@ -94,9 +91,6 @@ const SLOT_ACTIVE: PanelStyle = {
 
 const KEY_LABEL = RAMP.gray[7];
 const KEY_LABEL_ACTIVE = RAMP.gray[9];
-
-/** Цвет валюты. Золото — её же тон в подписях цен внутри дерева технологий. */
-const CREDITS_COLOR = RAMP.warm[4];
 
 /**
  * Раскладка панели из размера буфера кадра.
@@ -191,26 +185,27 @@ export function drawActionBar(
 }
 
 /**
- * Счётчик кредитов в правом верхнем углу: значок и число.
+ * Счётчик кредитов в правом верхнем углу.
  *
- * Угол свой — верхний левый занят диагностикой, нижний край панелью. Значок
- * вместо знака валюты: в углу число стоит без предложения, и форма читается
- * быстрее символа размером с букву.
+ * Угол свой — верхний левый занят диагностикой, нижний край панелью.
+ * Собственного обозначения валюты у счётчика нет: сумма нарисована общим
+ * видом, тем же, что и цены в оверлее.
  *
- * Число прижато к ПРАВОМУ краю: счёт растёт по ходу партии, и счётчик,
- * прыгающий по углу на каждой сотне, читается хуже неподвижного. Ореол под
- * надписью обязателен — счёт лежит прямо на мире, а мир под ним любой.
+ * Сумма прижата к ПРАВОМУ краю: счёт растёт по ходу партии, и счётчик,
+ * прыгающий по углу на каждой сотне, читается хуже неподвижного. Ореол
+ * обязателен — счёт лежит прямо на мире, а мир под ним любой.
  *
  * Счётчик ОДИН: валюта в игре одна, и второй, который никогда не меняется,
  * читался бы поломкой.
  */
-export function drawCredits(ui: UiSurface, viewW: number, credits: number): void {
-  const value = `${credits}`;
-  const style = bodyText(CREDITS_COLOR, { align: 'right', weight: 'bold', shadow: true });
-  const right = viewW - HUD.counterMargin;
-  ui.text(value, right, HUD.counterMargin, style);
-  const width = ui.measure(value, style);
-  ui.icon(COIN_ICON, right - width - HUD.counterGap - CURRENCY_ICON, HUD.counterMargin + 1);
+export function drawCreditsCounter(ui: UiSurface, viewW: number, credits: number): void {
+  drawCredits(
+    ui,
+    credits,
+    viewW - HUD.counterMargin,
+    HUD.counterMargin,
+    bodyText(CREDITS_TONE, { align: 'right', weight: 'bold', shadow: true }),
+  );
 }
 
 /**

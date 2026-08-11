@@ -11,7 +11,7 @@ import { RAMP } from '../palette';
 import { setPixel, fillRect, strokeRect, blit } from './draw';
 import { smallText } from './ui';
 import type { UiSurface } from './ui';
-import { hudLayout, drawActionBar, drawCredits, drawBarLine } from './hud';
+import { hudLayout, drawActionBar, drawCreditsCounter, drawBarLine } from './hud';
 import type { HudSlot } from './hud';
 import { drawResearchOverlay } from './overlay';
 import type { OverlayView } from './overlay';
@@ -718,7 +718,7 @@ export class Renderer {
     const layout = hudLayout(viewW, viewH);
 
     drawActionBar(this.ui, layout, hud.slots, hud.activeSlot, hud.hoveredSlot);
-    drawCredits(this.ui, viewW, hud.credits);
+    drawCreditsCounter(this.ui, viewW, hud.credits);
 
     const carried =
       hud.carried.length > 0 ? hud.carried.map((c) => `${c.name} ${c.count}`).join('  ') : 'пусто';

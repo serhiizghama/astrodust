@@ -126,7 +126,19 @@ export class Research implements ContentUnlocks {
 }
 
 /**
- * Причина недоступности СЛОВАМИ.
+ * Причина недоступности: какая именно и чем она измерена.
+ *
+ * Размеченное значение, а не готовая строка. Обозначение денег — решение слоя
+ * интерфейса, и сумма, свёрнутая здесь в текст, лишила бы его выбора: нарисовать
+ * значок валюты по строке «нужно ещё 7 ₡» уже нельзя.
+ */
+export type TechNote =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'short'; readonly amount: number }
+  | { readonly kind: 'locked'; readonly missing: readonly string[] };
+
+/**
+ * Причина недоступности технологии.
  *
  * Здесь, а не в сборке кадра: цвет отвечает «нельзя» и не отвечает «почему»,
  * а причины требуют разных действий — «не хватает» лечится работой, «закрыта
@@ -136,17 +148,17 @@ export class Research implements ContentUnlocks {
  * Нехватка называет НЕДОСТАЮЩУЮ сумму, а не цену: цена стоит под узлом,
  * а игроку нужно знать, сколько ещё донести.
  *
- * @returns пустая строка, если объяснять нечего — узел куплен или доступен
+ * @returns `none`, если объяснять нечего — узел куплен или доступен
  */
 export function statusNote(
   tech: Technology,
   status: TechStatus,
   credits: number,
   research: Research,
-): string {
-  if (status === 'poor') return `нужно ещё ${tech.cost - credits} ₡`;
-  if (status === 'blocked') return `требует: ${research.missing(tech).join(', ')}`;
-  return '';
+): TechNote {
+  if (status === 'poor') return { kind: 'short', amount: tech.cost - credits };
+  if (status === 'blocked') return { kind: 'locked', missing: research.missing(tech) };
+  return { kind: 'none' };
 }
 
 /**

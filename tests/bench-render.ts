@@ -102,7 +102,7 @@ const overlay: OverlayView = {
     icon: tech.icon,
     col: TECH_NODES[i]!.col,
     row: TECH_NODES[i]!.row,
-    note: '',
+    note: { kind: 'none' },
   })),
 };
 
