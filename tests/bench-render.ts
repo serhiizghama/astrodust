@@ -14,7 +14,8 @@
  */
 import { generateLuna } from '../src/world';
 import { Camera, Renderer } from '../src/render';
-import type { HudState } from '../src/render';
+import type { HudState, OverlayView } from '../src/render';
+import { TECHNOLOGIES, TECH_NODES, TECH_EDGES } from '../src/progress';
 import { Player } from '../src/entities';
 import {
   WORLD_SEED,
@@ -23,6 +24,7 @@ import {
   MAX_VIEW_W,
   MAX_VIEW_H,
   VACUUM,
+  HUD,
 } from '../src/config';
 import type { Display } from '../src/core';
 
@@ -33,16 +35,8 @@ import type { Display } from '../src/core';
  */
 const fakeDisplay = {
   pixels: new Uint8ClampedArray(MAX_VIEW_W * MAX_VIEW_H * 4),
-  ctx: {
-    putImageData() {},
-    fillText() {},
-    // Строка состояния выравнивает счёт по правому краю и спрашивает ширину
-    // надписи. Моноширинный 16px — примерно 9.6 пикселя на знак.
-    measureText: (s: string) => ({ width: s.length * 9.6 }),
-    font: '',
-    textBaseline: '',
-    fillStyle: '',
-  },
+  // Контексту кадра осталась одна обязанность — вывод готового буфера на экран.
+  ctx: { putImageData() {} },
   width: BASE_VIEW_W,
   height: BASE_VIEW_H,
   image: {},
@@ -57,11 +51,16 @@ const renderer = new Renderer(fakeDisplay, world, surface, WORLD_SEED);
 const player = new Player(spawn.x, spawn.y);
 
 /**
- * Строка состояния в начале партии. Замер меряет проход по миру, а не текст,
- * но рисуется она всегда — значит, и в замер обязана входить.
+ * Интерфейс в начале партии. Замер меряет проход по миру, а не панель, но
+ * рисуется она всегда — значит, и в замер обязана входить.
  */
 const hud: HudState = {
-  mode: 'Копание',
+  slots: Array.from({ length: HUD.slots }, (_, i) => ({
+    key: `${(i + 1) % 10}`,
+    action: i === 0 ? 'dig' : i === 1 ? 'build' : i === 2 ? 'collect' : null,
+  })),
+  activeSlot: 0,
+  hoveredSlot: null,
   collecting: false,
   collectRadius: VACUUM.radius,
   carried: [],
@@ -69,17 +68,42 @@ const hud: HudState = {
   capacity: VACUUM.capacity,
   selected: 'Реголит',
   credits: 0,
-  research: 0,
   buildKind: '',
   buildIssue: '',
   ghost: null,
   machines: [],
-  machineSummary: '',
   overlay: null,
 };
 
+/**
+ * Дерево технологий поверх кадра. Замер идёт и с ним: оверлей рисуется в тот же
+ * буфер, что и мир, и графом он стоит больше, чем стоил списком, — а сколько
+ * именно, из кода не следует.
+ */
+const overlay: OverlayView = {
+  credits: 1234,
+  selected: 0,
+  hovered: 1,
+  pointerX: BASE_VIEW_W >> 1,
+  pointerY: BASE_VIEW_H >> 1,
+  edges: TECH_EDGES,
+  nodes: TECHNOLOGIES.map((tech, i) => ({
+    name: tech.name,
+    description: tech.description,
+    cost: tech.cost,
+    usage: tech.usage,
+    status: (['open', 'available', 'poor', 'blocked'] as const)[i % 4]!,
+    kind: tech.effect.kind,
+    icon: tech.icon,
+    col: TECH_NODES[i]!.col,
+    row: TECH_NODES[i]!.row,
+    note: '',
+  })),
+};
+
 /** Средняя стоимость кадра в миллисекундах для заданного положения камеры. */
-function measure(label: string, targetX: number, targetY: number): void {
+function measure(label: string, targetX: number, targetY: number, tree = false): void {
+  const shown: HudState = tree ? { ...hud, overlay } : hud;
   const camera = new Camera(world.width, world.height);
   camera.setViewport(view.width, view.height);
   camera.snapTo(targetX, targetY);
@@ -92,7 +116,7 @@ function measure(label: string, targetX: number, targetY: number): void {
       crosshairX: 240,
       crosshairY: 135,
       crosshairInReach: true,
-      hud: hud,
+      hud: shown,
       fps: 0,
     });
 
@@ -105,7 +129,7 @@ function measure(label: string, targetX: number, targetY: number): void {
       crosshairX: 240,
       crosshairY: 135,
       crosshairInReach: true,
-      hud: hud,
+      hud: shown,
       fps: 0,
     });
   const perFrame = (performance.now() - started) / frames;
@@ -136,5 +160,6 @@ for (const [w, h, name] of [
   measure('  Максимум неба', 1000, 0);
   measure('  Поверхность (точка старта)', spawn.x, spawn.y);
   measure('  Лавовая трубка', 1400, 620);
+  measure('  Поверхность + дерево', spawn.x, spawn.y, true);
   console.log('');
 }

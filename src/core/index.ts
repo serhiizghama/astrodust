@@ -11,11 +11,13 @@ export type { FrameFit } from './display';
 export {
   Input,
   ToolMode,
-  ToolModeState,
+  ActionBarState,
+  ACTION_SLOTS,
   AimSourceTracker,
   aimDirection,
   aimTarget,
   actionTarget,
   cursorSide,
 } from './input';
+export type { ToolModeValue } from './input';
 export { GameLoop } from './loop';

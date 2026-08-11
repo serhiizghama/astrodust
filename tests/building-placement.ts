@@ -3,14 +3,14 @@ import type { HudState } from '../src/render';
 import type { Display } from '../src/core';
 import { MAT, MAT_SOLID, Simulation } from '../src/world';
 import { Digger, Vacuum, Builder } from '../src/systems';
-import { Player, Inventory } from '../src/entities';
+import { Player, Inventory, LandingModule, BuildingRegistry } from '../src/entities';
 import {
   SEPARATOR_KIND,
+  CONVEYOR_RIGHT_KIND,
   Separator,
   OUTLET_ROW,
   OUTLET_FROM,
   OUTLET_TO,
-  machineSummary,
 } from '../src/entities';
 import {
   PLAYER,
@@ -20,6 +20,7 @@ import {
   BASE_VIEW_H,
   DIG,
   SEPARATOR,
+  CONVEYOR,
   BUILD_AIM_DISTANCE,
 } from '../src/config';
 import {
@@ -27,10 +28,10 @@ import {
   aimTarget,
   actionTarget,
   AimSourceTracker,
-  ToolModeState,
+  ActionBarState,
   ToolMode,
 } from '../src/core';
-import { check, IDLE_HUD, luna } from './harness';
+import { check, IDLE_HUD, luna, UNLOCKED } from './harness';
 import { ground, count, settle } from './fixtures/world';
 import { BX, BY, scene, build, feed } from './fixtures/separator';
 
@@ -41,9 +42,9 @@ const { spawn } = first;
   // --- Постановка ---
 
   {
-    const { world: w, module, registry } = scene(1000);
+    const { world: w, module, registry } = scene();
     const before = module.credits;
-    const result = build(w, registry, module);
+    const result = build(w, registry);
 
     // Корпус лёг РОВНО по маске вида: ни ячейкой больше, ни меньше.
     let wrong = 0;
@@ -60,9 +61,9 @@ const { spawn } = first;
       `результат ${result}, расхождений ${wrong}`,
     );
     check(
-      'Постановка списала стоимость ровно один раз',
-      module.credits === before - SEPARATOR.cost,
-      `${before} → ${module.credits} при стоимости ${SEPARATOR.cost}`,
+      'Постановка не тронула счёт: постройка бесплатна',
+      module.credits === before,
+      `${before} → ${module.credits}`,
     );
 
     // Сквозь корпус проходят: постройка игрока — не препятствие игроку.
@@ -72,17 +73,86 @@ const { spawn } = first;
     );
   }
 
+  // --- Постройка бесплатна ---
+
+  {
+    // Нулевой счёт не мешает: все условия годности — про место.
+    {
+      const { world: w, module, registry } = scene();
+      module.credits = 0;
+      const at = Builder.originFor(
+        SEPARATOR_KIND,
+        BX + (SEPARATOR.width >> 1),
+        BY + (SEPARATOR.height >> 1),
+      );
+      const issue = Builder.issueAt(w, SEPARATOR_KIND, at.x, at.y, UNLOCKED);
+      const r = build(w, registry);
+      check(
+        'При нулевом счёте место годно и постройка появляется',
+        issue === null && r === 'placed' && registry.count === 1 && module.credits === 0,
+        `отказ ${issue}, результат ${r}, счёт ${module.credits}`,
+      );
+    }
+
+    // Открытый вид ставится сколько угодно раз: технология открывает
+    // возможность, а не экземпляр. Мир взят с запасом по ширине — иначе
+    // проверка мерила бы его край, а не отсутствие ограничения.
+    {
+      const size = CONVEYOR.size;
+      const sections = 60;
+      const w = ground(sections * size + 4 * size, 96);
+      const registry = new BuildingRegistry();
+      const money = new LandingModule({ x: 0, y: 0, w: 1, h: 1 });
+      let laid = 0;
+      for (let i = 0; i < sections; i++) {
+        const x = 2 * size + i * size;
+        const r = Builder.apply(
+          w,
+          registry,
+          CONVEYOR_RIGHT_KIND,
+          x,
+          4 * size,
+          x,
+          4 * size,
+          UNLOCKED,
+        );
+        if (r === 'placed') laid++;
+      }
+      check(
+        'Число поставленных секций ничем не ограничено, а счёт не тронут',
+        laid === sections && money.credits === 0,
+        `поставлено ${laid} из ${sections}, счёт ${money.credits}`,
+      );
+    }
+
+    // Перестановка свободна: сносим и ставим заново — счёт тот же.
+    {
+      const { world: w, module, registry } = scene();
+      module.credits = 500;
+      build(w, registry);
+      const afterPlace = module.credits;
+      while (registry.count > 0) Builder.demolish(w, registry, registry.all[0]!);
+      const afterRaze = module.credits;
+      build(w, registry, BX + 40);
+      check(
+        'Перестановка не стоит ничего: счёт до и после совпадает',
+        afterPlace === 500 && afterRaze === 500 && module.credits === 500,
+        `${afterPlace} → ${afterRaze} → ${module.credits}`,
+      );
+    }
+  }
+
   // Все три отказа: ни мир, ни счёт не меняются.
   {
     const cases: Array<[string, () => { ok: boolean; detail: string }]> = [
       [
         'занятое место',
         () => {
-          const { world: w, module, registry } = scene(1000);
+          const { world: w, module, registry } = scene();
           w.set(BX + 5, BY + 5, MAT.ROCK);
           const before = w.cells.slice();
           const credits = module.credits;
-          const r = build(w, registry, module);
+          const r = build(w, registry);
           let changed = 0;
           for (let i = 0; i < before.length; i++) if (before[i] !== w.cells[i]) changed++;
           return {
@@ -94,30 +164,16 @@ const { spawn } = first;
       [
         'нет опоры',
         () => {
-          const { world: w, module, registry } = scene(1000);
+          const { world: w, module, registry } = scene();
           const before = w.cells.slice();
           const credits = module.credits;
           // Высоко над полом: под областью нет ни одной твёрдой ячейки.
-          const r = build(w, registry, module, BX, 20);
+          const r = build(w, registry, BX, 20);
           let changed = 0;
           for (let i = 0; i < before.length; i++) if (before[i] !== w.cells[i]) changed++;
           return {
             ok: r === 'rejected' && changed === 0 && module.credits === credits,
             detail: `${r}, изменено ${changed}`,
-          };
-        },
-      ],
-      [
-        'не хватает кредитов',
-        () => {
-          const { world: w, module, registry } = scene(SEPARATOR.cost - 1);
-          const before = w.cells.slice();
-          const r = build(w, registry, module);
-          let changed = 0;
-          for (let i = 0; i < before.length; i++) if (before[i] !== w.cells[i]) changed++;
-          return {
-            ok: r === 'rejected' && changed === 0 && module.credits === SEPARATOR.cost - 1,
-            detail: `${r}, изменено ${changed}, счёт ${module.credits}`,
           };
         },
       ],
@@ -130,11 +186,11 @@ const { spawn } = first;
 
   // Недостижимое место не меняет мир.
   {
-    const { world: w, module, registry } = scene(1000);
+    const { world: w, registry } = scene();
     const before = w.cells.slice();
     const cx = BX + (SEPARATOR.width >> 1);
     const cy = BY + (SEPARATOR.height >> 1);
-    const r = Builder.apply(w, registry, module, SEPARATOR_KIND, cx + DIG.reach + 20, cy, cx, cy);
+    const r = Builder.apply(w, registry, SEPARATOR_KIND, cx + DIG.reach + 20, cy, cx, cy);
     let changed = 0;
     for (let i = 0; i < before.length; i++) if (before[i] !== w.cells[i]) changed++;
     check('Постройка за пределом дальности не меняет мир', r === 'rejected' && changed === 0);
@@ -143,8 +199,8 @@ const { spawn } = first;
   // --- Снос ---
 
   {
-    const { world: w, module, registry } = scene(1000);
-    build(w, registry, module);
+    const { world: w, module, registry } = scene();
+    build(w, registry);
     const afterBuild = module.credits;
     const separator = registry.all[0] as Separator;
 
@@ -155,7 +211,7 @@ const { spawn } = first;
 
     const cx = BX + (SEPARATOR.width >> 1);
     const cy = BY + (SEPARATOR.height >> 1);
-    const r = Builder.apply(w, registry, module, SEPARATOR_KIND, cx, cy, cx, cy);
+    const r = Builder.apply(w, registry, SEPARATOR_KIND, cx, cy, cx, cy);
 
     check(
       'Применение по стоящему зданию сносит его, а не ставит второе поверх',
@@ -163,8 +219,8 @@ const { spawn } = first;
       `результат ${r}, зданий ${registry.count}`,
     );
     check(
-      'Снос вернул стоимость полностью',
-      module.credits === afterBuild + SEPARATOR.cost,
+      'Снос не тронул счёт: возвращать нечего',
+      module.credits === afterBuild,
       `${afterBuild} → ${module.credits}`,
     );
     check(
@@ -182,8 +238,8 @@ const { spawn } = first;
   // --- Корпус не трогается инструментами ---
 
   {
-    const { world: w, module, registry } = scene(1000);
-    build(w, registry, module);
+    const { world: w, registry } = scene();
+    build(w, registry);
     const hullBefore = count(w, MAT.SEPARATOR_HULL);
 
     const excavated = Digger.applyBrush(w, BX, BY);
@@ -211,8 +267,8 @@ const { spawn } = first;
   // --- Стоимость и детерминированность ---
 
   {
-    const { world: w, module, registry } = scene(1000);
-    build(w, registry, module);
+    const { world: w, registry } = scene();
+    build(w, registry);
     const sim = new Simulation();
     let visited = -1;
     for (let i = 0; i < 2000; i++) {
@@ -238,8 +294,8 @@ const { spawn } = first;
 
   {
     function run(): Uint8Array {
-      const { world: w, module, registry } = scene(1000);
-      build(w, registry, module);
+      const { world: w, registry } = scene();
+      build(w, registry);
       const sim = new Simulation();
       let fed = 0;
       for (let i = 0; i < 1200; i++) {
@@ -263,29 +319,28 @@ const { spawn } = first;
   // --- Режимы и кадр ---
 
   {
-    const tool = new ToolModeState();
-    const seen: string[] = [tool.name];
+    const tool = new ActionBarState();
+    const seen: number[] = [tool.mode];
     for (let i = 0; i < 2; i++) {
       tool.cycle();
-      seen.push(tool.name);
+      seen.push(tool.mode);
     }
     tool.cycle();
     check(
       'Режимов три, перебираются по кругу одной клавишей и возвращаются к первому',
       seen.length === 3 &&
         new Set(seen).size === 3 &&
-        tool.name === seen[0] &&
+        tool.mode === seen[0] &&
         tool.mode === ToolMode.Dig,
-      seen.join(' → ') + ' → ' + tool.name,
+      seen.join(' → ') + ' → ' + tool.mode,
     );
 
     // В режиме строительства инструмент не копает и не собирает.
-    tool.cycle();
-    tool.cycle();
+    tool.select(1);
     check(
-      'Третий режим — строительство',
+      'Слот строительства выбирается напрямую',
       tool.building && !tool.digging && !tool.collecting,
-      tool.name,
+      `слот ${tool.activeSlot}`,
     );
 
     const w = ground();
@@ -301,25 +356,13 @@ const { spawn } = first;
       count(w, MAT.ROCK) === rockBefore && inv.used === 0,
       `породы ${rockBefore} → ${count(w, MAT.ROCK)}, инвентарь ${inv.used}`,
     );
-
-    check(
-      'Сводка по машинам различает работу, простой и забитый выход',
-      (() => {
-        const { world: sw, module, registry } = scene(1000);
-        if (registry.count !== 0) return false;
-        if (machineSummary(registry) !== '') return false;
-        build(sw, registry, module);
-        const s = machineSummary(registry);
-        return s.includes('Сепараторы 1') && s.includes('простой');
-      })(),
-    );
   }
 
   // Высыпанная пульпа принимается так же, как упавшая, а шлак из-под машины
   // убирается тем же пылесосом — это единственный способ разблокировать выход.
   {
-    const { world: w, module, registry } = scene(1000);
-    build(w, registry, module);
+    const { world: w, registry } = scene();
+    build(w, registry);
     const separator = registry.all[0] as Separator;
 
     const inv = new Inventory();
@@ -362,8 +405,8 @@ const { spawn } = first;
   // При общей дистанции шесть пересечение возникало в любом направлении,
   // то есть построить с клавиатуры было нельзя вовсе. Проверяются все восемь.
   {
-    const { world: w, module, registry } = scene(100000);
-    const tool = new ToolModeState();
+    const { world: w, registry } = scene();
+    const tool = new ActionBarState();
     while (!tool.building) tool.cycle();
     check('Режим строительства выбирается той же клавишей', tool.building);
 
@@ -405,19 +448,9 @@ const { spawn } = first;
     // Боковой прицел ставит корпус на уровень ступней: центрированная на поясе
     // цель загнала бы низ здания под землю.
     target.y = Builder.groundedTargetY(SEPARATOR_KIND, py - (PLAYER.hitboxH >> 1), PLAYER.hitboxH);
-    const placedByKeys = Builder.apply(
-      w,
-      registry,
-      module,
-      SEPARATOR_KIND,
-      px,
-      py,
-      target.x,
-      target.y,
-    );
+    const placedByKeys = Builder.apply(w, registry, SEPARATOR_KIND, px, py, target.x, target.y);
     const demolishedByKeys =
-      registry.count > 0 &&
-      Builder.apply(w, registry, module, SEPARATOR_KIND, px, py, target.x, target.y);
+      registry.count > 0 && Builder.apply(w, registry, SEPARATOR_KIND, px, py, target.x, target.y);
 
     check(
       'Постройка и снос проходятся без мыши',
@@ -484,14 +517,7 @@ const { spawn } = first;
     const pixels = new Uint8ClampedArray(BASE_VIEW_W * BASE_VIEW_H * 4);
     const display = {
       pixels,
-      ctx: {
-        putImageData() {},
-        fillText() {},
-        measureText: (s: string) => ({ width: s.length * 4.8 }),
-        font: '',
-        textBaseline: '',
-        fillStyle: '',
-      },
+      ctx: { putImageData() {} },
       width: BASE_VIEW_W,
       height: BASE_VIEW_H,
       image: {},

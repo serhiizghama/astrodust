@@ -20,14 +20,7 @@ const first = luna();
     const pixels = new Uint8ClampedArray(BASE_VIEW_W * BASE_VIEW_H * 4);
     const display = {
       pixels,
-      ctx: {
-        putImageData() {},
-        fillText() {},
-        measureText: (s: string) => ({ width: s.length * 4.8 }),
-        font: '',
-        textBaseline: '',
-        fillStyle: '',
-      },
+      ctx: { putImageData() {} },
       width: BASE_VIEW_W,
       height: BASE_VIEW_H,
       image: {},

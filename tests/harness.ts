@@ -5,8 +5,9 @@
  */
 import { generateLuna, MATERIALS, PORTABLE_MATERIALS } from '../src/world';
 import { WORLD_SEED, VACUUM } from '../src/config';
-import type { HudState } from '../src/render';
+import type { HudState, HudSlot } from '../src/render';
 import type { Input } from '../src/core';
+import { HUD } from '../src/config';
 
 let failures = 0;
 let total = 0;
@@ -44,9 +45,21 @@ export class FakeInput {
 
 export const asInput = (f: FakeInput) => f as unknown as Input;
 
-/** Строка состояния в начале партии — для проверок, которым важен не HUD. */
+/**
+ * Слоты панели действий в начале партии. Собраны здесь, а не взяты у `main.ts`:
+ * снапшот кадра должен собираться руками — иначе проверка кадра зависит
+ * от бутстрапа, который без DOM не запускается.
+ */
+export const IDLE_SLOTS: readonly HudSlot[] = Array.from({ length: HUD.slots }, (_, i) => ({
+  key: `${(i + 1) % 10}`,
+  action: i === 0 ? 'dig' : i === 1 ? 'build' : i === 2 ? 'collect' : null,
+}));
+
+/** Интерфейс в начале партии — для проверок, которым важен не HUD. */
 export const IDLE_HUD: HudState = {
-  mode: 'Копание',
+  slots: IDLE_SLOTS,
+  activeSlot: 0,
+  hoveredSlot: null,
   collecting: false,
   collectRadius: VACUUM.radius,
   carried: [],
@@ -54,12 +67,10 @@ export const IDLE_HUD: HudState = {
   capacity: VACUUM.capacity,
   selected: MATERIALS[PORTABLE_MATERIALS[0]!]!.name,
   credits: 0,
-  research: 0,
   buildKind: '',
   buildIssue: '',
   ghost: null,
   machines: [],
-  machineSummary: '',
   overlay: null,
 };
 

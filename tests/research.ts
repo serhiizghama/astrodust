@@ -1,5 +1,17 @@
-import { World, MAT, MAT_RESEARCH_RATE, Simulation } from '../src/world';
-import { VACUUM_OUTLINE, vacuumOutline } from '../src/render';
+import { World, MAT, MAT_CREDIT_RATE, Simulation } from '../src/world';
+import {
+  VACUUM_OUTLINE,
+  vacuumOutline,
+  textWidth,
+  LINE_H,
+  techTreeLayout,
+  techTreeSize,
+  nodeOrigin,
+  nodeAtPoint,
+  drawResearchOverlay,
+} from '../src/render';
+import type { OverlayView, OverlayNode } from '../src/render';
+import { RAMP } from '../src/palette';
 import { Vacuum, Builder } from '../src/systems';
 import {
   Player,
@@ -20,10 +32,25 @@ import {
   TUNING_BASE,
   TECHNOLOGIES,
   TECH_BY_ID,
+  statusNote,
+  TECH_NODES,
+  TECH_EDGES,
+  TECH_COLS,
+  TECH_ROWS,
   CONTENT,
   maxTuned,
 } from '../src/progress';
-import { PLAYER, FIXED_DT, BASE_VIEW_W, DIG, VACUUM, SEPARATOR, SIM_HZ } from '../src/config';
+import { TECH_TREE } from '../src/config';
+import {
+  PLAYER,
+  FIXED_DT,
+  BASE_VIEW_W,
+  BASE_VIEW_H,
+  DIG,
+  VACUUM,
+  SEPARATOR,
+  SIM_HZ,
+} from '../src/config';
 import { check, luna } from './harness';
 
 const first = luna();
@@ -59,6 +86,27 @@ const first = luna();
     return t;
   }
 
+  /**
+   * Счёт для покупок — НАСТОЯЩИЙ модуль, а не заглушка: контракт покупки
+   * проверяется на том же объекте, который платит в игре.
+   */
+  function wallet(credits = 0): LandingModule {
+    const m = new LandingModule({ x: 0, y: 0, w: 1, h: 1 });
+    m.credits = credits;
+    return m;
+  }
+
+  /** Пустой ввод меню: поля перечислены один раз, а не в каждом вызове. */
+  const NO_MENU = {
+    menuUpPressed: false,
+    menuDownPressed: false,
+    menuLeftPressed: false,
+    menuRightPressed: false,
+    menuConfirmPressed: false,
+    pointerPressed: false,
+  };
+  const menu = (over: Partial<typeof NO_MENU> = {}) => ({ ...NO_MENU, ...over });
+
   const CONVEYOR_TECH = 'conveyor-belt';
   const WIDE = 'wide-nozzle';
   const HEAVY = 'heavy-nozzle';
@@ -79,7 +127,7 @@ const first = luna();
       TECHNOLOGIES.every((t) => t.effect.kind === 'unlock' || t.effect.kind === 'tune'),
     );
     check(
-      'Стоимости положительны и целы: очки — целая валюта',
+      'Цены положительны и целы: кредиты — целая валюта',
       TECHNOLOGIES.every((t) => Number.isInteger(t.cost) && t.cost > 0),
     );
     check(
@@ -127,15 +175,14 @@ const first = luna();
         TUNING_BASE.maxRiseSpeed === PLAYER.maxRiseSpeed,
     );
     check(
-      'Начальное состояние: очков ноль, ничего не открыто',
-      fresh.points === 0 && !fresh.has(CONTENT.CONVEYOR),
+      'Начальное состояние: ничего не открыто',
+      !fresh.has(CONTENT.CONVEYOR) && TECHNOLOGIES.every((t) => !fresh.isOpen(t.id)),
     );
 
     // Профили независимы: один экземпляр не глобальная переменная под другим
     // именем, и покупка в одной партии не трогает другую.
     const other = new Research();
-    other.earn(100);
-    other.buy(WIDE);
+    other.buy(WIDE, wallet(tech(WIDE).cost));
     check(
       'Профили независимы: покупка в одном состоянии не трогает другое',
       other.tuning.collectRadius !== fresh.tuning.collectRadius && fresh.tuning.isBase,
@@ -147,95 +194,99 @@ const first = luna();
 
   {
     const r = new Research();
-    r.earn(tech(CONVEYOR_TECH).cost - 1);
-    const before = r.points;
+    const money = wallet(tech(CONVEYOR_TECH).cost - 1);
+    const before = money.credits;
     check(
-      'Покупка при нехватке очков отвергается целиком, счётчик не меняется',
-      !r.buy(CONVEYOR_TECH) && r.points === before && !r.isOpen(CONVEYOR_TECH),
-      `${r.points} ✦`,
+      'Покупка при нехватке кредитов отвергается целиком, счёт не меняется',
+      !r.buy(CONVEYOR_TECH, money) && money.credits === before && !r.isOpen(CONVEYOR_TECH),
+      `${money.credits} ₡`,
     );
     check(
-      'Нехватка очков видна как отдельное состояние, а не как отказ по факту',
-      r.status(tech(CONVEYOR_TECH)) === 'poor',
+      'Нехватка кредитов видна как отдельное состояние, а не как отказ по факту',
+      r.status(tech(CONVEYOR_TECH), money.credits) === 'poor',
     );
 
-    r.earn(1);
-    const paid = r.points;
+    money.credits += 1;
+    const paid = money.credits;
     check(
-      'Покупка списывает очки ровно на стоимость и открывает технологию',
-      r.buy(CONVEYOR_TECH) &&
-        r.points === paid - tech(CONVEYOR_TECH).cost &&
+      'Покупка списывает кредиты ровно на цену и открывает технологию',
+      r.buy(CONVEYOR_TECH, money) &&
+        money.credits === paid - tech(CONVEYOR_TECH).cost &&
         r.isOpen(CONVEYOR_TECH),
-      `${paid} → ${r.points} ✦`,
+      `${paid} → ${money.credits} ₡`,
     );
 
-    r.earn(100);
-    const rich = r.points;
+    money.credits += 10000;
+    const rich = money.credits;
     check(
       'Повторная покупка ничего не списывает и ничего не меняет',
-      !r.buy(CONVEYOR_TECH) && r.points === rich,
-      `${r.points} ✦`,
+      !r.buy(CONVEYOR_TECH, money) && money.credits === rich,
+      `${money.credits} ₡`,
     );
-    check('Купленная технология показана открытой', r.status(tech(CONVEYOR_TECH)) === 'open');
+    check(
+      'Купленная технология показана открытой',
+      r.status(tech(CONVEYOR_TECH), money.credits) === 'open',
+    );
   }
 
   // --- Предпосылки ---
 
   {
     const r = new Research();
-    r.earn(10000);
+    const money = wallet(100000);
     check(
-      'Технология с неоткрытой предпосылкой не покупается при любом количестве очков',
-      !r.buy(HEAVY) && r.points === 10000 && !r.isOpen(HEAVY),
-      `${r.points} ✦`,
+      'Технология с неоткрытой предпосылкой не покупается при любом счёте',
+      !r.buy(HEAVY, money) && money.credits === 100000 && !r.isOpen(HEAVY),
+      `${money.credits} ₡`,
     );
     check(
-      'Закрытая предпосылкой отличима от «не хватает очков» на вид',
-      r.status(tech(HEAVY)) === 'blocked' && r.missing(tech(HEAVY)).includes(tech(WIDE).name),
+      'Закрытая предпосылкой отличима от «не хватает кредитов» на вид',
+      r.status(tech(HEAVY), money.credits) === 'blocked' &&
+        r.missing(tech(HEAVY)).includes(tech(WIDE).name),
       r.missing(tech(HEAVY)).join(', '),
     );
     check(
       'После открытия предпосылки покупка проходит',
-      r.buy(WIDE) && r.buy(HEAVY) && r.isOpen(HEAVY),
+      r.buy(WIDE, money) && r.buy(HEAVY, money) && r.isOpen(HEAVY),
     );
   }
 
-  // --- Счётчики не уходят в минус ---
+  // --- Счёт не уходит в минус ---
 
   {
-    // Длинная последовательность сдач и покупок: обе валюты обязаны остаться
-    // неотрицательными, а покупки — не превратиться в долг.
+    // Длинная последовательность сдач и покупок: счёт обязан остаться
+    // неотрицательным, а покупки — не превратиться в долг.
     const w = ground();
     const zone = { x: 40, y: 40, w: 8, h: 4 };
     const r = new Research();
-    const module = new LandingModule(zone, r);
+    const module = new LandingModule(zone);
     let negative = false;
-    let converted = false;
 
-    for (let round = 0; round < 60; round++) {
+    // Кругов с запасом на ВСЁ дерево: проверка про минус, но пройти она обязана
+    // по пути, на котором покупки действительно случались.
+    for (let round = 0; round < 120; round++) {
       const material = round % 3 === 0 ? MAT.IRIDIUM : round % 3 === 1 ? MAT.PULP : MAT.SLAG;
       for (let x = zone.x; x < zone.x + zone.w; x++) w.set(x, zone.y, material);
-      const creditsBefore = module.credits;
-      const pointsBefore = r.points;
-      const paid = module.update(w);
+      module.update(w);
 
-      // Ни одна валюта не превращается в другую: сдача материала с нулевой
-      // ставкой второй валюты эту вторую не трогает вовсе.
-      if (paid.credits > 0 && r.points !== pointsBefore) converted = true;
-      if (paid.research > 0 && module.credits !== creditsBefore) converted = true;
-
-      for (const t of TECHNOLOGIES) r.buy(t.id);
-      if (module.credits < 0 || r.points < 0) negative = true;
+      for (const t of TECHNOLOGIES) r.buy(t.id, module);
+      if (module.credits < 0) negative = true;
     }
 
     check(
-      'Ни один счётчик не уходит в минус на длинной последовательности сдач и покупок',
-      !negative && module.credits >= 0 && r.points >= 0,
-      `${module.credits} ₡, ${r.points} ✦`,
+      'Счёт не уходит в минус на длинной последовательности сдач и покупок',
+      !negative && module.credits >= 0 && Number.isInteger(module.credits),
+      `${module.credits} ₡`,
     );
-    check('Валюты не конвертируются друг в друга', !converted);
     check(
-      'Шлак не даёт ни одной валюты и остаётся в мире',
+      'Всё дерево куплено, и каждая покупка была однократной',
+      TECHNOLOGIES.every((t) => r.isOpen(t.id)),
+      TECHNOLOGIES.filter((t) => !r.isOpen(t.id))
+        .map((t) => t.name)
+        .join(', ') || 'открыто всё',
+    );
+    check(
+      'Шлак не даёт кредитов и остаётся в мире',
       count(w, MAT.SLAG) > 0,
       `шлака в зоне ${count(w, MAT.SLAG)}`,
     );
@@ -261,8 +312,8 @@ const first = luna();
     const beforeWorld = heap();
     const beforeCells = vac.updateSuck(FIXED_DT, beforeWorld, inv, true, 40, 40, 40, 40);
 
-    r.earn(1000);
-    r.buy(WIDE);
+    const money = wallet(100000);
+    r.buy(WIDE, money);
     const afterInv = new Inventory();
     const afterVac = new Vacuum(r.tuning);
     const afterWorld = heap();
@@ -274,7 +325,7 @@ const first = luna();
       `было ${beforeCells} ячеек за нажатие, стало ${afterCells}`,
     );
 
-    r.buy(HEAVY);
+    r.buy(HEAVY, money);
     const topInv = new Inventory();
     const topVac = new Vacuum(r.tuning);
     const topWorld = heap();
@@ -429,24 +480,22 @@ const first = luna();
     // с полным кошельком и годным местом.
     {
       const w = ground(64, 64);
-      const module = new LandingModule({ x: 0, y: 0, w: 1, h: 1 }, r);
-      module.credits = 10000;
+      const money = wallet(10000);
       const registry = new BuildingRegistry();
-      const placed = Builder.apply(w, registry, module, CONVEYOR_RIGHT_KIND, 30, 30, 30, 30, r);
+      const placed = Builder.apply(w, registry, CONVEYOR_RIGHT_KIND, 30, 30, 30, 30, r);
       check(
-        'Закрытый вид не ставится никаким способом и не стоит ни кредита',
+        'Закрытый вид не ставится никаким способом',
         placed === 'rejected' &&
           count(w, MAT.CONVEYOR_RIGHT) === 0 &&
-          module.credits === 10000 &&
-          Builder.issueAt(w, CONVEYOR_RIGHT_KIND, 30, 30, 10000, r) === 'locked',
-        `${placed}, на счету ${module.credits}`,
+          money.credits === 10000 &&
+          Builder.issueAt(w, CONVEYOR_RIGHT_KIND, 30, 30, r) === 'locked',
+        `${placed}, на счету ${money.credits}`,
       );
     }
 
     // Покупка добавляет ОБА направления сразу и видна немедленно — тем же
     // экземпляром каталога, без перезапуска.
-    r.earn(tech(CONVEYOR_TECH).cost);
-    r.buy(CONVEYOR_TECH);
+    r.buy(CONVEYOR_TECH, wallet(tech(CONVEYOR_TECH).cost));
     check(
       'Покупка технологии конвейера добавляет оба направления в перебор сразу',
       closed.open.includes(CONVEYOR_LEFT_KIND) &&
@@ -462,10 +511,8 @@ const first = luna();
     );
     {
       const w = ground(64, 64);
-      const module = new LandingModule({ x: 0, y: 0, w: 1, h: 1 }, r);
-      module.credits = 10000;
       const registry = new BuildingRegistry();
-      const placed = Builder.apply(w, registry, module, CONVEYOR_RIGHT_KIND, 30, 30, 30, 30, r);
+      const placed = Builder.apply(w, registry, CONVEYOR_RIGHT_KIND, 30, 30, 30, 30, r);
       check(
         'После покупки лента ставится',
         placed === 'placed' && count(w, MAT.CONVEYOR_RIGHT) > 0,
@@ -493,8 +540,8 @@ const first = luna();
 
     const plainWorld = run();
     const opened = new Research();
-    opened.earn(10000);
-    for (const t of TECHNOLOGIES) opened.buy(t.id);
+    const purse = wallet(100000);
+    for (const t of TECHNOLOGIES) opened.buy(t.id, purse);
     const openedWorld = run();
 
     let same = plainWorld.cells.length === openedWorld.cells.length;
@@ -508,11 +555,85 @@ const first = luna();
     );
   }
 
+  // --- Раскладка дерева ---
+
+  {
+    // Колонка — САМАЯ ДЛИННАЯ цепочка предпосылок. Считается здесь заново
+    // и независимо: совпадение с раскладкой означает, что правило одно,
+    // а не что обе стороны ошиблись одинаково.
+    const depth = new Map<string, number>();
+    for (let pass = 0; pass < TECHNOLOGIES.length; pass++) {
+      for (const tc of TECHNOLOGIES) {
+        let d = 0;
+        for (const req of tc.requires) d = Math.max(d, (depth.get(req) ?? 0) + 1);
+        depth.set(tc.id, d);
+      }
+    }
+    const wrong = TECH_NODES.filter((n) => n.col !== depth.get(n.id));
+    check(
+      'Колонка узла равна длине самой длинной цепочки предпосылок',
+      wrong.length === 0,
+      wrong.map((n) => `${n.id}: ${n.col} против ${depth.get(n.id)}`).join(', ') || 'все совпали',
+    );
+
+    check(
+      'Технология без предпосылок стоит в нулевой колонке, зависящая — правее',
+      TECH_NODES.every((n) => {
+        const tc = TECH_BY_ID.get(n.id)!;
+        return tc.requires.length === 0 ? n.col === 0 : n.col > 0;
+      }),
+    );
+
+    const cells = new Set(TECH_NODES.map((n) => `${n.col}:${n.row}`));
+    check(
+      'Узлы не накладываются: у каждого своя клетка сетки',
+      cells.size === TECH_NODES.length,
+      `клеток ${cells.size} при ${TECH_NODES.length} узлах`,
+    );
+
+    // Раз колонка равна длине цепочки, КАЖДОЕ ребро идёт слева направо.
+    // Направление читается из картинки, и стрелок она не требует.
+    const backwards = TECH_EDGES.filter((e) => TECH_NODES[e.from]!.col >= TECH_NODES[e.to]!.col);
+    check(
+      'Каждое ребро соединяет узел с узлом правее него',
+      backwards.length === 0 && TECH_EDGES.length > 0,
+      `рёбер ${TECH_EDGES.length}, назад ${backwards.length}`,
+    );
+    check(
+      'Рёбер ровно столько, сколько предпосылок в таблице',
+      TECH_EDGES.length === TECHNOLOGIES.reduce((n, tc) => n + tc.requires.length, 0),
+    );
+
+    check(
+      'Габариты сетки согласованы с узлами',
+      TECH_COLS === Math.max(...TECH_NODES.map((n) => n.col)) + 1 &&
+        TECH_ROWS === Math.max(...TECH_NODES.map((n) => n.row)) + 1,
+      `${TECH_COLS}×${TECH_ROWS}`,
+    );
+
+    // Дерево обязано помещаться в панель ЦЕЛИКОМ: прокрутки нет, и часть,
+    // о существовании которой не сказано, отвечает на вопрос «куда ведёт
+    // развитие» неверно. Растущая таблица уронит эту проверку, а не обрежется
+    // молча.
+    {
+      const layout = techTreeLayout(BASE_VIEW_W, BASE_VIEW_H, TECH_COLS, TECH_ROWS);
+      const size = techTreeSize(TECH_COLS, TECH_ROWS);
+      const maxCols = Math.floor((layout.fieldW - TECH_TREE.node) / TECH_TREE.colStep) + 1;
+      const maxRows = Math.floor((layout.fieldH - TECH_TREE.node) / TECH_TREE.rowStep) + 1;
+      check(
+        'Дерево помещается в панель оверлея опорного кадра целиком',
+        size.w <= layout.fieldW && size.h <= layout.fieldH,
+        `${size.w}×${size.h} в поле ${layout.fieldW}×${layout.fieldH}, ` +
+          `запас до ${maxCols} колонок и ${maxRows} строк`,
+      );
+    }
+  }
+
   // --- Оверлей: навигация, покупка и модальность ---
 
   {
     const r = new Research();
-    r.earn(1000);
+    const money = wallet(100000);
     const ov = new ResearchOverlay();
 
     check('Оверлей закрыт в начале партии', !ov.open);
@@ -521,46 +642,133 @@ const first = luna();
     ov.toggle();
     check('Одна клавиша открывает и закрывает оверлей', openedNow && !ov.open);
 
-    // Весь цикл «открыть — выбрать — купить — закрыть» без единого события мыши.
+    // Весь цикл «открыть — дойти до узла — купить — закрыть» без единого
+    // события мыши. Дерево двумерно, и одной вертикали ему мало.
     ov.toggle();
-    const first0 = ov.selected;
-    ov.handle({ menuUpPressed: false, menuDownPressed: true, toolPressed: false }, r);
-    const second = ov.selected;
-    ov.handle({ menuUpPressed: true, menuDownPressed: false, toolPressed: false }, r);
-    const backToFirst = ov.selected;
+    const start = ov.selected;
+    ov.handle(menu({ menuDownPressed: true }), r, money);
+    const below = ov.selected;
+    ov.handle(menu({ menuUpPressed: true }), r, money);
+    const backUp = ov.selected;
     check(
-      'Навигация по списку идёт с клавиатуры и возвращается назад',
-      second !== first0 && backToFirst === first0,
-      `${first0.name} → ${second.name} → ${backToFirst.name}`,
+      'Шаг вниз и вверх ходит внутри колонки и возвращается назад',
+      below !== start && backUp === start,
+      `${start.name} → ${below.name} → ${backUp.name}`,
     );
 
-    const pointsBefore = r.points;
-    ov.handle({ menuUpPressed: false, menuDownPressed: false, toolPressed: true }, r);
+    ov.handle(menu({ menuRightPressed: true }), r, money);
+    const right = ov.selectedIndex;
+    ov.handle(menu({ menuLeftPressed: true }), r, money);
     check(
-      'Применение инструмента покупает выбранную строку',
-      r.isOpen(first0.id) && r.points === pointsBefore - first0.cost,
-      `${pointsBefore} → ${r.points} ✦`,
-    );
-    ov.handle({ menuUpPressed: false, menuDownPressed: false, toolPressed: true }, r);
-    check(
-      'Повторное нажатие по открытой строке ничего не списывает',
-      r.points === pointsBefore - first0.cost,
+      'Шаг вправо уходит в следующую колонку, влево — возвращает',
+      TECH_NODES[right]!.col === 1 && TECH_NODES[ov.selectedIndex]!.col === 0,
+      `колонка ${TECH_NODES[right]!.col} → ${TECH_NODES[ov.selectedIndex]!.col}`,
     );
 
-    // Выбор упирается в края списка, а не заворачивается: перескок с конца
-    // в начало читался бы как промах.
-    for (let i = 0; i < TECHNOLOGIES.length * 2; i++) {
-      ov.handle({ menuUpPressed: false, menuDownPressed: true, toolPressed: false }, r);
+    // Каждый узел достижим одними клавишами: иначе «полностью с клавиатуры»
+    // неправда для той части дерева, до которой не дойти.
+    {
+      const seen = new Set<number>();
+      const walk = new ResearchOverlay();
+      const queue = [walk.selectedIndex];
+      seen.add(walk.selectedIndex);
+      while (queue.length > 0) {
+        const at = queue.pop()!;
+        for (const [dx, dy] of [
+          [0, -1],
+          [0, 1],
+          [-1, 0],
+          [1, 0],
+        ] as const) {
+          const probe = new ResearchOverlay();
+          for (let i = 0; i < at; i++) void i;
+          // Перевод выбора в `at` — тем же способом, что и в игре: шагами.
+          probe.move(0, 0);
+          let cur = probe.selectedIndex;
+          // Дойти до `at` по сетке: сперва по колонкам, затем по строкам.
+          while (TECH_NODES[cur]!.col < TECH_NODES[at]!.col) {
+            probe.move(1, 0);
+            if (probe.selectedIndex === cur) break;
+            cur = probe.selectedIndex;
+          }
+          while (TECH_NODES[cur]!.row < TECH_NODES[at]!.row) {
+            probe.move(0, 1);
+            if (probe.selectedIndex === cur) break;
+            cur = probe.selectedIndex;
+          }
+          if (probe.selectedIndex !== at) continue;
+          probe.move(dx, dy);
+          const next = probe.selectedIndex;
+          if (!seen.has(next)) {
+            seen.add(next);
+            queue.push(next);
+          }
+        }
+      }
+      check(
+        'Каждый узел дерева достижим одними клавишами',
+        seen.size === TECHNOLOGIES.length,
+        `достижимо ${seen.size} из ${TECHNOLOGIES.length}`,
+      );
     }
+
+    // Покупка подтверждением с клавиатуры.
+    while (ov.selected.id !== CONVEYOR_TECH) ov.move(0, -1);
+    const beforeBuy = money.credits;
+    ov.handle(menu({ menuConfirmPressed: true }), r, money);
     check(
-      'Выбор не выходит за границы списка',
-      ov.selectedIndex === TECHNOLOGIES.length - 1,
-      `${ov.selectedIndex} из ${TECHNOLOGIES.length - 1}`,
+      'Подтверждение с клавиатуры покупает выбранный узел',
+      r.isOpen(CONVEYOR_TECH) && money.credits === beforeBuy - tech(CONVEYOR_TECH).cost,
+      `${beforeBuy} → ${money.credits} ₡`,
     );
-    for (let i = 0; i < TECHNOLOGIES.length * 2; i++) {
-      ov.handle({ menuUpPressed: true, menuDownPressed: false, toolPressed: false }, r);
+    ov.handle(menu({ menuConfirmPressed: true }), r, money);
+    check(
+      'Повторное подтверждение по открытому узлу ничего не списывает',
+      money.credits === beforeBuy - tech(CONVEYOR_TECH).cost,
+    );
+
+    // Мышь покупает узел ПОД КУРСОРОМ, а промах мимо узлов — ничего.
+    {
+      const r2 = new Research();
+      const purse = wallet(100000);
+      const ov2 = new ResearchOverlay();
+      ov2.toggle();
+      const target = TECHNOLOGIES.findIndex((tc) => tc.id === THRUSTERS);
+      ov2.handle(menu({ pointerPressed: true }), r2, purse, target);
+      check(
+        'Нажатие по узлу покупает именно его, а не выбранный клавиатурой',
+        r2.isOpen(THRUSTERS) &&
+          ov2.selectedIndex === target &&
+          purse.credits === 100000 - tech(THRUSTERS).cost,
+        `${purse.credits} ₡, выбран ${ov2.selected.name}`,
+      );
+
+      const after = purse.credits;
+      const chosen = ov2.selectedIndex;
+      ov2.handle(menu({ pointerPressed: true }), r2, purse, null);
+      check(
+        'Нажатие мимо узлов не покупает ничего и не меняет выбор',
+        purse.credits === after && ov2.selectedIndex === chosen,
+        `${purse.credits} ₡`,
+      );
     }
-    check('Выбор не уходит выше первой строки', ov.selectedIndex === 0);
+
+    // Выбор упирается в края дерева, а не заворачивается: перескок с края
+    // на край читался бы как промах.
+    for (let i = 0; i < TECHNOLOGIES.length * 2; i++)
+      ov.handle(menu({ menuDownPressed: true }), r, money);
+    const bottom = TECH_NODES[ov.selectedIndex]!;
+    check(
+      'Выбор не выходит за нижний край колонки',
+      bottom.row === Math.max(...TECH_NODES.filter((n) => n.col === bottom.col).map((n) => n.row)),
+      `строка ${bottom.row} в колонке ${bottom.col}`,
+    );
+    for (let i = 0; i < TECHNOLOGIES.length * 2; i++)
+      ov.handle(menu({ menuUpPressed: true }), r, money);
+    check('Выбор не уходит выше первой строки', TECH_NODES[ov.selectedIndex]!.row === 0);
+    for (let i = 0; i < TECH_COLS * 2; i++) ov.handle(menu({ menuLeftPressed: true }), r, money);
+    check('Выбор не уходит левее нулевой колонки', TECH_NODES[ov.selectedIndex]!.col === 0);
+
     ov.toggle();
     check('Оверлей закрывается той же клавишей', !ov.open);
   }
@@ -602,14 +810,13 @@ const first = luna();
     // вещество оседает. Паузы в модели нет и заводить её ради меню незачем.
     const w = ground(96, 96);
     const r = new Research();
-    const module = new LandingModule({ x: 0, y: 0, w: 1, h: 1 }, r);
-    module.credits = 10000;
+    const module = new LandingModule({ x: 0, y: 0, w: 1, h: 1 });
     const registry = new BuildingRegistry();
     const bx = 40;
     const by = 94 - SEPARATOR.height;
     const cx = bx + (SEPARATOR.width >> 1);
     const cy = by + (SEPARATOR.height >> 1);
-    const built = Builder.apply(w, registry, module, SEPARATOR_KIND, cx, cy, cx, cy, r);
+    const built = Builder.apply(w, registry, SEPARATOR_KIND, cx, cy, cx, cy, r);
     for (let i = 0; i < SEPARATOR.batch; i++) w.set(bx + 3 + i, by - 1, MAT.PULP);
 
     const ov = new ResearchOverlay();
@@ -619,7 +826,7 @@ const first = luna();
     // Ровно те же вызовы, что делает шаг при открытом оверлее: ввода нет,
     // но симуляция и машины идут.
     for (let i = 0; i < 600; i++) {
-      ov.handle({ menuUpPressed: false, menuDownPressed: false, toolPressed: false }, r);
+      ov.handle(menu(), r, module);
       p.update(FIXED_DT, NO_INPUT, w);
       sim.update(w, { x: p.x, y: p.y, w: PLAYER.hitboxW, h: PLAYER.hitboxH });
       registry.update(w, FIXED_DT);
@@ -636,12 +843,369 @@ const first = luna();
     );
   }
 
+  // --- Отрисовка дерева ---
+
+  {
+    /** Кадр под оверлей: тот же буфер пикселей, что и у мира, без канваса. */
+    function frame(): Uint8ClampedArray {
+      return new Uint8ClampedArray(BASE_VIEW_W * BASE_VIEW_H * 4);
+    }
+
+    function countColor(px: Uint8ClampedArray, color: number): number {
+      const r = (color >> 16) & 0xff;
+      const g = (color >> 8) & 0xff;
+      const b = color & 0xff;
+      let n = 0;
+      for (let i = 0; i < px.length; i += 4) {
+        if (px[i] === r && px[i + 1] === g && px[i + 2] === b) n++;
+      }
+      return n;
+    }
+
+    function diff(a: Uint8ClampedArray, b: Uint8ClampedArray): number {
+      let n = 0;
+      for (let i = 0; i < a.length; i += 4) {
+        if (a[i] !== b[i] || a[i + 1] !== b[i + 1] || a[i + 2] !== b[i + 2]) n++;
+      }
+      return n;
+    }
+
+    /** Снапшот дерева из настоящей раскладки: своей копии геометрии здесь нет. */
+    function view(over: Partial<OverlayView> = {}): OverlayView {
+      const nodes: OverlayNode[] = TECHNOLOGIES.map((tc, i) => ({
+        name: tc.name,
+        description: tc.description,
+        cost: tc.cost,
+        usage: tc.usage,
+        // Четыре состояния по кругу: каждое обязано попасть в кадр, иначе
+        // проверка мерила бы одно.
+        status: (['open', 'available', 'poor', 'blocked'] as const)[i % 4]!,
+        kind: tc.effect.kind,
+        icon: tc.icon,
+        col: TECH_NODES[i]!.col,
+        row: TECH_NODES[i]!.row,
+        note: '',
+      }));
+      return {
+        credits: 1234,
+        nodes,
+        edges: TECH_EDGES,
+        selected: 0,
+        hovered: null,
+        // По умолчанию курсор УВЕДЁН в угол панели: снимки сравниваются между
+        // собой, и стрелка посреди дерева попадала бы в каждый diff.
+        pointerX: BASE_VIEW_W - 2,
+        pointerY: BASE_VIEW_H - 2,
+        ...over,
+      };
+    }
+
+    function shoot(over: Partial<OverlayView> = {}): Uint8ClampedArray {
+      const px = frame();
+      drawResearchOverlay(px, BASE_VIEW_W, BASE_VIEW_H, view(over));
+      return px;
+    }
+
+    const base = shoot();
+
+    // Четыре состояния покупки — четыре подложки, и каждая обязана быть
+    // в кадре: иначе недоступное просто не показано.
+    {
+      const fills = [RAMP.green[1], RAMP.gray[6], RAMP.gray[4], RAMP.gray[2]];
+      const missing = fills.filter((c) => countColor(base, c) === 0);
+      check(
+        'Все четыре состояния покупки видны в кадре разными подложками',
+        missing.length === 0 && new Set(fills).size === fills.length,
+        `подложек без пикселей ${missing.length}`,
+      );
+    }
+
+    // Вид эффекта разведён РАМКОЙ и выживает в любом состоянии покупки:
+    // закрытая предпосылкой постройка и закрытый навык обязаны различаться.
+    {
+      const edges = [RAMP.earth[4], RAMP.violet[4]];
+      const present = edges.every((c) => countColor(base, c) > 0);
+      const distinct = new Set(edges).size === edges.length;
+      const allOpen = shoot({
+        nodes: view().nodes.map((n) => ({ ...n, status: 'open' as const })),
+      });
+      const stillBoth = edges.every((c) => countColor(allOpen, c) > 0);
+      check(
+        'Постройка и навык различаются рамкой в любом состоянии покупки',
+        present && stillBoth && distinct,
+        `земля ${countColor(base, edges[0]!)}, фиалка ${countColor(base, edges[1]!)}`,
+      );
+    }
+
+    // Причина отказа разведена ЦВЕТОМ ПОДПИСИ: «не хватает» золотом валюты,
+    // «закрыто предпосылкой» — приглушённым серым.
+    {
+      const poor = RAMP.warm[4];
+      const blocked = RAMP.gray[5];
+      check(
+        'Нехватка кредитов и закрытая предпосылка различаются цветом подписи',
+        countColor(base, poor) > 0 &&
+          countColor(base, blocked) > 0 &&
+          new Set([poor, blocked]).size === 2,
+        `золота ${countColor(base, poor)}, серого ${countColor(base, blocked)}`,
+      );
+    }
+
+    // Цена видна у КАЖДОГО некупленного узла и без наведения: вопрос
+    // «на что мне хватает» задаётся ко всему дереву сразу.
+    {
+      const zeroed = shoot({
+        nodes: view().nodes.map((n) => ({ ...n, cost: 0 })),
+      });
+      check(
+        'Цена нарисована у некупленных узлов без наведения',
+        diff(base, zeroed) > 0,
+        'смена цены меняет пиксели кадра',
+      );
+    }
+
+    // Связи: рёбра из открытой и неоткрытой предпосылки различаются на вид.
+    {
+      const noEdges = shoot({ edges: [] });
+      check('Связи между узлами нарисованы', diff(base, noEdges) > 0);
+
+      const parent = TECH_EDGES[0]!.from;
+      const pending = shoot({
+        nodes: view().nodes.map((n, i) => (i === parent ? { ...n, status: 'poor' as const } : n)),
+      });
+      const done = shoot({
+        nodes: view().nodes.map((n, i) => (i === parent ? { ...n, status: 'open' as const } : n)),
+      });
+      check(
+        'Ребро из открытой предпосылки отличается от ребра из неоткрытой',
+        diff(pending, done) > 0 && countColor(done, RAMP.gray[7]) > 0,
+        `светлых пикселей связи ${countColor(done, RAMP.gray[7])}`,
+      );
+    }
+
+    // Выбор и наведение — РАЗНЫЕ пометки: они бывают на разных узлах сразу.
+    {
+      const selected = shoot({ selected: 1 });
+      check('Выбранный узел помечен', diff(base, selected) > 0);
+
+      const both = shoot({ selected: 0, hovered: 2 });
+      check(
+        'Наведение помечено иначе, чем выбор, и не подменяет его',
+        countColor(both, RAMP.gray[9]) > 0 && countColor(both, RAMP.blue[5]) > 0,
+        `кольцо выбора ${countColor(both, RAMP.gray[9])}, наведения ${countColor(both, RAMP.blue[5])}`,
+      );
+    }
+
+    // Полоса сведений: словами, для наведённого узла, а без наведения — для
+    // выбранного. Оба источника пишут в ОДНО место: вопрос «что это и что
+    // с этим делать» один, и два места для одного ответа читались бы как два
+    // разных ответа.
+    {
+      const noted = shoot({
+        nodes: view().nodes.map((n) => ({ ...n, note: 'нужно ещё 7 ₡' })),
+      });
+      check(
+        'Полоса сведений показывает причину словами, а не только цветом',
+        diff(base, noted) > 0,
+        'строка причины добавляет в кадр надпись',
+      );
+
+      // Слова причины: недостающая СУММА, а не цена, и предпосылки поимённо.
+      {
+        const r2 = new Research();
+        const poorAt = tech(CONVEYOR_TECH);
+        const short = poorAt.cost - 100;
+        check(
+          'Полоса при нехватке называет недостающую сумму, а не цену',
+          statusNote(poorAt, r2.status(poorAt, short), short, r2) === `нужно ещё 100 ₡`,
+          statusNote(poorAt, r2.status(poorAt, short), short, r2),
+        );
+        const blockedAt = tech(HEAVY);
+        const note = statusNote(blockedAt, r2.status(blockedAt, 100000), 100000, r2);
+        check(
+          'Полоса при закрытой предпосылке называет её по имени',
+          note.includes(tech(WIDE).name),
+          note,
+        );
+        const openAt = tech(CONVEYOR_TECH);
+        r2.buy(CONVEYOR_TECH, wallet(openAt.cost));
+        check(
+          'Купленному и доступному объяснять нечего',
+          statusNote(openAt, r2.status(openAt, 100000), 100000, r2) === '' &&
+            statusNote(tech(WIDE), r2.status(tech(WIDE), 100000), 100000, r2) === '',
+        );
+      }
+
+      const hovered = shoot({ selected: 0, hovered: 3 });
+      const selectedOnly = shoot({ selected: 3, hovered: null });
+      check(
+        'Сведения идут за наведением, а без него описывают выбранный узел',
+        diff(base, hovered) > 0 && diff(base, selectedOnly) > 0,
+      );
+
+      // Применение — то, ради чего полоса и заведена: «что это» отвечает
+      // название на узле, «что с этим делать» не отвечает ничто другое.
+      const noUsage = shoot({
+        nodes: view().nodes.map((n) => ({ ...n, usage: '' })),
+      });
+      check(
+        'Применение технологии показано в полосе сведений',
+        diff(base, noUsage) > 0,
+        'строка применения добавляет в кадр надпись',
+      );
+
+      // Полоса стоит в СВОЁМ месте и не наезжает на дерево: смена выбранного
+      // узла меняет пиксели только в её полосе и в пометках самих узлов.
+      {
+        const layout = techTreeLayout(BASE_VIEW_W, BASE_VIEW_H, TECH_COLS, TECH_ROWS);
+        const barTop = layout.y + layout.h - 6 - TECH_TREE.infoLines * LINE_H - 3;
+        const a = shoot({ selected: 0, hovered: null });
+        const b = shoot({ selected: 0, hovered: 3 });
+        let strayed = 0;
+        for (let p = 0; p < a.length; p += 4) {
+          if (a[p] === b[p] && a[p + 1] === b[p + 1] && a[p + 2] === b[p + 2]) continue;
+          const at = p >> 2;
+          const x = at % BASE_VIEW_W;
+          const y = (at / BASE_VIEW_W) | 0;
+          if (y >= barTop) continue;
+          // Кольцо наведения на самом узле — не «наезд»: это его пометка.
+          const node = TECH_NODES[3]!;
+          const org = nodeOrigin(layout, node.col, node.row);
+          const near =
+            x >= org.x - 2 &&
+            x < org.x + layout.node + 2 &&
+            y >= org.y - 2 &&
+            y < org.y + layout.node + 2;
+          if (!near) strayed++;
+        }
+        check(
+          'Сведения не наезжают на дерево: наведение меняет только полосу и сам узел',
+          strayed === 0,
+          `пикселей вне полосы и вне узла ${strayed}`,
+        );
+      }
+
+      // Строки полосы обязаны помещаться в ширину панели: обрезанная кромкой
+      // строка не читается ровно там, где нужнее всего. Новая технология
+      // с длинным текстом уронит прогон, а не молча уедет за край.
+      {
+        const layout = techTreeLayout(BASE_VIEW_W, BASE_VIEW_H, TECH_COLS, TECH_ROWS);
+        const room = layout.w - 12;
+        const tooWide = TECHNOLOGIES.filter(
+          (tc) => textWidth(tc.description) > room || textWidth(tc.usage) > room,
+        );
+        check(
+          'Пояснение и применение помещаются в ширину полосы сведений',
+          tooWide.length === 0,
+          tooWide.map((tc) => tc.name).join(', ') ||
+            `запас ${room} пикселей, самая длинная ` +
+              `${Math.max(...TECHNOLOGIES.map((tc) => Math.max(textWidth(tc.description), textWidth(tc.usage))))}`,
+        );
+      }
+    }
+
+    // Шаг колонки ВЫВЕДЕН из самой длинной подписи: подписи соседних колонок
+    // не имеют права сойтись в одну строку. Имя длиннее уронит прогон.
+    {
+      const widest = Math.max(...TECHNOLOGIES.map((tc) => textWidth(tc.name)));
+      check(
+        'Название узла помещается в шаг колонки',
+        widest < TECH_TREE.colStep,
+        `самое длинное имя ${widest}, шаг колонки ${TECH_TREE.colStep}`,
+      );
+    }
+
+    // Курсор меню рисуется САМ: подложка панели непрозрачна и накрывает
+    // мировой прицел целиком. Без этого меню не показывает, где мышь, вовсе.
+    {
+      const layout = techTreeLayout(BASE_VIEW_W, BASE_VIEW_H, TECH_COLS, TECH_ROWS);
+      const at = nodeOrigin(layout, TECH_NODES[0]!.col, TECH_NODES[0]!.row);
+      const px = frame();
+      drawResearchOverlay(
+        px,
+        BASE_VIEW_W,
+        BASE_VIEW_H,
+        view({ pointerX: at.x + 40, pointerY: at.y + 40 }),
+      );
+      const moved = frame();
+      drawResearchOverlay(
+        moved,
+        BASE_VIEW_W,
+        BASE_VIEW_H,
+        view({ pointerX: at.x + 60, pointerY: at.y + 40 }),
+      );
+      check(
+        'Курсор нарисован в меню и следует за мышью',
+        diff(px, moved) > 0,
+        `сдвиг курсора меняет ${diff(px, moved)} пикселей`,
+      );
+
+      // Курсор — поверх ВСЕГО, включая подсказку: он указатель, и заслонять
+      // его не имеет права ничто.
+      const overTip = frame();
+      const tipAt = nodeOrigin(layout, TECH_NODES[0]!.col, TECH_NODES[0]!.row);
+      drawResearchOverlay(
+        overTip,
+        BASE_VIEW_W,
+        BASE_VIEW_H,
+        view({ selected: 0, pointerX: tipAt.x + layout.node + 8, pointerY: tipAt.y + 4 }),
+      );
+      const noPointer = frame();
+      drawResearchOverlay(
+        noPointer,
+        BASE_VIEW_W,
+        BASE_VIEW_H,
+        view({ selected: 0, pointerX: BASE_VIEW_W - 2, pointerY: BASE_VIEW_H - 2 }),
+      );
+      check(
+        'Курсор виден поверх подсказки, а не под ней',
+        diff(overTip, noPointer) > 0,
+        'курсор на месте подсказки меняет кадр',
+      );
+    }
+
+    // Попадание курсора считается по ТОЙ ЖЕ раскладке, что и отрисовка:
+    // интерфейс, нажимающийся не там, где выглядит, получается из второй
+    // записи геометрии.
+    {
+      const layout = techTreeLayout(BASE_VIEW_W, BASE_VIEW_H, TECH_COLS, TECH_ROWS);
+      let hit = 0;
+      for (let i = 0; i < TECH_NODES.length; i++) {
+        const at = nodeOrigin(layout, TECH_NODES[i]!.col, TECH_NODES[i]!.row);
+        const centre = nodeAtPoint(
+          at.x + (layout.node >> 1),
+          at.y + (layout.node >> 1),
+          layout,
+          TECH_NODES,
+        );
+        const corner = nodeAtPoint(at.x, at.y, layout, TECH_NODES);
+        const past = nodeAtPoint(at.x + layout.node, at.y, layout, TECH_NODES);
+        if (centre === i && corner === i && past !== i) hit++;
+      }
+      check(
+        'Курсор попадает ровно в тот узел, который нарисован',
+        hit === TECH_NODES.length,
+        `попаданий ${hit} из ${TECH_NODES.length}`,
+      );
+
+      check(
+        'Просвет между колонками — мимо узлов',
+        nodeAtPoint(layout.originX + layout.node + 2, layout.originY + 2, layout, TECH_NODES) ===
+          null,
+      );
+      check(
+        'Точка за пределами сетки не попадает ни в один узел',
+        nodeAtPoint(layout.x + 1, layout.y + 1, layout, TECH_NODES) === null,
+      );
+    }
+  }
+
   // --- Замеры ---
 
   {
     // Путь до первой технологии: сколько порций от постановки сепаратора
     // до покупки конвейерной ленты.
-    const perBatch = MAT_RESEARCH_RATE[MAT.IRIDIUM]!;
+    const perBatch = SEPARATOR.iridium * MAT_CREDIT_RATE[MAT.IRIDIUM]!;
     const batches = Math.ceil(tech(CONVEYOR_TECH).cost / perBatch);
     const pulpNeeded = batches * SEPARATOR.batch;
     const secondsIdeal = batches * SEPARATOR.delaySec;
@@ -653,7 +1217,7 @@ const first = luna();
     const total = TECHNOLOGIES.reduce((sum, t) => sum + t.cost, 0);
     const allBatches = Math.ceil(total / perBatch);
     console.log(
-      `ЗАМЕР  всё дерево: ${total} ✦ = ${allBatches} порций = ` +
+      `ЗАМЕР  всё дерево: ${total} ₡ = ${allBatches} порций = ` +
         `${(allBatches * SEPARATOR.batch).toLocaleString('ru')} ячеек пульпы, ` +
         `не быстрее ${(allBatches * SEPARATOR.delaySec).toFixed(0)} с`,
     );

@@ -1,6 +1,6 @@
 import { SEPARATOR } from '../config';
 import { World, MAT } from '../world';
-import { Building, BuildingRegistry } from './buildings';
+import { Building } from './buildings';
 import type { BuildingKind, MachineState } from './buildings';
 
 /**
@@ -184,7 +184,6 @@ export const SEPARATOR_KIND: BuildingKind = {
   name: 'Сепаратор',
   width: SEPARATOR.width,
   height: SEPARATOR.height,
-  cost: SEPARATOR.cost,
   hull: MAT.SEPARATOR_HULL,
   shape: SEPARATOR_SHAPE,
   // Сетки нет: машина центрируется на цели. Выравнивание нужно там, где
@@ -201,20 +200,3 @@ export const SEPARATOR_KIND: BuildingKind = {
   unlock: null,
   create: (x, y) => new Separator(SEPARATOR_KIND, x, y),
 };
-
-/** Сводка по машинам для строки состояния. */
-export function machineSummary(registry: BuildingRegistry): string {
-  if (registry.count === 0) return '';
-  let working = 0;
-  let blocked = 0;
-  for (const b of registry.all) {
-    if (b.state === 'working') working++;
-    else if (b.state === 'blocked') blocked++;
-  }
-  const idle = registry.count - working - blocked;
-  const parts = [`Сепараторы ${registry.count}`];
-  if (working > 0) parts.push(`работа ${working}`);
-  if (idle > 0) parts.push(`простой ${idle}`);
-  if (blocked > 0) parts.push(`выход забит ${blocked}`);
-  return parts.join(' · ');
-}

@@ -1,17 +1,19 @@
 import { World, MAT, MAT_STATE, MatterState } from '../world';
 import { Digger } from './digging';
 import { stampKind, sectionKindByHull, isKindOpen } from '../entities';
-import type { Building, BuildingKind, BuildingRegistry, LandingModule } from '../entities';
+import type { Building, BuildingKind, BuildingRegistry } from '../entities';
 import { NO_UNLOCKS } from '../progress';
 import type { ContentUnlocks } from '../progress';
 
 /**
  * Почему постановка невозможна. Ноль причин — годно.
  *
- * `locked` стоит особняком от прочих трёх: те — про место, эта — про сам вид,
- * и лечится она не шагом в сторону, а покупкой в оверлее исследований.
+ * `locked` стоит особняком от двух остальных: те — про место, эта — про сам
+ * вид, и лечится она не шагом в сторону, а покупкой в оверлее исследований.
+ *
+ * Причины «не хватает кредитов» здесь нет: постройка бесплатна.
  */
-export type PlacementIssue = 'occupied' | 'unsupported' | 'funds' | 'locked';
+export type PlacementIssue = 'occupied' | 'unsupported' | 'locked';
 
 /**
  * Постановка и снос зданий.
@@ -78,7 +80,6 @@ export class Builder {
     playerCenterY: number,
     targetX: number,
     targetY: number,
-    credits: number,
     unlocks: ContentUnlocks = NO_UNLOCKS,
   ): BuildPreview {
     const standing = buildings.findAt(targetX, targetY);
@@ -106,7 +107,7 @@ export class Builder {
     // берётся от персонажа, и курсор к ней отношения не имеет.
     const at = Builder.originFor(kind, targetX, targetY);
     const far = !Digger.inReach(playerCenterX, playerCenterY, targetX, targetY);
-    const issue = Builder.issueAt(world, kind, at.x, at.y, credits, unlocks);
+    const issue = Builder.issueAt(world, kind, at.x, at.y, unlocks);
     return {
       x: at.x,
       y: at.y,
@@ -122,15 +123,12 @@ export class Builder {
     kind: BuildingKind,
     x: number,
     y: number,
-    credits: number,
     unlocks: ContentUnlocks = NO_UNLOCKS,
   ): PlacementIssue | null {
     // Первым, до всего остального: закрытый вид не ставится НИКАКИМ способом,
     // и ни деньги, ни удачное место этого не меняют. Умолчание — состояние
     // начала партии: забывчивость даёт отказ, а не тихое разрешение.
     if (!isKindOpen(kind, unlocks)) return 'locked';
-
-    if (credits < kind.cost) return 'funds';
 
     // Вся область пуста. Проверяется ОБЛАСТЬ, а не только ячейки корпуса:
     // внутренняя камера, набитая реголитом, замуровала бы вещество внутри
@@ -168,7 +166,6 @@ export class Builder {
   static apply(
     world: World,
     registry: BuildingRegistry,
-    module: LandingModule,
     kind: BuildingKind,
     playerCX: number,
     playerCY: number,
@@ -180,7 +177,7 @@ export class Builder {
 
     const standing = registry.findAt(targetX, targetY);
     if (standing) {
-      Builder.demolish(world, registry, module, standing);
+      Builder.demolish(world, registry, standing);
       return 'demolished';
     }
 
@@ -194,18 +191,13 @@ export class Builder {
     const section = sectionKindByHull(world.get(targetX, targetY));
     if (section) {
       Builder.razeSection(world, section, targetX, targetY);
-      module.refund(section.cost);
       return 'demolished';
     }
 
     const at = Builder.originFor(kind, targetX, targetY);
-    if (Builder.issueAt(world, kind, at.x, at.y, module.credits, unlocks) !== null) {
+    if (Builder.issueAt(world, kind, at.x, at.y, unlocks) !== null) {
       return 'rejected';
     }
-
-    // Списание ровно один раз и только после того, как все отказы пройдены:
-    // отвергнутое применение не имеет права стоить ни кредита.
-    if (!module.spend(kind.cost)) return 'rejected';
 
     // Секционная постройка — та же маска, тот же корпус, но без записи
     // в реестре: состояния у неё нет, и обновлять ей нечего.
@@ -247,20 +239,14 @@ export class Builder {
   }
 
   /**
-   * Снос: корпус в пустоту, стоимость обратно, содержимое — в мир. Возврат
-   * полный: здание покупается вслепую, и ошибка размещения не должна стоить
-   * кредитов — иначе игрок перестанет экспериментировать.
+   * Снос: корпус в пустоту, содержимое — в мир. Счёта не касается: постановка
+   * ничего не списала, и возвращать нечего. Перестановка свободна — ровно
+   * затем постройка и бесплатна.
    */
-  static demolish(
-    world: World,
-    registry: BuildingRegistry,
-    module: LandingModule,
-    building: Building,
-  ): void {
+  static demolish(world: World, registry: BuildingRegistry, building: Building): void {
     const contents = building.drain();
     building.clear(world);
     registry.remove(building);
-    module.refund(building.kind.cost);
     Builder.spill(world, building, contents);
   }
 

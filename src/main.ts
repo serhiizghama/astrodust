@@ -2,23 +2,34 @@ import { WORLD_SEED, BUILD_AIM_DISTANCE, PLAYER } from './config';
 import {
   Display,
   Input,
-  ToolModeState,
+  ActionBarState,
+  ToolMode,
   aimDirection,
   actionTarget,
   cursorSide,
   GameLoop,
 } from './core';
-import { Camera, Renderer } from './render';
-import type { HudState, GhostView, OverlayView, FrameView } from './render';
-import { Research, ResearchOverlay, TECHNOLOGIES } from './progress';
 import {
-  Player,
-  NO_INPUT,
-  Inventory,
-  LandingModule,
-  BuildCatalogState,
-  machineSummary,
-} from './entities';
+  Camera,
+  Renderer,
+  hudLayout,
+  slotAtPoint,
+  overBar,
+  techTreeLayout,
+  nodeAtPoint,
+} from './render';
+import type { HudState, HudSlot, SlotAction, GhostView, OverlayView, FrameView } from './render';
+import {
+  Research,
+  ResearchOverlay,
+  TECHNOLOGIES,
+  statusNote,
+  TECH_NODES,
+  TECH_EDGES,
+  TECH_COLS,
+  TECH_ROWS,
+} from './progress';
+import { Player, NO_INPUT, Inventory, LandingModule, BuildCatalogState } from './entities';
 import { generateLuna, MATERIALS, PORTABLE_MATERIALS } from './world';
 import { Digger, Vacuum, Builder, DebugPainter } from './systems';
 import type { BuildPreview } from './systems';
@@ -50,7 +61,7 @@ const camera = new Camera(world.width, world.height);
 display.onViewportChange((w, h) => camera.setViewport(w, h));
 camera.snapTo(player.centerX, player.centerY);
 
-const landingModule = new LandingModule(receiver, research);
+const landingModule = new LandingModule(receiver);
 const game = new Game(world, player, camera, landingModule);
 const buildings = game.buildings;
 
@@ -58,7 +69,7 @@ const renderer = new Renderer(display, world, surface, WORLD_SEED);
 const digger = new Digger();
 const vacuum = new Vacuum(research.tuning);
 const painter = new DebugPainter();
-const tool = new ToolModeState();
+const tool = new ActionBarState();
 const catalog = new BuildCatalogState(research);
 const inventory = new Inventory();
 
@@ -68,6 +79,16 @@ const soundscape = new Soundscape();
 
 let showDebug = true;
 let targetInReach = false;
+/**
+ * Слот панели под курсором. Считается в шаге, а не в кадре: по нему решается
+ * и подсветка, и то, доходит ли мышиное применение инструмента до мира.
+ */
+let hoveredSlot: number | null = null;
+/**
+ * Узел дерева под курсором. Считается только при открытом оверлее — закрытое
+ * меню курсором не задевается.
+ */
+let hoveredNode: number | null = null;
 /**
  * Контур будущего здания. Считается в шаге, а не в кадре: годность зависит
  * от хитбокса персонажа и счёта, а те живут по шагам симуляции.
@@ -82,18 +103,11 @@ let buildIssue = '';
  */
 let simTime = 0;
 
-/**
- * Причина отказа словами.
- *
- * Нехватка кредитов называет НЕДОСТАЮЩУЮ сумму, а не цену: цена и так стоит
- * рядом с видом постройки, а игроку нужно знать, сколько ещё донести.
- */
-function placementIssueText(preview: BuildPreview, cost: number): string {
+/** Причина отказа словами. Все они про место и исправимы прямо сейчас. */
+function placementIssueText(preview: BuildPreview): string {
   switch (preview.issue) {
     case 'far':
       return 'слишком далеко';
-    case 'funds':
-      return `не хватает ${cost - landingModule.credits} ₡`;
     case 'occupied':
       return 'место занято';
     case 'unsupported':
@@ -121,8 +135,20 @@ const playState: GameState = {
     if (input.debugTogglePressed) showDebug = !showDebug;
     if (showDebug && input.debugCycleMaterialPressed) painter.cycle();
 
+    // Попадание курсора в панель — ДО применения инструментов: клик по слоту
+    // выбирает действие и до мира не доходит. Раскладка берётся у рендера, своей
+    // копии геометрии здесь нет.
+    const layout = hudLayout(display.width, display.height);
+    hoveredSlot = slotAtPoint(input.mouseX, input.mouseY, layout);
+    // Мир не трогаем над ВСЕЙ панелью, а не только над слотом: промах в зазор
+    // между слотами не должен копать дыру под ней.
+    input.overUi = overBar(input.mouseX, input.mouseY, layout);
+    if (hoveredSlot !== null && input.mouseLeftJustPressed) tool.select(hoveredSlot);
+
     // Переключатели читаются ДО применения инструмента: нажатие режима должно
     // менять то, что произойдёт на этом же шаге, а не на следующем.
+    const slot = input.slotPressed;
+    if (slot !== null) tool.select(slot);
     if (input.toolModePressed) tool.cycle();
     if (input.cycleCarriedPressed) inventory.cycleSelected();
     // Вид постройки перебирается своей клавишей и в любом режиме: `C` остаётся
@@ -274,17 +300,15 @@ function applyBuilding(dir: { x: number; y: number }, cursorX: number, cursorY: 
     player.centerY,
     buildAim.x,
     buildAim.y,
-    landingModule.credits,
     research,
   );
   ghost = preview;
-  buildIssue = placementIssueText(preview, kind.cost);
+  buildIssue = placementIssueText(preview);
 
   if (input.toolPressed) {
     Builder.apply(
       world,
       buildings,
-      landingModule,
       kind,
       player.centerX,
       player.centerY,
@@ -304,9 +328,18 @@ function applyBuilding(dir: { x: number; y: number }, cursorX: number, cursorY: 
  */
 const overlayState: GameState = {
   handleInput(): StepIntent {
-    overlay.handle(input, research);
+    // Узел под курсором считается ЗДЕСЬ, а не в кадре: по нему решается
+    // и подсветка, и то, что покупает нажатие мыши. Раскладка берётся
+    // у рендера — своей копии геометрии здесь нет.
+    const layout = techTreeLayout(display.width, display.height, TECH_COLS, TECH_ROWS);
+    hoveredNode = nodeAtPoint(input.mouseX, input.mouseY, layout, TECH_NODES);
+    overlay.handle(input, research, landingModule, hoveredNode);
     ghost = null;
     buildIssue = '';
+    // Ввод принадлежит меню целиком, и панель под ним неактивна: попадание
+    // курсора не считается вовсе.
+    hoveredSlot = null;
+    input.overUi = false;
     // Персонаж получает пустой ввод, но физику проходит: он не зависает
     // в воздухе на время чтения дерева.
     return { input: NO_INPUT, faceX: 0, dig: null };
@@ -324,6 +357,9 @@ function step(dt: number): void {
     // всё время, пока игрок читает дерево.
     input.releaseAll();
     overlay.toggle();
+    // Наведение живёт ровно столько же, сколько открытый оверлей: иначе
+    // закрытое меню оставило бы за собой подсвеченный узел до следующего входа.
+    if (!overlay.open) hoveredNode = null;
   }
 
   const intent = (overlay.open ? overlayState : playState).handleInput(dt);
@@ -336,23 +372,40 @@ function step(dt: number): void {
 }
 
 /**
- * Список технологий для оверлея. Собирается на кадр, а не хранится: второй
- * слепок состояния однажды разошёлся бы с ним. Причина недоступности пишется
- * СЛОВАМИ: «не хватает очков» лечится работой, «закрыта предпосылкой» — другой
- * покупкой, и какой именно, из цвета не следует.
+ * Дерево технологий для оверлея. Собирается на кадр, а не хранится: второй
+ * слепок состояния однажды разошёлся бы с ним.
+ *
+ * Раскладка берётся у `progress` целиком: колонка и строка — свойство графа
+ * предпосылок, и считать их здесь значило бы завести вторую раскладку рядом
+ * с той, по которой ходит навигация.
  */
 function overlayView(): OverlayView | null {
   if (!overlay.open) return null;
+  const credits = landingModule.credits;
   return {
-    points: research.points,
+    credits,
     selected: overlay.selectedIndex,
-    rows: TECHNOLOGIES.map((tech) => {
-      const status = research.status(tech);
-      let note = '';
-      if (status === 'poor') note = `нужно ещё ${tech.cost - research.points} ✦`;
-      else if (status === 'blocked') note = `требует: ${research.missing(tech).join(', ')}`;
-      else if (status === 'available') note = tech.description;
-      return { name: tech.name, cost: tech.cost, status, note };
+    hovered: hoveredNode,
+    // Курсор берётся живым из позиции мыши, как и мировой крестик: иначе
+    // на 144 Гц он отставал бы от неё на кадр.
+    pointerX: input.mouseX,
+    pointerY: input.mouseY,
+    edges: TECH_EDGES,
+    nodes: TECHNOLOGIES.map((tech, i) => {
+      const status = research.status(tech, credits);
+      const node = TECH_NODES[i]!;
+      return {
+        name: tech.name,
+        description: tech.description,
+        cost: tech.cost,
+        usage: tech.usage,
+        status,
+        kind: tech.effect.kind,
+        icon: tech.icon,
+        col: node.col,
+        row: node.row,
+        note: statusNote(tech, status, credits, research),
+      };
     }),
   };
 }
@@ -364,9 +417,30 @@ function overlayView(): OverlayView | null {
  * и дублировать их ради отрисовки означало бы завести второй источник правды,
  * который однажды разойдётся с первым.
  */
+/**
+ * Слоты панели для кадра: подпись клавиши и вид действия.
+ *
+ * Собирается ОДИН РАЗ, а не на кадр: раскладка слотов постоянна, а меняются
+ * только активный и наведённый. Подпись десятого слота — `0`: на клавиатуре
+ * ноль стоит после девятки.
+ */
+const HUD_SLOTS: readonly HudSlot[] = tool.slots.map((mode, i) => ({
+  key: `${(i + 1) % 10}`,
+  action:
+    mode === null
+      ? null
+      : mode === ToolMode.Dig
+        ? ('dig' as SlotAction)
+        : mode === ToolMode.Build
+          ? ('build' as SlotAction)
+          : ('collect' as SlotAction),
+}));
+
 function hudState(): HudState {
   return {
-    mode: tool.name,
+    slots: HUD_SLOTS,
+    activeSlot: tool.activeSlot,
+    hoveredSlot,
     collecting: tool.collecting,
     collectRadius: research.tuning.collectRadius,
     carried: PORTABLE_MATERIALS.filter((id) => inventory.count(id) > 0).map((id) => ({
@@ -377,8 +451,7 @@ function hudState(): HudState {
     capacity: inventory.capacity,
     selected: inventory.selectedName,
     credits: landingModule.credits,
-    research: research.points,
-    buildKind: tool.building ? `${catalog.name} ${catalog.kind.cost} ₡` : '',
+    buildKind: tool.building ? catalog.name : '',
     buildIssue: tool.building ? buildIssue : '',
     ghost,
     machines: buildings.all.map((b) => ({
@@ -389,7 +462,6 @@ function hudState(): HudState {
       state: b.state,
       progress: b.progress,
     })),
-    machineSummary: machineSummary(buildings),
     overlay: overlayView(),
   };
 }

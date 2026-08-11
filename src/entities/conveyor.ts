@@ -9,7 +9,7 @@ import type { BuildingKind } from './buildings';
  *
  * Ни записи в реестре, ни состояния: сторона — это идентификатор материала,
  * а всё поведение живёт в таблице полем `carry`. Здесь остаётся каталожная
- * часть: подпись, корпус, размер секции и цена.
+ * часть: подпись, корпус и размер секции.
  *
  * Направления — ДВА ОТДЕЛЬНЫХ ВИДА, а не поворот: поворота построек в модели
  * нет, и вводить его ради объекта с двумя состояниями дороже строки.
@@ -23,7 +23,6 @@ export const CONVEYOR_LEFT_KIND: BuildingKind = sectionKind(
   'conveyor-left',
   'Конвейер ◀',
   MAT.CONVEYOR_LEFT,
-  CONVEYOR.sectionCost,
   CONVEYOR.size,
   CONTENT.CONVEYOR,
 );
@@ -32,7 +31,6 @@ export const CONVEYOR_RIGHT_KIND: BuildingKind = sectionKind(
   'conveyor-right',
   'Конвейер ▶',
   MAT.CONVEYOR_RIGHT,
-  CONVEYOR.sectionCost,
   CONVEYOR.size,
   CONTENT.CONVEYOR,
 );

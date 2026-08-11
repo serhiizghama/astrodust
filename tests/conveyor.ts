@@ -1,7 +1,7 @@
 import { World, Simulation } from '../src/world';
 import { Camera, Renderer, stripeOffset, CONVEYOR_STRIPE_COLOR } from '../src/render';
 import type { Display } from '../src/core';
-import { MAT, MAT_SOLID, MAT_RESEARCH_RATE, MAT_CARRY, MATERIALS } from '../src/world';
+import { MAT, MAT_SOLID, MAT_CREDIT_RATE, MAT_CARRY, MATERIALS } from '../src/world';
 import type { Rect } from '../src/geometry';
 import { Digger, Vacuum, Builder } from '../src/systems';
 import {
@@ -88,12 +88,11 @@ const first = luna();
   function lay(
     w: World,
     registry: BuildingRegistry,
-    module: LandingModule,
     kind: typeof CONVEYOR_RIGHT_KIND,
     x: number,
     y: number,
   ): 'placed' | 'demolished' | 'rejected' {
-    return Builder.apply(w, registry, module, kind, x, y, x, y, UNLOCKED);
+    return Builder.apply(w, registry, kind, x, y, x, y, UNLOCKED);
   }
 
   /** На сколько ячеек уедет одинокий груз за столько шагов. */
@@ -292,16 +291,14 @@ const first = luna();
   // Лента набирается СЕКЦИЯМИ, и пропущена тоже целая секция.
   {
     const w = sandbox();
-    const module = new LandingModule({ x: 0, y: 0, w: 1, h: 1 });
     const registry = new BuildingRegistry();
     // Ряд ленты кратен размеру секции: выравнивание касается обеих осей,
     // и произвольная строка притянулась бы к ближайшей клетке сетки.
     const y0 = 6 * SZ;
     const cargoRow = y0 - 1;
     const gapAt = 8 * SZ;
-    module.credits = CONVEYOR.sectionCost * 100;
     for (let x = 2 * SZ; x < 13 * SZ; x += SZ) {
-      if (x !== gapAt) lay(w, registry, module, CONVEYOR_RIGHT_KIND, x, y0);
+      if (x !== gapAt) lay(w, registry, CONVEYOR_RIGHT_KIND, x, y0);
     }
     for (let i = 0; i < 4; i++) w.set(3 * SZ + i * 3, cargoRow, MAT.REGOLITH_LOOSE);
     const total = count(w, MAT.REGOLITH_LOOSE);
@@ -327,7 +324,7 @@ const first = luna();
         if (w.get(x, y) === MAT.REGOLITH_LOOSE) w.set(x, y, MAT.VACUUM);
       }
     }
-    const placed = lay(w, registry, module, CONVEYOR_RIGHT_KIND, gapAt, y0);
+    const placed = lay(w, registry, CONVEYOR_RIGHT_KIND, gapAt, y0);
     const fresh = 3;
     for (let i = 0; i < fresh; i++) w.set(3 * SZ + i * 3, cargoRow, MAT.REGOLITH_LOOSE);
 
@@ -491,12 +488,6 @@ const first = luna();
         !CONVEYOR_RIGHT_KIND.needsSupport,
     );
     check(
-      'Цена ячейки ленты живёт в конфиге и попадает в каталог',
-      CONVEYOR_LEFT_KIND.cost === CONVEYOR.sectionCost &&
-        CONVEYOR_RIGHT_KIND.cost === CONVEYOR.sectionCost,
-      `${CONVEYOR.sectionCost} ₡ за ячейку`,
-    );
-    check(
       'Секция квадратная и равна заданному размеру',
       CONVEYOR_LEFT_KIND.width === CONVEYOR.size &&
         CONVEYOR_LEFT_KIND.height === CONVEYOR.size &&
@@ -589,10 +580,8 @@ const first = luna();
   // Груз едет по ВЕРХНЕМУ ряду секции: до остальных он не достаёт.
   {
     const w = sandbox();
-    const module = new LandingModule({ x: 0, y: 0, w: 1, h: 1 });
-    module.credits = CONVEYOR.sectionCost * 10;
     const registry = new BuildingRegistry();
-    for (let i = 0; i < 6; i++) lay(w, registry, module, CONVEYOR_RIGHT_KIND, 20 + i * SZ, 32);
+    for (let i = 0; i < 6; i++) lay(w, registry, CONVEYOR_RIGHT_KIND, 20 + i * SZ, 32);
     w.set(21, 31, MAT.REGOLITH_LOOSE);
     run(w, STEP * 10);
     const at = findOne(w, MAT.REGOLITH_LOOSE);
@@ -606,11 +595,9 @@ const first = luna();
   // Замуровать больше нечем: постройка ставится и поверх персонажа.
   {
     const w = sandbox();
-    const module = new LandingModule({ x: 0, y: 0, w: 1, h: 1 });
-    module.credits = CONVEYOR.sectionCost;
     const registry = new BuildingRegistry();
     const occupant: Rect = { x: 20, y: 30, w: PLAYER.hitboxW, h: PLAYER.hitboxH };
-    const on = lay(w, registry, module, CONVEYOR_RIGHT_KIND, occupant.x + 1, occupant.y + 1);
+    const on = lay(w, registry, CONVEYOR_RIGHT_KIND, occupant.x + 1, occupant.y + 1);
     check(
       'Постройка ставится поверх хитбокса персонажа и не запирает его',
       on === 'placed' && !w.rectHitsSolid(occupant.x, occupant.y, occupant.w, occupant.h),
@@ -622,8 +609,8 @@ const first = luna();
     const w = sandbox();
     check(
       'Лента ставится над пустотой, машина без опоры — не ставится',
-      Builder.issueAt(w, CONVEYOR_RIGHT_KIND, 50, 20, 1000, UNLOCKED) === null &&
-        Builder.issueAt(w, SEPARATOR_KIND, 50, 20, 1000, UNLOCKED) === 'unsupported',
+      Builder.issueAt(w, CONVEYOR_RIGHT_KIND, 50, 20, UNLOCKED) === null &&
+        Builder.issueAt(w, SEPARATOR_KIND, 50, 20, UNLOCKED) === 'unsupported',
     );
   }
 
@@ -632,15 +619,14 @@ const first = luna();
     const module = new LandingModule({ x: 0, y: 0, w: 1, h: 1 });
     const registry = new BuildingRegistry();
     const sections = 8;
-    module.credits = CONVEYOR.sectionCost * sections;
 
     let laid = 0;
     for (let i = 0; i < sections; i++) {
       const x = SECTION_X0 + i * SZ;
-      if (lay(w, registry, module, CONVEYOR_RIGHT_KIND, x, SECTION_Y) === 'placed') laid++;
+      if (lay(w, registry, CONVEYOR_RIGHT_KIND, x, SECTION_Y) === 'placed') laid++;
     }
     check(
-      'Лента из N секций списывает ровно N цен секции',
+      'Лента из N секций кладётся целиком и ничего не стоит',
       laid === sections &&
         module.credits === 0 &&
         count(w, MAT.CONVEYOR_RIGHT) === sections * SZ * SZ,
@@ -658,20 +644,20 @@ const first = luna();
     }
     check('Соседние секции стыкуются без зазора и без нахлёста', seam === 0, `дыр ${seam}`);
 
+    // Лента продолжается дальше при нулевом счёте: единственное, что её
+    // ограничивает, — место в мире.
     const beyond = SECTION_X0 + sections * SZ;
-    const denied = lay(w, registry, module, CONVEYOR_RIGHT_KIND, beyond, SECTION_Y);
+    const next = lay(w, registry, CONVEYOR_RIGHT_KIND, beyond, SECTION_Y);
     check(
-      'При нехватке средств постановка отвергается целиком и счёт не уходит в минус',
-      denied === 'rejected' && module.credits === 0 && w.get(beyond, SECTION_Y) === MAT.VACUUM,
-      `${denied}, на счету ${module.credits}`,
+      'Лента продолжается при нулевом счёте: секция ничего не стоит',
+      next === 'placed' && module.credits === 0 && w.get(beyond, SECTION_Y) === MAT.CONVEYOR_RIGHT,
+      `${next}, на счету ${module.credits}`,
     );
 
     // Цель притягивается к клетке: куда именно внутри неё игрок целился,
     // на результат не влияет.
     {
       const w2 = sandbox();
-      const m2 = new LandingModule({ x: 0, y: 0, w: 1, h: 1 });
-      m2.credits = CONVEYOR.sectionCost * 4;
       const r2 = new BuildingRegistry();
       const corners = [
         [SECTION_X0, SECTION_Y],
@@ -680,13 +666,12 @@ const first = luna();
         [SECTION_X0 + SZ - 1, SECTION_Y + SZ - 1],
       ];
       const results = corners.map(([tx, ty]) =>
-        Builder.apply(w2, r2, m2, CONVEYOR_RIGHT_KIND, tx!, ty!, tx!, ty!, UNLOCKED),
+        Builder.apply(w2, r2, CONVEYOR_RIGHT_KIND, tx!, ty!, tx!, ty!, UNLOCKED),
       );
       check(
         'Секция встаёт по сетке: прицел в любую точку клетки даёт одно и то же место',
         results[0] === 'placed' &&
-          results.slice(1).every((r, i) => r === (i % 2 === 0 ? 'demolished' : 'placed')) &&
-          m2.credits === CONVEYOR.sectionCost * 4,
+          results.slice(1).every((r, i) => r === (i % 2 === 0 ? 'demolished' : 'placed')),
         results.join(', '),
       );
     }
@@ -697,9 +682,8 @@ const first = luna();
     const module = new LandingModule({ x: 0, y: 0, w: 1, h: 1 });
     const registry = new BuildingRegistry();
     // Три секции подряд; сносим среднюю.
-    module.credits = CONVEYOR.sectionCost * 3;
     for (let i = 0; i < 3; i++) {
-      lay(w, registry, module, CONVEYOR_LEFT_KIND, SECTION_X0 + i * SZ, SECTION_Y);
+      lay(w, registry, CONVEYOR_LEFT_KIND, SECTION_X0 + i * SZ, SECTION_Y);
     }
     const mid = SECTION_X0 + SZ;
     // Груз лежит на верхнем ряду сносимой секции.
@@ -710,7 +694,6 @@ const first = luna();
     const razed = Builder.apply(
       w,
       registry,
-      module,
       SEPARATOR_KIND,
       mid + 2,
       SECTION_Y + 2,
@@ -722,20 +705,19 @@ const first = luna();
       for (let x = mid; x < mid + SZ; x++) if (w.get(x, y) !== MAT.VACUUM) midCells++;
     }
     check(
-      'Снос секции ленты возвращает цену секции, не трогает соседние и не роняет груз',
+      'Снос секции ленты не трогает соседние, не роняет груз и не трогает счёт',
       razed === 'demolished' &&
-        module.credits === CONVEYOR.sectionCost &&
+        module.credits === 0 &&
         midCells === 0 &&
         w.get(SECTION_X0, SECTION_Y) === MAT.CONVEYOR_LEFT &&
         w.get(mid + SZ, SECTION_Y) === MAT.CONVEYOR_LEFT &&
         w.get(mid + 1, SECTION_Y - 1) === MAT.REGOLITH_LOOSE,
-      `${razed}, возврат ${module.credits}, осталось в секции ${midCells}`,
+      `${razed}, счёт ${module.credits}, осталось в секции ${midCells}`,
     );
 
     const other = Builder.apply(
       w,
       registry,
-      module,
       CONVEYOR_RIGHT_KIND,
       SECTION_X0 + 1,
       SECTION_Y + 1,
@@ -755,14 +737,7 @@ const first = luna();
     const pixels = new Uint8ClampedArray(BASE_VIEW_W * BASE_VIEW_H * 4);
     const display = {
       pixels,
-      ctx: {
-        putImageData() {},
-        fillText() {},
-        measureText: (s: string) => ({ width: s.length * 4.8 }),
-        font: '',
-        textBaseline: '',
-        fillStyle: '',
-      },
+      ctx: { putImageData() {} },
       width: BASE_VIEW_W,
       height: BASE_VIEW_H,
       image: {},
@@ -853,13 +828,11 @@ const first = luna();
     // на любое попадание, и нового правила поглощения не понадобилось.
     const w = sandbox(160, 96);
     const registry = new BuildingRegistry();
-    const module = new LandingModule({ x: 2, y: 2, w: 4, h: 4 });
-    module.credits = SEPARATOR.cost;
     const bx = 80;
     const by = 96 - 2 - SEPARATOR.height;
     const cx = bx + (SEPARATOR_KIND.width >> 1);
     const cy = by + (SEPARATOR_KIND.height >> 1);
-    Builder.apply(w, registry, module, SEPARATOR_KIND, cx, cy, cx, cy);
+    Builder.apply(w, registry, SEPARATOR_KIND, cx, cy, cx, cy);
     belt(w, by, bx - 30, bx - 1, MAT.CONVEYOR_RIGHT);
     w.set(bx - 30, by - 1, MAT.PULP);
 
@@ -890,7 +863,7 @@ const first = luna();
     let earnedAt = -1;
     for (let i = 0; i < STEP * 120; i++) {
       sim.update(w, null);
-      if (module.update(w).research > 0 && earnedAt < 0) earnedAt = i;
+      if (module.update(w).credits > 0 && earnedAt < 0) earnedAt = i;
     }
     let slagInZone = 0;
     for (let y = receiver.y; y < receiver.y + receiver.h; y++) {
@@ -899,11 +872,9 @@ const first = luna();
       }
     }
     check(
-      'Лента доносит иридий до зоны приёмника, очки начисляются без действий игрока',
-      module.research.points === MAT_RESEARCH_RATE[MAT.IRIDIUM] &&
-        module.credits === 0 &&
-        count(w, MAT.IRIDIUM) === 0,
-      `${module.research.points} ✦ на шаге ${earnedAt}`,
+      'Лента доносит иридий до зоны приёмника, кредиты начисляются без действий игрока',
+      module.credits === MAT_CREDIT_RATE[MAT.IRIDIUM] && count(w, MAT.IRIDIUM) === 0,
+      `${module.credits} ₡ на шаге ${earnedAt}`,
     );
     check(
       'Шлак доезжает вместе с иридием и остаётся лежать в зоне приёмника',
@@ -928,7 +899,6 @@ const first = luna();
     const registry = new BuildingRegistry();
     const ZONE = { x: 372, y: 168, w: 20, h: 16 };
     const module = new LandingModule(ZONE);
-    module.credits = SEPARATOR.cost + CONVEYOR.sectionCost * 100;
 
     // Лента: секции по сетке, груз едет по строке над её верхним рядом.
     const beltTop = 22 * SZ;
@@ -936,7 +906,7 @@ const first = luna();
     const beltFrom = 7 * SZ;
     const beltTo = 48 * SZ;
     for (let x = beltFrom; x <= beltTo; x += SZ) {
-      lay(w, registry, module, CONVEYOR_RIGHT_KIND, x, beltTop);
+      lay(w, registry, CONVEYOR_RIGHT_KIND, x, beltTop);
     }
     // Упор в конце: очередь встаёт внутри зоны приёмника, а не сыплется мимо.
     const stopX = ZONE.x + ZONE.w;
@@ -953,16 +923,16 @@ const first = luna();
     for (let dx = 0; dx < legW; dx++) w.set(bx + dx, by + SEPARATOR.height, MAT.ROCK);
     const cx = bx + (SEPARATOR_KIND.width >> 1);
     const cy = by + (SEPARATOR_KIND.height >> 1);
-    const built = Builder.apply(w, registry, module, SEPARATOR_KIND, cx, cy, cx, cy);
+    const built = Builder.apply(w, registry, SEPARATOR_KIND, cx, cy, cx, cy);
     for (let i = 0; i < SEPARATOR.batch; i++) w.set(bx + 3 + i, by - 1, MAT.PULP);
 
-    const before = module.research.points;
+    const before = module.credits;
     const sim = new Simulation();
     let earnedAt = -1;
     for (let i = 0; i < STEP * 400; i++) {
       sim.update(w, null);
       registry.update(w, FIXED_DT);
-      if (module.update(w).research > 0 && earnedAt < 0) earnedAt = i;
+      if (module.update(w).credits > 0 && earnedAt < 0) earnedAt = i;
     }
     let slagInZone = 0;
     for (let y = ZONE.y; y < ZONE.y + ZONE.h; y++) {
@@ -973,10 +943,10 @@ const first = luna();
     check(
       'Сквозной прогон: продукт выходит на ленту под машиной и доезжает до модуля',
       built === 'placed' &&
-        module.research.points - before === SEPARATOR.iridium * MAT_RESEARCH_RATE[MAT.IRIDIUM]! &&
+        module.credits - before === SEPARATOR.iridium * MAT_CREDIT_RATE[MAT.IRIDIUM]! &&
         count(w, MAT.IRIDIUM) === 0 &&
         slagInZone === SEPARATOR.batch - SEPARATOR.iridium,
-      `${built}, начислено ${module.research.points - before} ✦, шлака в зоне ${slagInZone}`,
+      `${built}, начислено ${module.credits - before} ₡, шлака в зоне ${slagInZone}`,
     );
     // Замер: сколько занимает доставка от выпускного окна до приёмника.
     check(
@@ -1092,15 +1062,13 @@ const first = luna();
     // лежит нижний слой кучи. Клетка сетки берётся не правее подошвы, иначе
     // лента начнётся уже за кучей.
     const beltFrom = Math.floor(toe / SZ) * SZ;
-    const module = new LandingModule({ x: 0, y: 0, w: 1, h: 1 });
     const registry = new BuildingRegistry();
-    module.credits = CONVEYOR.sectionCost * 100;
     let laid = 0;
     for (let x = beltFrom; x <= 188; x += SZ) {
       for (let y = floorTop; y < floorTop + SZ; y++) {
         for (let dx = 0; dx < SZ; dx++) w.set(x + dx, y, MAT.VACUUM);
       }
-      if (lay(w, registry, module, CONVEYOR_RIGHT_KIND, x, floorTop) === 'placed') laid++;
+      if (lay(w, registry, CONVEYOR_RIGHT_KIND, x, floorTop) === 'placed') laid++;
     }
 
     const pastLine = (): { iridium: number; slag: number } => {

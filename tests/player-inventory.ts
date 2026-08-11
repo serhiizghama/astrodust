@@ -1,7 +1,8 @@
 import { World } from '../src/world';
-import { Camera, Renderer, BRUSH_OUTLINE, VACUUM_OUTLINE } from '../src/render';
+import { Camera, Renderer, BRUSH_OUTLINE, VACUUM_OUTLINE, hudLayout, GLYPH_H } from '../src/render';
 import type { HudState } from '../src/render';
 import type { Display } from '../src/core';
+import { RAMP } from '../src/palette';
 import {
   MAT,
   MAT_STATE,
@@ -10,7 +11,6 @@ import {
   MAT_PORTABLE,
   MAT_DIGGABLE,
   MAT_CREDIT_RATE,
-  MAT_RESEARCH_RATE,
   MatterState,
   MATERIALS,
   PORTABLE_MATERIALS,
@@ -18,9 +18,18 @@ import {
 import type { Rect } from '../src/geometry';
 import { Digger, Vacuum } from '../src/systems';
 import { Player, Inventory } from '../src/entities';
-import { PLAYER, FIXED_DT, WORLD_SEED, BASE_VIEW_W, BASE_VIEW_H, DIG, VACUUM } from '../src/config';
-import { aimDirection, actionTarget, ToolModeState } from '../src/core';
-import { check, luna } from './harness';
+import {
+  PLAYER,
+  FIXED_DT,
+  WORLD_SEED,
+  BASE_VIEW_W,
+  BASE_VIEW_H,
+  DIG,
+  VACUUM,
+  HUD,
+} from '../src/config';
+import { aimDirection, actionTarget, ActionBarState } from '../src/core';
+import { check, luna, IDLE_SLOTS } from './harness';
 import { box, count, settle, pending, quiet } from './fixtures/world';
 
 const first = luna();
@@ -92,8 +101,7 @@ const { spawn } = first;
         (m) =>
           MAT_DIGGABLE[m.id] === (m.diggable ? 1 : 0) &&
           MAT_PORTABLE[m.id] === (m.portable ? 1 : 0) &&
-          MAT_CREDIT_RATE[m.id] === m.creditRate &&
-          MAT_RESEARCH_RATE[m.id] === m.researchRate,
+          MAT_CREDIT_RATE[m.id] === m.creditRate,
       ),
     );
 
@@ -104,7 +112,7 @@ const { spawn } = first;
       `реголит ${MAT_CREDIT_RATE[MAT.REGOLITH_LOOSE]}, пульпа ${MAT_CREDIT_RATE[MAT.PULP]}`,
     );
     check(
-      'Остальное не принимается: обе ставки ноль',
+      'Остальное не принимается: ставка ноль',
       [
         MAT.ROCK,
         MAT.ROCK_DEEP,
@@ -115,36 +123,21 @@ const { spawn } = first;
         MAT.STEAM,
         MAT.MODULE_HULL,
         MAT.SLAG,
-      ].every((id) => MAT_CREDIT_RATE[id] === 0 && MAT_RESEARCH_RATE[id] === 0),
+      ].every((id) => MAT_CREDIT_RATE[id] === 0),
     );
-    // Разделение валют — правило ТАБЛИЦЫ, а не кода: проверяется один раз
-    // по всем строкам. Вещество, дающее и деньги, и прогресс, отменяет выбор
-    // «сдать сырьём или переработать», ради которого валюты и разделены.
+    // Передел — правило ТАБЛИЦЫ, а не кода: ставка обязана расти на каждой
+    // ступени цепочки. Равные ставки означали бы, что передел не даёт ничего,
+    // и вся цепочка «копать → обводнить → переработать» теряет смысл.
     check(
-      'Ни одно вещество не даёт обе валюты сразу',
-      MATERIALS.every((m) => m.creditRate === 0 || m.researchRate === 0),
-      MATERIALS.filter((m) => m.creditRate !== 0 && m.researchRate !== 0)
-        .map((m) => m.name)
-        .join(', '),
+      'Ставка растёт на каждой ступени: реголит < пульпа < иридий',
+      MAT_CREDIT_RATE[MAT.REGOLITH_LOOSE]! < MAT_CREDIT_RATE[MAT.PULP]! &&
+        MAT_CREDIT_RATE[MAT.PULP]! < MAT_CREDIT_RATE[MAT.IRIDIUM]!,
+      `${MAT_CREDIT_RATE[MAT.REGOLITH_LOOSE]} → ${MAT_CREDIT_RATE[MAT.PULP]} → ${MAT_CREDIT_RATE[MAT.IRIDIUM]}`,
     );
-    // Переработка — единственный источник прогресса. Вторая дорога к очкам
-    // обесценила бы машину, ради которой построена вся цепочка.
-    {
-      const sources = MATERIALS.filter((m) => m.researchRate > 0);
-      check(
-        'Очки исследований даёт ровно одно вещество — иридий',
-        sources.length === 1 && sources[0]!.id === MAT.IRIDIUM,
-        sources.map((m) => `${m.name} ${m.researchRate}`).join(', ') || 'ни одного',
-      );
-    }
     check(
-      'Иридий не приносит кредитов',
-      MAT_CREDIT_RATE[MAT.IRIDIUM] === 0,
+      'Иридий — самое дорогое вещество таблицы',
+      MATERIALS.every((m) => m.creditRate <= MAT_CREDIT_RATE[MAT.IRIDIUM]!),
       `${MAT_CREDIT_RATE[MAT.IRIDIUM]} ₡`,
-    );
-    check(
-      'Сырьё не приносит очков',
-      MAT_RESEARCH_RATE[MAT.REGOLITH_LOOSE] === 0 && MAT_RESEARCH_RATE[MAT.PULP] === 0,
     );
     check(
       'Плотность пульпы выше плотности воды',
@@ -428,11 +421,30 @@ const { spawn } = first;
   // --- Режим инструмента ---
 
   {
-    const tool = new ToolModeState();
+    const tool = new ActionBarState();
     check(
-      'Режим начинается с копания и виден подписью',
-      tool.digging && !tool.collecting && tool.name.length > 0,
-      tool.name,
+      'Режим начинается с копания и виден выделенным слотом',
+      tool.digging && !tool.collecting && tool.activeSlot === 0,
+      `слот ${tool.activeSlot}`,
+    );
+
+    // Прямой выбор — за одно нажатие и без промежуточных режимов. Перебор
+    // до третьего слота потребовал бы двух.
+    tool.select(2);
+    check(
+      'Прямой выбор слота сбора — за одно нажатие',
+      tool.collecting && tool.activeSlot === 2,
+      `слот ${tool.activeSlot}`,
+    );
+    tool.select(0);
+
+    // Пустой слот активным не становится: инструмент, который «ничего
+    // не делает», неотличим от поломки.
+    tool.select(5);
+    check(
+      'Пустой слот не становится активным',
+      tool.digging && tool.activeSlot === 0,
+      `слот ${tool.activeSlot}`,
     );
 
     // Выражение из главного цикла воспроизведено буквально: копание получает
@@ -448,11 +460,11 @@ const { spawn } = first;
     const dug = digger.update(FIXED_DT, w, held && tool.digging, 40, 40, 40, 40);
     check('В режиме копания инструмент копает', dug > 0, `выемка ${dug}`);
 
-    tool.cycle();
+    tool.select(2);
     check(
       'Переключение режима видно сразу, до первого применения',
-      tool.collecting && !tool.digging && tool.name.length > 0,
-      tool.name,
+      tool.collecting && !tool.digging && tool.activeSlot === 2,
+      `слот ${tool.activeSlot}`,
     );
 
     const rockBefore = count(w, MAT.ROCK);
@@ -494,31 +506,15 @@ const { spawn } = first;
     }
   }
 
-  // --- Строка состояния ---
-
+  // --- Состояние игры в кадре ---
+  //
+  // Текст рисуется ПИКСЕЛЯМИ буфера, поэтому проверяется кадр, а не список
+  // выведенных строк: что нарисовано, где и меняется ли оно вместе со значением.
   {
-    // Строка обязана рисоваться при ВЫКЛЮЧЕННОЙ диагностике: инвентарь и счёт —
-    // состояние игры, а не инструмент разработчика.
-    const drawn: string[] = [];
     const pixels = new Uint8ClampedArray(BASE_VIEW_W * BASE_VIEW_H * 4);
     const display = {
       pixels,
-      ctx: {
-        putImageData() {},
-        fillText(line: string) {
-          drawn.push(line);
-        },
-        measureText: (s: string) => ({ width: s.length * 4.8 }),
-        // Подложка оверлея и рамка панели: заглушке достаточно их принять —
-        // проверяется текст, а не заливка.
-        fillRect() {},
-        strokeRect() {},
-        font: '',
-        textBaseline: '',
-        fillStyle: '',
-        strokeStyle: '',
-        lineWidth: 1,
-      },
+      ctx: { putImageData() {} },
       width: BASE_VIEW_W,
       height: BASE_VIEW_H,
       image: {},
@@ -528,8 +524,12 @@ const { spawn } = first;
     const renderer = new Renderer(display, first.world, first.surface, WORLD_SEED);
     const camera = new Camera(first.world.width, first.world.height);
     camera.snapTo(spawn.x, spawn.y);
+    const layout = hudLayout(BASE_VIEW_W, BASE_VIEW_H);
+
     const hud: HudState = {
-      mode: 'Сбор',
+      slots: IDLE_SLOTS,
+      activeSlot: 2,
+      hoveredSlot: null,
       collecting: true,
       collectRadius: VACUUM.radius,
       carried: [{ name: 'Пульпа', count: 138 }],
@@ -537,96 +537,118 @@ const { spawn } = first;
       capacity: VACUUM.capacity,
       selected: 'Пульпа',
       credits: 1234,
-      research: 7,
       buildKind: '',
       buildIssue: '',
       ghost: null,
       machines: [],
-      machineSummary: '',
       overlay: null,
     };
-    renderer.render({
-      camera: camera,
-      player: new Player(spawn.x, spawn.y),
-      crosshairX: 160,
-      crosshairY: 90,
-      crosshairInReach: true,
-      hud: hud,
-      fps: 0,
-    });
 
-    const text = drawn.join('\n');
+    /** Кадр с изменённым снапшотом. Возвращает КОПИЮ буфера: их сравнивают. */
+    function shoot(over: Partial<HudState> = {}, fps = 0): Uint8ClampedArray {
+      renderer.render({
+        camera: camera,
+        player: new Player(spawn.x, spawn.y),
+        crosshairX: 160,
+        crosshairY: 90,
+        crosshairInReach: true,
+        hud: { ...hud, ...over },
+        fps,
+      });
+      return pixels.slice();
+    }
+
+    /** Пиксели, которыми два кадра различаются. */
+    function diff(a: Uint8ClampedArray, b: Uint8ClampedArray): Array<{ x: number; y: number }> {
+      const out: Array<{ x: number; y: number }> = [];
+      for (let i = 0; i < a.length; i += 4) {
+        if (a[i] === b[i] && a[i + 1] === b[i + 1] && a[i + 2] === b[i + 2]) continue;
+        const p = i / 4;
+        out.push({ x: p % BASE_VIEW_W, y: (p / BASE_VIEW_W) | 0 });
+      }
+      return out;
+    }
+
+    function countColor(buf: Uint8ClampedArray, color: number): number {
+      const r = (color >> 16) & 0xff;
+      const g = (color >> 8) & 0xff;
+      const b = color & 0xff;
+      let n = 0;
+      for (let i = 0; i < buf.length; i += 4) {
+        if (buf[i] === r && buf[i + 1] === g && buf[i + 2] === b) n++;
+      }
+      return n;
+    }
+
+    const base = shoot();
+
+    // Счётчики обновляются в ТОМ ЖЕ кадре и стоят в правом верхнем углу —
+    // вне полосы панели и вне угла с диагностикой.
+    {
+      const richer = shoot({ credits: 1235 });
+      const changed = diff(base, richer);
+      const strayed = changed.filter((p) => p.x < BASE_VIEW_W / 2 || p.y > BASE_VIEW_H / 4);
+      check(
+        'Счётчик кредитов стоит в правом верхнем углу и меняется в том же кадре',
+        changed.length > 0 && strayed.length === 0,
+        `изменилось ${changed.length}, вне угла ${strayed.length}`,
+      );
+    }
+
+    // Валюта видна без оверлея: это ответ на вопрос «что я могу открыть»,
+    // и валюта, которую видно только в меню, из этого решения выпадает.
     check(
-      'Строка состояния показывает режим, инвентарь с пределом, выбранное и счёт',
-      text.includes('Сбор') &&
-        text.includes(`138/${VACUUM.capacity}`) &&
-        text.includes('Пульпа 138') &&
-        text.includes('Высыпать: Пульпа') &&
-        text.includes('1234 ₡'),
-      text.replace(/\n/g, ' | '),
-    );
-    check(
-      'Диагностики при этом в кадре нет: строка состояния от неё не зависит',
-      !text.includes('FPS'),
-    );
-    // Обе валюты одновременно и без оверлея: игрок принимает по ним разные
-    // решения — что построить и что открыть, — и валюта, которую видно только
-    // в меню, из этих решений выпадает.
-    check(
-      'Очки исследований видны в кадре рядом с кредитами и без оверлея',
-      text.includes('1234 ₡') && text.includes('7 ✦'),
-      text.replace(/\n/g, ' | '),
+      'Счёт кредитов виден в кадре своим золотом',
+      countColor(base, RAMP.warm[4]) > 0,
+      `золота ${countColor(base, RAMP.warm[4])}`,
     );
 
-    // Оверлей рисуется тем же контекстом и поверх строки состояния: всё дерево
-    // видно целиком, включая недоступное, а причина недоступности — словами.
-    drawn.length = 0;
-    renderer.render({
-      camera: camera,
-      player: new Player(spawn.x, spawn.y),
-      crosshairX: 160,
-      crosshairY: 90,
-      crosshairInReach: true,
-      hud: {
-        ...hud,
-        research: 6,
-        overlay: {
-          points: 6,
-          selected: 1,
-          rows: [
-            { name: 'Конвейерная лента', cost: 5, status: 'open', note: '' },
-            { name: 'Широкий раструб', cost: 8, status: 'poor', note: 'нужно ещё 2 ✦' },
-            {
-              name: 'Раструб повышенной тяги',
-              cost: 20,
-              status: 'blocked',
-              note: 'требует: Широкий раструб',
-            },
-            { name: 'Форсированные сопла', cost: 25, status: 'available', note: 'Предел 140' },
-          ],
-        },
-      },
-      fps: 0,
-    });
-    const panel = drawn.join('\n');
-    check(
-      'Оверлей показывает всё дерево целиком, включая недоступное, с ценами и очками',
-      panel.includes('ИССЛЕДОВАНИЯ') &&
-        panel.includes('6 ✦') &&
-        panel.includes('Конвейерная лента') &&
-        panel.includes('Раструб повышенной тяги') &&
-        panel.includes('20 ✦') &&
-        panel.includes('открыта'),
-      panel.replace(/\n/g, ' | '),
-    );
-    check(
-      'Причина недоступности видна словами, а не только цветом',
-      panel.includes('нужно ещё 2 ✦') && panel.includes('требует: Широкий раструб'),
-    );
-    check(
-      'Выбранная строка отмечена явно',
-      panel.includes('▸ Широкий раструб') && panel.includes('  Конвейерная лента'),
-      panel.replace(/\n/g, ' | '),
-    );
+    // Инвентарь виден при ВЫКЛЮЧЕННОЙ диагностике: это состояние игры, а не
+    // инструмент разработчика.
+    {
+      const empty = shoot({ carried: [], used: 0 });
+      const changed = diff(base, empty);
+      const top = layout.y - HUD.lineGap - GLYPH_H;
+      const strayed = changed.filter((p) => p.y < top || p.y >= layout.y);
+      check(
+        'Строка инвентаря стоит над панелью и меняется вместе с содержимым',
+        changed.length > 0 && strayed.length === 0,
+        `изменилось ${changed.length}, вне строки ${strayed.length}`,
+      );
+    }
+
+    // Режим показан ВЫДЕЛЕННЫМ СЛОТОМ, а не подписью: смена режима не имеет
+    // права менять ни одного пикселя за пределами панели.
+    {
+      const other = shoot({ activeSlot: 0, collecting: false });
+      const changed = diff(base, other);
+      const outsideBar = changed.filter(
+        (p) =>
+          p.x < layout.x ||
+          p.x >= layout.x + layout.w ||
+          p.y < layout.y ||
+          p.y >= layout.y + layout.h,
+      );
+      // Прицел меняет форму вместе с режимом и в счёт не идёт: он стоит
+      // под курсором, а не в интерфейсе.
+      const aimed = outsideBar.filter((p) => Math.abs(p.x - 160) > 12 || Math.abs(p.y - 90) > 12);
+      check(
+        'Режим не дублируется текстом: смена режима меняет только панель',
+        changed.length > 0 && aimed.length === 0,
+        `изменилось ${changed.length}, вне панели и прицела ${aimed.length}`,
+      );
+    }
+
+    // Диагностика включается отдельно и на состояние игры не влияет.
+    {
+      const debugOn = shoot({}, 60);
+      const changed = diff(base, debugOn);
+      const strayed = changed.filter((p) => p.x > BASE_VIEW_W / 2 || p.y > BASE_VIEW_H / 4);
+      check(
+        'Диагностика живёт в своём углу и инвентарь с валютами не трогает',
+        changed.length > 0 && strayed.length === 0,
+        `изменилось ${changed.length}, вне угла ${strayed.length}`,
+      );
+    }
   }
 }

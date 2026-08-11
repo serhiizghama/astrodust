@@ -13,8 +13,17 @@
 import { deflateSync } from 'node:zlib';
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { generateLuna, Simulation, MAT, MATERIALS } from '../src/world';
-import { Camera, Renderer, CONVEYOR_STRIPE_COLOR } from '../src/render';
+import {
+  Camera,
+  Renderer,
+  CONVEYOR_STRIPE_COLOR,
+  hudLayout,
+  GLYPH_H,
+  techTreeLayout,
+  nodeOrigin,
+} from '../src/render';
 import { Player, LandingModule, BuildingRegistry, SEPARATOR_KIND } from '../src/entities';
+import { TECHNOLOGIES, TECH_NODES, TECH_EDGES, TECH_COLS, TECH_ROWS } from '../src/progress';
 import { Builder } from '../src/systems';
 import type { HudState } from '../src/render';
 import {
@@ -30,6 +39,7 @@ import {
   SIM_HZ,
 } from '../src/config';
 import type { Display } from '../src/core';
+import { IDLE_SLOTS } from './harness';
 
 const CRC_TABLE = new Int32Array(256);
 for (let n = 0; n < 256; n++) {
@@ -107,16 +117,8 @@ for (let i = 3; i < pixels.length; i += 4) pixels[i] = 255;
 
 const fakeDisplay = {
   pixels,
-  ctx: {
-    putImageData() {},
-    fillText() {},
-    // Строка состояния выравнивает счёт по правому краю и спрашивает ширину
-    // надписи. Моноширинный 8px — примерно 4.8 пикселя на знак.
-    measureText: (s: string) => ({ width: s.length * 4.8 }),
-    font: '',
-    textBaseline: '',
-    fillStyle: '',
-  },
+  // Контексту кадра осталась одна обязанность — вывод готового буфера на экран.
+  ctx: { putImageData() {} },
   width: BASE_VIEW_W,
   height: BASE_VIEW_H,
   image: {},
@@ -201,16 +203,17 @@ function countMaterial(camera: Camera, material: number): number {
 const bd = world.profile.backdrop;
 
 /**
- * Строка состояния с непустым инвентарём: на снимке она всё равно не видна —
- * текст рисуется в контекст канваса ПОСЛЕ вывода буфера, а PNG кодируется
- * из буфера, — но входит в кадр наравне со всем остальным, и подсовывать
- * рендеру пустую заглушку значило бы снимать не то, что видит игрок.
+ * Интерфейс с непустым инвентарём. Теперь он ВИДЕН на снимке: панель, счётчики
+ * и строка инвентаря рисуются пикселями буфера, из которого кодируется PNG, —
+ * значит, читаемость шрифта и панели судится тем же способом, что и мир.
  */
 const hud: HudState = {
   // Режим копания — тот, с которого начинается партия. Он же оставляет прицел
   // прежним, поэтому снимки сравнимы с базовыми: расхождение будет означать
   // изменение мира или задника, а не смену формы крестика.
-  mode: 'Копание',
+  slots: IDLE_SLOTS,
+  activeSlot: 0,
+  hoveredSlot: null,
   collecting: false,
   collectRadius: VACUUM.radius,
   carried: [
@@ -221,12 +224,10 @@ const hud: HudState = {
   capacity: VACUUM.capacity,
   selected: 'Пульпа',
   credits: 1234,
-  research: 7,
   buildKind: '',
   buildIssue: '',
   ghost: null,
   machines: [],
-  machineSummary: '',
   overlay: null,
 };
 
@@ -259,6 +260,106 @@ for (const shot of SHOTS) {
   );
 }
 
+// --- Интерфейс ---
+//
+// Панель, счётчики и строки внизу судятся только глазом: числа не говорят
+// ни о читаемости шрифта, ни о том, узнаётся ли действие по значку. Снимается
+// поверх поверхности — самого светлого фона в игре: если подложка текста
+// держит контраст здесь, она держит его везде.
+{
+  const camera = new Camera(world.width, world.height);
+  camera.snapTo(spawn.x, spawn.y);
+  const player = new Player(camera.x + BASE_VIEW_W / 2, camera.y + BASE_VIEW_H / 2);
+  const layout = hudLayout(BASE_VIEW_W, BASE_VIEW_H);
+
+  renderer.render({
+    camera: camera,
+    player: player,
+    crosshairX: BASE_VIEW_W / 2 + 20,
+    crosshairY: BASE_VIEW_H / 2,
+    crosshairInReach: true,
+    // Строительство с негодным местом: в кадре разом активный слот, наведённый
+    // слот, вид постройки с ценой и причина отказа — всё, что панель показывает.
+    hud: {
+      ...hud,
+      activeSlot: 1,
+      hoveredSlot: 2,
+      buildKind: SEPARATOR_KIND.name,
+      buildIssue: 'нет опоры',
+    },
+    fps: 60,
+    time: 3,
+  });
+
+  writeFileSync(`shots/hud${suffix}.png`, encodePng(pixels, 3, FULL));
+  writeFileSync(
+    `shots/zoom-action-bar${suffix}.png`,
+    encodePng(pixels, 8, {
+      x: layout.x - 2,
+      y: layout.y - 26,
+      w: layout.w + 4,
+      h: layout.h + 28,
+    }),
+  );
+  writeFileSync(
+    `shots/zoom-counters${suffix}.png`,
+    encodePng(pixels, 10, { x: BASE_VIEW_W - 64, y: 0, w: 64, h: 28 }),
+  );
+  console.log(
+    `shots/hud${suffix}.png`.padEnd(28) +
+      ` панель x=${layout.x} y=${layout.y} ${layout.w}×${layout.h}, ` +
+      `слот ${layout.slotSize}, кегль ${GLYPH_H}`,
+  );
+
+  // Курсор стоит НА наведённом узле: снимок, где стрелка в стороне от того,
+  // что подсвечено, показывал бы состояние, которого в игре не бывает.
+  const treeLayout = techTreeLayout(BASE_VIEW_W, BASE_VIEW_H, TECH_COLS, TECH_ROWS);
+  const hoveredNode = TECH_NODES[2]!;
+  const hoveredAt = nodeOrigin(treeLayout, hoveredNode.col, hoveredNode.row);
+  const pointer = {
+    x: hoveredAt.x + (treeLayout.node >> 1),
+    y: hoveredAt.y + (treeLayout.node >> 1),
+  };
+
+  // Дерево технологий — тем же шрифтом и поверх интерфейса. Своя сцена, потому
+  // что регресс читаемости узлов, связей и подсказки иначе виден только в игре.
+  // Наведение и выбор стоят на РАЗНЫХ узлах: их пометки обязаны различаться.
+  renderer.render({
+    camera: camera,
+    player: player,
+    crosshairX: BASE_VIEW_W / 2 + 20,
+    crosshairY: BASE_VIEW_H / 2,
+    crosshairInReach: true,
+    hud: {
+      ...hud,
+      overlay: {
+        credits: 1234,
+        selected: 1,
+        hovered: 2,
+        pointerX: pointer.x,
+        pointerY: pointer.y,
+        edges: TECH_EDGES,
+        nodes: TECHNOLOGIES.map((tech, i) => ({
+          name: tech.name,
+          description: tech.description,
+          cost: tech.cost,
+          usage: tech.usage,
+          status: (['open', 'poor', 'blocked', 'available'] as const)[i % 4]!,
+          kind: tech.effect.kind,
+          icon: tech.icon,
+          col: TECH_NODES[i]!.col,
+          row: TECH_NODES[i]!.row,
+          note:
+            i === 1 ? `нужно ещё ${tech.cost - 1234} ₡` : i === 2 ? 'требует: Широкий раструб' : '',
+        })),
+      },
+    },
+    fps: 0,
+    time: 3,
+  });
+  writeFileSync(`shots/research${suffix}.png`, encodePng(pixels, 3, FULL));
+}
+
 // --- Работающий сепаратор ---
 //
 // Строго ПОСЛЕ остальных снимков: постройка меняет мир, и любой снимок после
@@ -281,7 +382,7 @@ for (const shot of SHOTS) {
   const by = top - SEPARATOR.height;
   const cx = bx + (SEPARATOR.width >> 1);
   const cy = by + (SEPARATOR.height >> 1);
-  const placed = Builder.apply(world, registry, module, SEPARATOR_KIND, cx, cy, cx, cy);
+  const placed = Builder.apply(world, registry, SEPARATOR_KIND, cx, cy, cx, cy);
 
   // Гоняем машину, подсыпая пульпу на приёмную грань.
   for (let i = 0; i < 900; i++) {
@@ -306,8 +407,8 @@ for (const shot of SHOTS) {
     crosshairInReach: true,
     hud: {
       ...hud,
-      mode: 'Строительство',
-      machineSummary: machine ? `Сепараторы 1 · ${machine.state}` : '',
+      activeSlot: 1,
+      buildKind: SEPARATOR_KIND.name,
       machines: machine
         ? [
             {
@@ -403,7 +504,7 @@ for (const shot of SHOTS) {
   const camera = new Camera(world.width, world.height);
   camera.snapTo((left + right) / 2, 194);
   const player = new Player(150, 204 - PLAYER.hitboxH);
-  const hudBelt: HudState = { ...hud, mode: 'Строительство', buildKind: 'Конвейер ▶' };
+  const hudBelt: HudState = { ...hud, activeSlot: 1, buildKind: 'Конвейер ▶ 32 ₡' };
 
   // Два кадра подряд: время различается ровно на один шаг переноса, поэтому
   // на верхней ленте полоса сдвинута вправо, на средней — влево.

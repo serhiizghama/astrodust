@@ -1,11 +1,9 @@
-import { World, MAT, MAT_CREDIT_RATE, MAT_RESEARCH_RATE } from '../world';
+import { World, MAT, MAT_CREDIT_RATE } from '../world';
 import type { Rect } from '../geometry';
-import { Research } from '../progress';
 
 /** Что начислено за один шаг зоны приёмника. */
 export interface Payout {
   readonly credits: number;
-  readonly research: number;
 }
 
 /**
@@ -20,53 +18,47 @@ export class LandingModule {
   /**
    * Счёт. Инвариант: целый и НЕОТРИЦАТЕЛЬНЫЙ. Долгов в модели нет — трата
    * неделима, и действие, на которое не хватает, отвергается целиком.
+   *
+   * Валюта в игре одна, и этот счёт — она. Постройка его не касается вовсе:
+   * единственная трата — покупка технологии, и берёт она отсюда же через
+   * `CreditAccount` исследований.
    */
   credits = 0;
 
-  /**
-   * Счётчик очков живёт НЕ ЗДЕСЬ, а в исследованиях: модуль только начисляет.
-   * Два счётчика (один принимает сдачу, другой платит) однажды разошлись бы.
-   */
-  constructor(
-    readonly receiver: Rect,
-    readonly research: Research = new Research(),
-  ) {}
+  constructor(readonly receiver: Rect) {}
 
   /**
    * Обход зоны раз в шаг по её ячейкам — дешевле любого оповещения: приёмник
    * маленький и неподвижный.
    *
    * Названий веществ приёмник не знает: что принимается и почём, решает таблица.
-   * Ноль в ОБЕИХ ставках — «не принимается», и вещество остаётся в мире: зона
+   * Нулевая ставка — «не принимается», и вещество остаётся в мире: зона
    * приёмник, а не мусоросжигатель. Ветки «а если это иридий» здесь быть
-   * не может — ради этого ставка и расщеплена на два поля.
+   * не может — вся разница между сырьём и переработанным выражена ставкой.
    *
-   * @returns сколько начислено на этом шаге по каждой валюте
+   * @returns сколько начислено на этом шаге
    */
   update(world: World): Payout {
     const { x, y, w, h } = this.receiver;
     let credits = 0;
-    let research = 0;
 
     for (let cy = y; cy < y + h; cy++) {
       for (let cx = x; cx < x + w; cx++) {
         const m = world.get(cx, cy);
         const credit = MAT_CREDIT_RATE[m]!;
-        const point = MAT_RESEARCH_RATE[m]!;
-        if (credit === 0 && point === 0) continue;
+        if (credit === 0) continue;
         world.set(cx, cy, MAT.VACUUM);
         credits += credit;
-        research += point;
       }
     }
 
     this.credits += credits;
-    this.research.earn(research);
-    return { credits, research };
+    return { credits };
   }
 
   /**
    * Списывает стоимость. Всё или ничего: при нехватке счёт не меняется вовсе.
+   * Единственный вызывающий — покупка технологии; постройка бесплатна.
    *
    * @returns удалось ли списать
    */
@@ -74,10 +66,5 @@ export class LandingModule {
     if (amount < 0 || this.credits < amount) return false;
     this.credits -= amount;
     return true;
-  }
-
-  /** Возврат при сносе. */
-  refund(amount: number): void {
-    if (amount > 0) this.credits += amount;
   }
 }

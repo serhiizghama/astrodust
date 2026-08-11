@@ -36,12 +36,6 @@ export interface BuildingKind {
   readonly name: string;
   readonly width: number;
   readonly height: number;
-  /**
-   * Цена ОДНОЙ постановки: у машины — корпус, у секционной — одна секция.
-   * Не «за метр»: аванс за непроложенное требовал бы возврата за него, а это
-   * второй способ считать деньги.
-   */
-  readonly cost: number;
   readonly hull: number;
   /** Маска корпуса построчно: 1 — корпус, 0 — пустота внутри области. */
   readonly shape: Uint8Array;
@@ -81,7 +75,7 @@ export interface BuildingKind {
 /**
  * Секционная постройка: квадрат `size`×`size` по своей сетке, без опоры
  * и без записи в реестре. Фабрика, а не выписанные поля: различаются ровно
- * подпись, материал и цена.
+ * подпись и материал корпуса.
  *
  * Инвариант: корпус сплошной. Пустота внутри секции ловит груз навсегда —
  * выбраться из колодца в статичном веществе сыпучему нечем.
@@ -90,7 +84,6 @@ export function sectionKind(
   id: string,
   name: string,
   hull: number,
-  cost: number,
   size: number,
   unlock: string | null = null,
 ): BuildingKind {
@@ -99,7 +92,6 @@ export function sectionKind(
     name,
     width: size,
     height: size,
-    cost,
     hull,
     shape: new Uint8Array(size * size).fill(1),
     grid: size,

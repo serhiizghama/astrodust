@@ -22,7 +22,7 @@ const SCENE_H = 192;
 export const BX = 40;
 export const BY = SCENE_H - 2 - SEPARATOR.height;
 
-export function scene(credits: number = SEPARATOR.cost): {
+export function scene(credits = 0): {
   world: World;
   module: LandingModule;
   registry: BuildingRegistry;
@@ -37,13 +37,12 @@ export function scene(credits: number = SEPARATOR.cost): {
 export function build(
   w: World,
   registry: BuildingRegistry,
-  module: LandingModule,
   x = BX,
   y = BY,
 ): 'placed' | 'demolished' | 'rejected' {
   const cx = x + (SEPARATOR_KIND.width >> 1);
   const cy = y + (SEPARATOR_KIND.height >> 1);
-  return Builder.apply(w, registry, module, SEPARATOR_KIND, cx, cy, cx, cy);
+  return Builder.apply(w, registry, SEPARATOR_KIND, cx, cy, cx, cy);
 }
 
 /**

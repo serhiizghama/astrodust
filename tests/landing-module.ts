@@ -1,4 +1,4 @@
-import { World, MAT, MAT_CREDIT_RATE, Simulation, reactAround } from '../src/world';
+import { World, MAT, MAT_CREDIT_RATE, MATERIALS, Simulation, reactAround } from '../src/world';
 import { Camera } from '../src/render';
 import { Digger, Vacuum } from '../src/systems';
 import { Player, Inventory, LandingModule } from '../src/entities';
@@ -48,9 +48,9 @@ const { spawn } = first;
         `размещено ${placed}, начислено ${earned.credits}, осталось ${count(w, MAT.PULP)}`,
       );
       check(
-        'Счёт модуля равен начисленному, а очки за сырьё не растут',
-        module.credits === earned.credits && earned.research === 0 && module.research.points === 0,
-        `${module.credits} ₡, ${module.research.points} ✦`,
+        'Счёт модуля равен начисленному за шаг',
+        module.credits === earned.credits,
+        `${module.credits} ₡`,
       );
     }
 
@@ -268,6 +268,36 @@ const { spawn } = first;
     check(
       'В нетронутом мире нет ни пульпы, ни рыхлого реголита',
       !w.cells.includes(MAT.PULP) && !w.cells.includes(MAT.REGOLITH_LOOSE),
+    );
+  }
+
+  // --- Ставка растёт вдоль цепочки переработки ---
+
+  {
+    const regolith = MAT_CREDIT_RATE[MAT.REGOLITH_LOOSE]!;
+    const pulp = MAT_CREDIT_RATE[MAT.PULP]!;
+    const iridium = MAT_CREDIT_RATE[MAT.IRIDIUM]!;
+
+    // Монотонность И ЕСТЬ смысл передела: валюта одна, и вся разница между
+    // сырьём и переработанным выражена ставкой. Равные ставки на соседних
+    // ступенях цепочки означали бы, что передел не даёт ничего.
+    check(
+      'Ставка растёт вдоль цепочки: реголит < пульпа < иридий',
+      regolith < pulp && pulp < iridium,
+      `${regolith} < ${pulp} < ${iridium}`,
+    );
+
+    const richest = MATERIALS.reduce((best, m) => (m.creditRate > best ? m.creditRate : best), 0);
+    check(
+      'Иридий — самая высокая ставка в таблице',
+      iridium === richest,
+      `иридий ${iridium}, максимум таблицы ${richest}`,
+    );
+
+    check(
+      'Шлак не принимается ни за что',
+      MAT_CREDIT_RATE[MAT.SLAG] === 0,
+      `${MAT_CREDIT_RATE[MAT.SLAG]} ₡`,
     );
   }
 }

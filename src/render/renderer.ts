@@ -7,7 +7,11 @@ import { GRAIN } from './grain';
 import { BAYER, DITHER_MASK, DITHER_LEVELS } from './dither';
 import { Lightmap, LIGHT_NEUTRAL } from './lightmap';
 import { Backdrop } from './backdrop';
-import { RAMP, css } from '../palette';
+import { RAMP } from '../palette';
+import { setPixel, fillRect, strokeRect, blit } from './draw';
+import { drawText, LINE_H } from './font';
+import { hudLayout, drawActionBar, drawCredits, drawBarLine } from './hud';
+import type { HudSlot } from './hud';
 import { drawResearchOverlay } from './overlay';
 import type { OverlayView } from './overlay';
 import { Player } from '../entities';
@@ -53,12 +57,8 @@ function brushOutline(radius: number): Int8Array {
 /** Сколько ступеней у интерьера пещеры: у выхода и в глубине. */
 const CAVE_SHADES = 2;
 
-/**
- * Кегль интерфейса в ячейках кадра. Длина, соразмерная кадру: строка состояния
- * читается с одного и того же расстояния независимо от того, сколько мира
- * влезло в окно. Отступы интерфейса выведены от него — четверть кегля.
- */
-const UI_FONT = '16px monospace';
+/** Отступ диагностики от левого верхнего угла кадра. */
+const DEBUG_MARGIN = 4;
 
 // Настройки тонирования — в локальные константы модуля. Внутренний цикл
 // касается их на каждый пиксель кадра, а `SHADING.x` там — загрузка свойства.
@@ -205,15 +205,22 @@ export function stripeOffset(time: number): number {
 }
 
 /**
- * Что показать в строке состояния и каким нарисовать прицел.
+ * Что показать в интерфейсе и каким нарисовать прицел.
  *
  * Одна структура, а не восемь аргументов подряд: рендер про инвентарь ничего
  * не решает, он его показывает, и список того, что показать, обязан читаться
  * на месте вызова.
  */
 export interface HudState {
-  /** Подпись текущего режима инструмента. */
-  readonly mode: string;
+  /**
+   * Слоты панели действий по порядку. Подпись клавиши и вид действия — данные
+   * ВИДА, а не режим из `core`: так рендер не заводит у себя правил выбора
+   * инструмента, а снапшот панели можно собрать руками в проверке.
+   */
+  readonly slots: readonly HudSlot[];
+  readonly activeSlot: number;
+  /** Слот под курсором, или `null`. Мыши не было — подсветки в кадре нет. */
+  readonly hoveredSlot: number | null;
   /** Собирает ли инструмент сейчас — от этого зависит вид прицела. */
   readonly collecting: boolean;
   /**
@@ -225,14 +232,12 @@ export interface HudState {
   readonly used: number;
   readonly capacity: number;
   readonly selected: string;
-  readonly credits: number;
   /**
-   * Очки исследований. Стоят рядом с кредитами и видны ВСЕГДА, а не только
-   * внутри оверлея: игрок принимает по двум валютам разные решения — что
-   * построить и что открыть, — и валюта, которую видно только в меню,
-   * из этих решений выпадает.
+   * Счёт кредитов — единственная валюта игры. Виден ВСЕГДА, а не только внутри
+   * оверлея: это ответ на вопрос «что я сейчас могу открыть», и валюта,
+   * которую видно только в меню, из этого решения выпадает.
    */
-  readonly research: number;
+  readonly credits: number;
   /**
    * Контур будущего здания в координатах МИРА и признак годности места.
    * `null` вне режима строительства.
@@ -243,24 +248,22 @@ export interface HudState {
    */
   readonly ghost: GhostView | null;
   /**
-   * Подпись выбранного вида постройки с ценой. Пустая строка — не в режиме
+   * Подпись выбранного вида постройки. Пустая строка — не в режиме
    * строительства.
    *
-   * Видна ДО применения: постройка вслепую — это списание кредитов за то, чего
-   * игрок не выбирал. Контур под целью показывает размер и годность, но не
-   * говорит ни цену, ни направление ленты.
+   * Видна ДО применения: контур под целью показывает размер и годность, но
+   * не говорит, что именно встанет, а видов с одинаковым прямоугольником
+   * в каталоге уже два. Цены здесь нет — постройка бесплатна.
    */
   readonly buildKind: string;
   /**
    * Почему место негодно, словами. Красный контур отвечает «нельзя», но
-   * не «почему», а из четырёх причин три исправимы прямо сейчас: отойти,
-   * расчистить, накопить.
+   * не «почему», а все три причины исправимы прямо сейчас: отойти или
+   * расчистить.
    */
   readonly buildIssue: string;
   /** Стоящие машины: состояние обязано читаться с самой машины, а не из угла кадра. */
   readonly machines: readonly MachineView[];
-  /** Сводка по машинам для строки состояния. Пустая строка — машин нет. */
-  readonly machineSummary: string;
   /** Оверлей исследований, если он открыт. `null` — закрыт. */
   readonly overlay: OverlayView | null;
 }
@@ -369,15 +372,23 @@ export class Renderer {
     this.drawPlayer(camera, player);
     if (hud.ghost) this.drawGhost(camera, hud.ghost);
     this.drawAim(crosshairX, crosshairY, crosshairInReach, hud.collecting, hud.collectRadius);
-    this.display.present();
-    this.drawStatus(hud);
+    this.drawHud(hud);
     this.drawDebug(fps, debugMaterial);
-    // Оверлей — последним: он перекрывает и мир, и строку состояния, и это
-    // правильный порядок. Пока он открыт, строка состояния всё равно
-    // не описывает того, чем игрок сейчас занят.
+    // Оверлей — последним из РИСУЮЩИХ: он перекрывает и мир, и интерфейс, и это
+    // правильный порядок. Пока он открыт, низ кадра всё равно не описывает того,
+    // чем игрок сейчас занят.
     if (hud.overlay) {
-      drawResearchOverlay(this.display.ctx, hud.overlay, this.display.width, this.display.height);
+      drawResearchOverlay(
+        this.display.pixels,
+        this.display.width,
+        this.display.height,
+        hud.overlay,
+      );
     }
+    // `present()` — ПОСЛЕДНИМ действием кадра: всё, что нарисовано после него,
+    // в буфер попасть не может по построению, а весь текст игры рисуется
+    // пикселями буфера.
+    this.display.present();
   }
 
   /**
@@ -568,7 +579,7 @@ export class Renderer {
       // Полоса заполняется слева направо по ходу порции. У простоя и забитого
       // выхода хода нет, поэтому полоса рисуется целиком: важен цвет.
       const filled = m.state === 'working' ? Math.max(1, Math.round(m.w * m.progress)) : m.w;
-      for (let i = 0; i < filled; i++) this.setPixel(sx + i, sy, color);
+      fillRect(this.display.pixels, viewW, viewH, sx, sy, filled, 1, color);
     }
   }
 
@@ -580,34 +591,36 @@ export class Renderer {
    * тот же язык, что у прицела, и второй учить не надо.
    */
   private drawGhost(camera: Camera, ghost: GhostView): void {
-    const x0 = ghost.x - camera.x;
-    const y0 = ghost.y - camera.y;
-    const color = ghost.ok ? MACHINE_STATE_COLORS.working : MACHINE_STATE_COLORS.blocked;
-
-    for (let i = 0; i < ghost.w; i++) {
-      this.setPixel(x0 + i, y0, color);
-      this.setPixel(x0 + i, y0 + ghost.h - 1, color);
-    }
-    for (let i = 1; i < ghost.h - 1; i++) {
-      this.setPixel(x0, y0 + i, color);
-      this.setPixel(x0 + ghost.w - 1, y0 + i, color);
-    }
+    strokeRect(
+      this.display.pixels,
+      this.display.width,
+      this.display.height,
+      ghost.x - camera.x,
+      ghost.y - camera.y,
+      ghost.w,
+      ghost.h,
+      ghost.ok ? MACHINE_STATE_COLORS.working : MACHINE_STATE_COLORS.blocked,
+    );
   }
 
   private drawPlayer(camera: Camera, player: Player): void {
     const originX = Math.round(player.x + SPRITE_OFFSET_X - camera.x);
     const originY = Math.round(player.y + SPRITE_OFFSET_Y - camera.y);
-    const flip = player.facing === -1;
 
     if (player.thrusting) this.drawThrustExhaust(originX, originY);
 
-    for (let y = 0; y < SPRITE_H; y++) {
-      for (let x = 0; x < SPRITE_W; x++) {
-        const index = SPRITE_PIXELS[y * SPRITE_W + (flip ? SPRITE_W - 1 - x : x)];
-        if (index === 0) continue; // 0 — прозрачный
-        this.setPixel(originX + x, originY + y, SPRITE_PALETTE[index]);
-      }
-    }
+    blit(
+      this.display.pixels,
+      this.display.width,
+      this.display.height,
+      SPRITE_PIXELS,
+      SPRITE_W,
+      SPRITE_H,
+      originX,
+      originY,
+      SPRITE_PALETTE,
+      player.facing === -1,
+    );
   }
 
   /**
@@ -681,86 +694,63 @@ export class Renderer {
   }
 
   private setPixel(x: number, y: number, color: number): void {
-    const viewW = this.display.width;
-    if (x < 0 || y < 0 || x >= viewW || y >= this.display.height) return;
-    const i = (y * viewW + x) * 4;
-    const px = this.display.pixels;
-    px[i] = (color >> 16) & 0xff;
-    px[i + 1] = (color >> 8) & 0xff;
-    px[i + 2] = color & 0xff;
+    setPixel(this.display.pixels, this.display.width, this.display.height, x, y, color);
   }
 
   /**
-   * Строка состояния: режим, инвентарь, вещество и счёт. Рисуется ВСЕГДА
-   * и к диагностике отношения не имеет — без неё игрок узнаёт о заполненном
-   * инвентаре только по тому, что сбор перестал работать. Внизу кадра: верхний
-   * левый угол занят диагностикой.
+   * Постоянный интерфейс: панель действий, счётчики валют и строка инвентаря.
+   *
+   * Рисуется ВСЕГДА и к диагностике отношения не имеет — без него игрок узнаёт
+   * о заполненном инвентаре только по тому, что сбор перестал работать.
+   *
+   * Подписи режима здесь нет: режим читается по выделенному слоту панели,
+   * и вторая запись того же состояния однажды разошлась бы с первой.
    */
-  private drawStatus(hud: HudState): void {
-    const ctx = this.display.ctx;
+  private drawHud(hud: HudState): void {
+    const px = this.display.pixels;
     const viewW = this.display.width;
     const viewH = this.display.height;
-    ctx.font = UI_FONT;
-    ctx.textBaseline = 'alphabetic';
+    const layout = hudLayout(viewW, viewH);
+
+    drawActionBar(px, viewW, viewH, layout, hud.slots, hud.activeSlot, hud.hoveredSlot);
+    drawCredits(px, viewW, viewH, hud.credits);
 
     const carried =
       hud.carried.length > 0 ? hud.carried.map((c) => `${c.name} ${c.count}`).join('  ') : 'пусто';
+    drawBarLine(
+      px,
+      viewW,
+      viewH,
+      layout,
+      0,
+      `${hud.used}/${hud.capacity}   ${carried}   Высыпать: ${hud.selected}`,
+      RAMP.gray[9],
+    );
 
-    // Выбранный вид постройки стоит рядом с подписью режима, а не в отдельной
-    // строке: он относится к режиму и без него бессмыслен.
-    const mode = hud.buildKind ? `${hud.mode}: ${hud.buildKind}` : hud.mode;
-    this.text(`${mode}   ${hud.used}/${hud.capacity}   ${carried}`, 8, viewH - 28, RAMP.gray[9]);
+    // Вид постройки и причина отказа — ТОЛЬКО в режиме строительства и над
+    // панелью, туда, куда игрок смотрит, выбирая место. Вне режима этих строк
+    // в кадре нет вовсе.
+    if (hud.buildKind) drawBarLine(px, viewW, viewH, layout, 1, hud.buildKind, RAMP.gray[9]);
     // Причина отказа — тем же цветом, что и негодный контур: связь между
     // красной рамкой и надписью не должна требовать догадки.
     if (hud.buildIssue) {
-      const at = 8 + ctx.measureText(`${mode}   `).width;
-      this.text(hud.buildIssue, at, viewH - 48, MACHINE_STATE_COLORS.blocked);
+      drawBarLine(px, viewW, viewH, layout, 2, hud.buildIssue, MACHINE_STATE_COLORS.blocked);
     }
-    const second = hud.machineSummary
-      ? `Высыпать: ${hud.selected}   ${hud.machineSummary}`
-      : `Высыпать: ${hud.selected}`;
-    this.text(second, 8, viewH - 8, RAMP.gray[9]);
-
-    // Счёт — справа и цветом корпуса модуля: единственное место, куда кредиты
-    // приходят, и единственное золотое пятно в кадре. Связь читается без подписи.
-    //
-    // Очки исследований стоят СТРОКОЙ ВЫШЕ, у того же края: обе валюты приходят
-    // из одного места и обе видны сразу, но разведены по строкам — «250 ₡ 12 ✦»
-    // одной строкой читается как одно число с двумя знаками. Цвет холодный
-    // против золота кредитов: валюты разводятся тоном, а не яркостью, и тот же
-    // `blue[5]` показывает очки внутри оверлея.
-    const credits = `${hud.credits} ₡`;
-    this.text(credits, viewW - 8 - ctx.measureText(credits).width, viewH - 8, RAMP.warm[4]);
-    const research = `${hud.research} ✦`;
-    this.text(research, viewW - 8 - ctx.measureText(research).width, viewH - 28, RAMP.blue[5]);
   }
 
   /** Диагностика поверх кадра. Включается F3 — иначе мешает оценивать картинку. */
   private drawDebug(fps: number, material: string): void {
     if (fps <= 0) return;
-    const ctx = this.display.ctx;
-    ctx.font = UI_FONT;
-    ctx.textBaseline = 'top';
+    const px = this.display.pixels;
+    const viewW = this.display.width;
+    const viewH = this.display.height;
 
     const lines = [`${fps.toFixed(0)} FPS`];
     // Установка вслепую бесполезна: игрок обязан видеть, что именно поставит.
     if (material) lines.push(`Q/E: ${material}`);
 
-    lines.forEach((line, i) => this.text(line, 8, 8 + i * 20, RAMP.green[4]));
-  }
-
-  /**
-   * Надпись с подложкой: без неё текст тонет в кадре.
-   *
-   * Подложка — цвет неба, а не чистый чёрный: чёрного в гамме нет вовсе,
-   * и единственное место на экране с цветом вне набора не должно заводиться
-   * ради тени под буквами.
-   */
-  private text(line: string, x: number, y: number, color: number): void {
-    const ctx = this.display.ctx;
-    ctx.fillStyle = css(RAMP.gray[0]);
-    ctx.fillText(line, x + 2, y + 2);
-    ctx.fillStyle = css(color);
-    ctx.fillText(line, x, y);
+    lines.forEach((line, i) =>
+      drawText(px, viewW, viewH, line, DEBUG_MARGIN, DEBUG_MARGIN + i * LINE_H, RAMP.green[4]),
+    );
   }
 }

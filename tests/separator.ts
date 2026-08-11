@@ -1,11 +1,4 @@
-import {
-  MAT,
-  MAT_DENSITY,
-  MAT_CREDIT_RATE,
-  MAT_RESEARCH_RATE,
-  MatterState,
-  MATERIALS,
-} from '../src/world';
+import { MAT, MAT_DENSITY, MAT_CREDIT_RATE, MatterState, MATERIALS } from '../src/world';
 import { Simulation } from '../src/world';
 import { Builder } from '../src/systems';
 import { LandingModule, Separator, OUTLET_ROW, OUTLET_FROM, OUTLET_TO } from '../src/entities';
@@ -37,20 +30,14 @@ import { BX, BY, scene, build, feed } from './fixtures/separator';
       `сыпучих ${powders.length}, легчайший ${lightest.name} (${lightest.density})`,
     );
 
-    // Ставка кредитов растёт от реголита к пульпе и обрывается на иридии:
-    // переработанное платит не деньгами, а прогрессом, и «дороже» для него
-    // измеряется в другой валюте.
+    // Ставка растёт вдоль всей цепочки и обрывается на шлаке: продукт, за
+    // который платят, отходом не является.
     check(
-      'Ставка кредитов растёт от реголита к пульпе, у иридия и шлака ноль',
+      'Ставка растёт от реголита к пульпе и от пульпы к иридию, у шлака ноль',
       MAT_CREDIT_RATE[MAT.REGOLITH_LOOSE]! < MAT_CREDIT_RATE[MAT.PULP]! &&
-        MAT_CREDIT_RATE[MAT.IRIDIUM] === 0 &&
+        MAT_CREDIT_RATE[MAT.PULP]! < MAT_CREDIT_RATE[MAT.IRIDIUM]! &&
         MAT_CREDIT_RATE[MAT.SLAG] === 0,
-      `${MAT_CREDIT_RATE[MAT.REGOLITH_LOOSE]} → ${MAT_CREDIT_RATE[MAT.PULP]}, иридий ${MAT_CREDIT_RATE[MAT.IRIDIUM]}, шлак ${MAT_CREDIT_RATE[MAT.SLAG]}`,
-    );
-    check(
-      'Ставка исследований ненулевая только у иридия',
-      MAT_RESEARCH_RATE[MAT.IRIDIUM]! > 0 && MAT_RESEARCH_RATE[MAT.SLAG] === 0,
-      `иридий ${MAT_RESEARCH_RATE[MAT.IRIDIUM]}, шлак ${MAT_RESEARCH_RATE[MAT.SLAG]}`,
+      `${MAT_CREDIT_RATE[MAT.REGOLITH_LOOSE]} → ${MAT_CREDIT_RATE[MAT.PULP]} → ${MAT_CREDIT_RATE[MAT.IRIDIUM]}, шлак ${MAT_CREDIT_RATE[MAT.SLAG]}`,
     );
 
     const visible = [
@@ -80,8 +67,8 @@ import { BX, BY, scene, build, feed } from './fixtures/separator';
   // --- Приёмная грань ---
 
   {
-    const { world: w, module, registry } = scene(1000);
-    build(w, registry, module);
+    const { world: w, registry } = scene();
+    build(w, registry);
     const separator = registry.all[0] as Separator;
 
     const fed = feed(w, 4);
@@ -106,8 +93,8 @@ import { BX, BY, scene, build, feed } from './fixtures/separator';
   // --- Порция ---
 
   {
-    const { world: w, module, registry } = scene(1000);
-    build(w, registry, module);
+    const { world: w, registry } = scene();
+    build(w, registry);
     const separator = registry.all[0] as Separator;
 
     // Неполный накопитель ждёт сколько угодно шагов.
@@ -166,8 +153,8 @@ import { BX, BY, scene, build, feed } from './fixtures/separator';
   // три секунды выходит столько же порций, сколько на 60.
   {
     function batchesIn(seconds: number, dt: number): number {
-      const { world: w, module, registry } = scene(1000);
-      build(w, registry, module);
+      const { world: w, registry } = scene();
+      build(w, registry);
       const separator = registry.all[0] as Separator;
       const steps = Math.round(seconds / dt);
       let emitted = 0;
@@ -202,8 +189,8 @@ import { BX, BY, scene, build, feed } from './fixtures/separator';
   // Машина работает сама: ни в одном её вызове персонаж не участвует, и здесь
   // это проверяется явно — во всей сцене его просто нет.
   {
-    const { world: w, module, registry } = scene(1000);
-    build(w, registry, module);
+    const { world: w, registry } = scene();
+    build(w, registry);
     const separator = registry.all[0] as Separator;
     const sim = new Simulation();
     feed(w, SEPARATOR.batch);
@@ -220,8 +207,8 @@ import { BX, BY, scene, build, feed } from './fixtures/separator';
 
   // Сохранение вещества на многих порциях.
   {
-    const { world: w, module, registry } = scene(1000);
-    build(w, registry, module);
+    const { world: w, registry } = scene();
+    build(w, registry);
     const separator = registry.all[0] as Separator;
     const sim = new Simulation();
 
@@ -252,8 +239,8 @@ import { BX, BY, scene, build, feed } from './fixtures/separator';
   // --- Забитый выход ---
 
   {
-    const { world: w, module, registry } = scene(1000);
-    build(w, registry, module);
+    const { world: w, registry } = scene();
+    build(w, registry);
     const separator = registry.all[0] as Separator;
 
     // Забиваем окно доверху породой: выйти порции некуда.
@@ -331,37 +318,35 @@ import { BX, BY, scene, build, feed } from './fixtures/separator';
   // --- Экономика ---
 
   {
-    // Окупаемость машины меряется ПРОГРЕССОМ, а не кредитами. По деньгам она
-    // всегда в убытке — иридий не приносит ни одного, — и в этом её роль:
-    // сепаратор превращает сырьё в то, чего за деньги не купить.
+    // Переработка выгоднее прямой сдачи РОВНО ВДВОЕ, и ставка иридия из этого
+    // и выведена. Сравнение с формулой, а не с выписанным числом: изменится
+    // размер порции или доля иридия — разойдётся то, что должно сойтись, и
+    // проверка это покажет, а константа промолчала бы.
     const directCredits = SEPARATOR.batch * MAT_CREDIT_RATE[MAT.PULP]!;
     const slagPerBatch = SEPARATOR.batch - SEPARATOR.iridium;
     const processedCredits =
       SEPARATOR.iridium * MAT_CREDIT_RATE[MAT.IRIDIUM]! + slagPerBatch * MAT_CREDIT_RATE[MAT.SLAG]!;
-    const processedPoints =
-      SEPARATOR.iridium * MAT_RESEARCH_RATE[MAT.IRIDIUM]! +
-      slagPerBatch * MAT_RESEARCH_RATE[MAT.SLAG]!;
     check(
-      'Переработка даёт то, чего прямая сдача не даёт ни в каком количестве',
-      processedPoints > 0 && directCredits > 0 && processedCredits === 0,
-      `напрямую ${directCredits} ₡ и 0 ✦, через сепаратор ${processedCredits} ₡ и ${processedPoints} ✦`,
+      'Порция через сепаратор стоит ровно вдвое дороже той же пульпы напрямую',
+      directCredits > 0 && processedCredits === 2 * directCredits,
+      `напрямую ${directCredits} ₡, через сепаратор ${processedCredits} ₡`,
     );
-    // Цена машины в кредитах и цена первой технологии в очках согласованы так,
-    // чтобы первое открытие наступало за обозримое ВРЕМЯ работы машины: иначе
-    // игрок, потративший на неё все кредиты, читает её как тупик, а не как
-    // ступень. Мерка временем, а не порциями: порция — величина настраиваемая,
-    // и вдвое более частые порции вдвое меньшего веса ничего не меняют.
+
+    // Первое открытие наступает за обозримое ВРЕМЯ работы машины: иначе она
+    // читается тупиком, а не ступенью. Мерка временем, а не порциями: порция —
+    // величина настраиваемая, и вдвое более частые порции вдвое меньшего веса
+    // ничего не меняют.
     {
       const firstCost = Math.min(...TECHNOLOGIES.map((t) => t.cost));
-      const seconds = (firstCost / processedPoints) * SEPARATOR.delaySec;
+      const seconds = (firstCost / processedCredits) * SEPARATOR.delaySec;
       check(
         'Первая технология достижима за обозримое время работы машины',
-        processedPoints > 0 && seconds <= 10,
+        processedCredits > 0 && seconds <= 10,
         `${seconds.toFixed(1)} с работы машины до первой технологии`,
       );
     }
 
-    // Приёмник принимает иридий очками и не принимает шлак вовсе.
+    // Приёмник принимает иридий по его ставке и не принимает шлак вовсе.
     const w = ground();
     const zone = { x: 40, y: 40, w: 6, h: 4 };
     const module = new LandingModule(zone);
@@ -369,45 +354,43 @@ import { BX, BY, scene, build, feed } from './fixtures/separator';
     for (let x = zone.x + 3; x < zone.x + 6; x++) w.set(x, zone.y, MAT.SLAG);
     const earned = module.update(w);
     check(
-      'Приёмник принимает иридий очками, кредитов не даёт, шлак не принимает',
-      earned.research === 3 * MAT_RESEARCH_RATE[MAT.IRIDIUM]! &&
-        earned.credits === 0 &&
-        module.credits === 0 &&
-        module.research.points === earned.research &&
+      'Приёмник принимает иридий по его ставке, шлак не принимает',
+      earned.credits === 3 * MAT_CREDIT_RATE[MAT.IRIDIUM]! &&
+        module.credits === earned.credits &&
         count(w, MAT.IRIDIUM) === 0 &&
         count(w, MAT.SLAG) === 3,
-      `начислено ${earned.credits} ₡ и ${earned.research} ✦, иридия осталось ${count(w, MAT.IRIDIUM)}, шлака ${count(w, MAT.SLAG)}`,
+      `начислено ${earned.credits} ₡, иридия осталось ${count(w, MAT.IRIDIUM)}, шлака ${count(w, MAT.SLAG)}`,
     );
   }
 
-  // Счёт не уходит в минус на длинной последовательности покупок и сносов.
+  // Машина бесплатна: ни постановка, ни снос счёта не касаются.
   {
-    const { world: w, module, registry } = scene(SEPARATOR.cost);
-    let negative = false;
+    const { world: w, module, registry } = scene();
+    let moved = false;
     let placed = 0;
     let demolished = 0;
     for (let i = 0; i < 200; i++) {
-      const r = build(w, registry, module);
+      const r = build(w, registry);
       if (r === 'placed') placed++;
       if (r === 'demolished') demolished++;
-      if (module.credits < 0) negative = true;
+      if (module.credits !== 0) moved = true;
     }
     check(
-      'Счёт кредитов ни разу не ушёл в минус на длинной последовательности',
-      !negative && module.credits >= 0 && placed > 0 && demolished > 0,
+      'Постановка и снос сепаратора не трогают счёт при нулевом счёте',
+      !moved && placed > 0 && demolished > 0,
       `постановок ${placed}, сносов ${demolished}, счёт ${module.credits}`,
     );
 
-    // Отдельно: покупка при нехватке отвергается целиком.
-    module.credits = SEPARATOR.cost - 1;
-    while (registry.count > 0) Builder.demolish(w, registry, module, registry.all[0]!);
-    const before = module.credits;
-    module.credits = SEPARATOR.cost - 1;
-    build(w, registry, module);
+    // И с непустым счётом — тоже: списывать и возвращать нечего.
+    while (registry.count > 0) Builder.demolish(w, registry, registry.all[0]!);
+    module.credits = 777;
+    build(w, registry);
+    const afterPlace = module.credits;
+    while (registry.count > 0) Builder.demolish(w, registry, registry.all[0]!);
     check(
-      'Нехватка средств отвергает покупку целиком',
-      registry.count === 0 && module.credits === SEPARATOR.cost - 1,
-      `зданий ${registry.count}, счёт ${before} → ${module.credits}`,
+      'Постройка бесплатна, а снос ничего не возвращает',
+      afterPlace === 777 && module.credits === 777,
+      `после постановки ${afterPlace} ₡, после сноса ${module.credits} ₡`,
     );
   }
 }

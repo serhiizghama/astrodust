@@ -14,12 +14,5 @@ export { Building, BuildingRegistry, stampKind } from './buildings';
 export type { BuildingKind } from './buildings';
 export { BUILD_CATALOG, BuildCatalogState, isKindOpen, sectionKindByHull } from './catalog';
 export { CONVEYOR_LEFT_KIND, CONVEYOR_RIGHT_KIND } from './conveyor';
-export {
-  SEPARATOR_KIND,
-  Separator,
-  OUTLET_ROW,
-  OUTLET_FROM,
-  OUTLET_TO,
-  machineSummary,
-} from './separator';
+export { SEPARATOR_KIND, Separator, OUTLET_ROW, OUTLET_FROM, OUTLET_TO } from './separator';
 export { LandingModule } from './landing-module';

@@ -6,6 +6,7 @@
  */
 import { PLAYER } from '../../config';
 import { RAMP } from '../../palette';
+import { parseSprite } from '../draw';
 
 /**
  * Спрайт космонавта 8x12 прямо в коде: ассет-пайплайн на этом этапе — чистые
@@ -48,17 +49,7 @@ export const SPRITE_PALETTE = [
 export const SPRITE_W = 8;
 export const SPRITE_H = 12;
 
-export const SPRITE_PIXELS = (() => {
-  const data = new Uint8Array(SPRITE_W * SPRITE_H);
-  for (let y = 0; y < SPRITE_H; y++) {
-    const row = SPRITE_ROWS[y];
-    for (let x = 0; x < SPRITE_W; x++) {
-      const ch = row[x];
-      data[y * SPRITE_W + x] = ch === '.' ? 0 : Number(ch);
-    }
-  }
-  return data;
-})();
+export const SPRITE_PIXELS = parseSprite(SPRITE_ROWS, SPRITE_W);
 
 /** Смещение спрайта относительно левого верхнего угла хитбокса. */
 export const SPRITE_OFFSET_X = -(SPRITE_W - PLAYER.hitboxW) / 2; // -1

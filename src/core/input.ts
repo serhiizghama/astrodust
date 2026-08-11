@@ -1,6 +1,23 @@
 import { BASE_VIEW_W, BASE_VIEW_H, DIG } from '../config';
 import { Display } from './display';
 
+/**
+ * Клавиши прямого выбора слота, по порядку слотов. `Digit0` десятый: на
+ * клавиатуре ноль стоит после девятки, а не перед единицей.
+ */
+const DIGIT_KEYS = [
+  'Digit1',
+  'Digit2',
+  'Digit3',
+  'Digit4',
+  'Digit5',
+  'Digit6',
+  'Digit7',
+  'Digit8',
+  'Digit9',
+  'Digit0',
+] as const;
+
 /** Клавиши, которые игра забирает себе — браузер не должен на них реагировать. */
 const GAME_KEYS = new Set([
   'KeyA',
@@ -31,6 +48,10 @@ const GAME_KEYS = new Set([
   // Отладка: переключение вещества и его установка под курсором.
   'KeyQ',
   'KeyE',
+  // Прямой выбор слота панели действий. Цифровой ряд целиком, включая пустые
+  // слоты: клавиша, на которую игра не отзывается, не должна отзываться
+  // и страница.
+  ...DIGIT_KEYS,
 ]);
 
 /**
@@ -64,30 +85,45 @@ export const ToolMode = {
 
 export type ToolModeValue = (typeof ToolMode)[keyof typeof ToolMode];
 
-/** Порядок перебора по кругу и подписи для кадра. */
-const MODE_CYCLE: readonly ToolModeValue[] = [ToolMode.Dig, ToolMode.Collect, ToolMode.Build];
-const MODE_NAMES: Record<ToolModeValue, string> = {
-  [ToolMode.Dig]: 'Копание',
-  [ToolMode.Collect]: 'Сбор',
-  [ToolMode.Build]: 'Строительство',
-};
+/**
+ * Раскладка слотов панели действий. Пустой слот — это `null`, а не отсутствие
+ * записи: пустые слоты занимают место в раскладке кадра и показывают, что
+ * место под будущее есть.
+ */
+export const ACTION_SLOTS: readonly (ToolModeValue | null)[] = [
+  ToolMode.Dig,
+  ToolMode.Build,
+  ToolMode.Collect,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+  null,
+];
 
 /**
- * Текущий режим инструмента.
+ * Панель действий: что выбрано и чем выбирается.
  *
- * Перебор по кругу списком, а не переключатель на два положения: следующий
- * шаг добавляет строительство, и «переключить» перестанет означать
- * «инвертировать».
+ * Живёт здесь, а не в отдельной подсистеме: панель — это тот же выбор режима
+ * инструмента, показанный иначе, и разносить состояние с его единственным
+ * читателем незачем.
+ *
+ * Прямой выбор и перебор по кругу существуют ОДНОВРЕМЕННО и меняют одно и то же
+ * состояние: клавиш прямого выбора конечное число, а режимов со временем будет
+ * больше, и перебор остаётся способом добраться до того, чему клавиши не хватило.
  */
-export class ToolModeState {
+export class ActionBarState {
+  readonly slots = ACTION_SLOTS;
   private index = 0;
 
-  get mode(): ToolModeValue {
-    return MODE_CYCLE[this.index]!;
+  get activeSlot(): number {
+    return this.index;
   }
 
-  get name(): string {
-    return MODE_NAMES[this.mode];
+  get mode(): ToolModeValue {
+    return this.slots[this.index]!;
   }
 
   get digging(): boolean {
@@ -103,14 +139,32 @@ export class ToolModeState {
   }
 
   /**
-   * Следующий режим по кругу.
+   * Выбрать слот напрямую.
+   *
+   * Пустой слот активным не становится: инструмент, который «ничего не делает»,
+   * неотличим от поломки, и прежний выбор остаётся в силе.
+   */
+  select(slot: number): void {
+    if (slot < 0 || slot >= this.slots.length) return;
+    if (this.slots[slot] === null) return;
+    this.index = slot;
+  }
+
+  /**
+   * Следующий НЕПУСТОЙ слот по кругу.
    *
    * Перебор списком, а не переключатель: добавление режима MUST NOT требовать
-   * новой клавиши, иначе раскладка растёт вместе с числом зданий. Третий режим
-   * встал сюда одной строкой — правила перебора не поменялись.
+   * новой клавиши, иначе раскладка растёт вместе с числом зданий.
    */
   cycle(): void {
-    this.index = (this.index + 1) % MODE_CYCLE.length;
+    const n = this.slots.length;
+    for (let step = 1; step <= n; step++) {
+      const next = (this.index + step) % n;
+      if (this.slots[next] !== null) {
+        this.index = next;
+        return;
+      }
+    }
   }
 }
 
@@ -219,9 +273,10 @@ export function actionTarget(
  * шаге. Без первого удержание `W` читалось бы серией прыжков.
  *
  * Раскладка: ходьба `A`/`D` (`←`/`→`), прыжок и ранец `W` (`↑`), инструмент
- * `Space` или ЛКМ, высыпание `F` или ПКМ, режим `R`, вещество `C`, вид
- * постройки `X`, оверлей `T`, прицел вниз `S` (`↓`). Инвариант: у каждой
- * кнопки мыши есть клавиша — игра полностью проходится без мыши.
+ * `Space` или ЛКМ, высыпание `F` или ПКМ, слот панели `1`…`9`/`0` или клик
+ * по слоту, перебор режимов `R`, вещество `C`, вид постройки `X`, оверлей `T`,
+ * прицел вниз `S` (`↓`). Инвариант: у каждой кнопки мыши есть клавиша — игра
+ * полностью проходится без мыши.
  *
  * Кому достанутся нажатия, снапшот не знает: при открытом оверлее та же
  * раскладка означает другое, и решает это игровой цикл.
@@ -254,6 +309,17 @@ export class Input {
    */
   hasInteracted = false;
 
+  /**
+   * Курсор над интерфейсом. Выставляется игровым циклом из раскладки панели:
+   * попадание считает рендер, у которого раскладка и есть, а снапшот его
+   * разносит по читателям.
+   *
+   * Без этого признака клик по панели действий одновременно выбирает инструмент
+   * и применяет его к миру под панелью, и отличить одно намерение от другого
+   * на стороне мира нечем.
+   */
+  overUi = false;
+
   private readonly aim = new AimSourceTracker();
 
   constructor(private readonly display: Display) {
@@ -273,8 +339,14 @@ export class Input {
   }
 
   private onKeyDown = (e: KeyboardEvent): void => {
-    if (GAME_KEYS.has(e.code)) e.preventDefault();
+    // Сочетание с модификатором принадлежит браузеру целиком: `Ctrl`/`Cmd`
+    // с цифрой переключает вкладки, и отбирать это у игрока игра не вправе.
+    // Раз сочетание не подавляется, то и игровым нажатием оно не считается —
+    // иначе `Cmd`+2 меняет инструмент за спиной ушедшего в другую вкладку.
+    const modified = e.ctrlKey || e.metaKey || e.altKey;
+    if (GAME_KEYS.has(e.code) && !modified) e.preventDefault();
     this.hasInteracted = true;
+    if (modified) return;
     if (e.repeat) return; // автоповтор ОС не должен считаться новым нажатием
     // Источник переключается ДО учёта самой клавиши: нажатие пробела означает
     // «копаю с клавиатуры», и заморозить прицел оно должно уже на новом источнике.
@@ -383,9 +455,13 @@ export class Input {
    * только в прицеле. Что именно произойдёт — копание или сбор, — решает режим,
    * а не кнопка: раскладка, в которой копание занимает свою кнопку навсегда,
    * не оставляет места ни сбору, ни тому, что появится после него.
+   *
+   * Курсор над интерфейсом вычитает МЫШИНОЕ применение, но не клавиатурное:
+   * иначе забытая над панелью мышь отбирала бы у клавиатуры основное действие
+   * игры, и полное управление с клавиатуры ломалось бы от того, где лежит мышь.
    */
   get toolHeld(): boolean {
-    return this.mouseLeftHeld || this.isHeld('Space');
+    return (this.mouseLeftHeld && !this.overUi) || this.isHeld('Space');
   }
 
   /**
@@ -397,7 +473,7 @@ export class Input {
    * мигание.
    */
   get toolPressed(): boolean {
-    return this.mouseLeftJustPressed || this.wasPressed('Space');
+    return (this.mouseLeftJustPressed && !this.overUi) || this.wasPressed('Space');
   }
 
   /** Высыпание из инвентаря. Доступно в любом режиме и своим органом управления. */
@@ -405,7 +481,20 @@ export class Input {
     return this.mouseRightHeld || this.isHeld('KeyF');
   }
 
-  /** Сменить режим инструмента. */
+  /**
+   * Слот панели действий, выбранный цифрой в этом шаге, или `null`.
+   *
+   * Прямой выбор — причина существования панели: перебор заставляет попадать
+   * в третий инструмент двумя нажатиями с чтением подписи между ними.
+   */
+  get slotPressed(): number | null {
+    for (let i = 0; i < DIGIT_KEYS.length; i++) {
+      if (this.wasPressed(DIGIT_KEYS[i]!)) return i;
+    }
+    return null;
+  }
+
+  /** Сменить режим инструмента перебором по кругу. */
   get toolModePressed(): boolean {
     return this.wasPressed('KeyR');
   }
@@ -432,12 +521,12 @@ export class Input {
   }
 
   /**
-   * Шаг по списку оверлея вверх и вниз.
+   * Шаг по дереву оверлея вверх и вниз.
    *
    * Те же клавиши направления, что и в мире, — учить вторую раскладку ради
-   * четырёх строк списка незачем, а двусмысленности нет: открытый оверлей
-   * виден. НАЖАТИЕ, а не удержание: список из четырёх строк при удержании
-   * проскакивался бы целиком за один кадр.
+   * четырёх узлов дерева незачем, а двусмысленности нет: открытый оверлей
+   * виден. НАЖАТИЕ, а не удержание: дерево из четырёх узлов при удержании
+   * проскакивалось бы целиком за один кадр.
    */
   get menuUpPressed(): boolean {
     return this.wasPressed('KeyW') || this.wasPressed('ArrowUp');
@@ -445,6 +534,33 @@ export class Input {
 
   get menuDownPressed(): boolean {
     return this.wasPressed('KeyS') || this.wasPressed('ArrowDown');
+  }
+
+  /**
+   * Шаг по дереву влево и вправо. Дерево двумерно, и одной вертикали ему мало:
+   * колонка — это глубина по предпосылкам, и попасть в соседнюю ветку иначе
+   * нечем.
+   */
+  get menuLeftPressed(): boolean {
+    return this.wasPressed('KeyA') || this.wasPressed('ArrowLeft');
+  }
+
+  get menuRightPressed(): boolean {
+    return this.wasPressed('KeyD') || this.wasPressed('ArrowRight');
+  }
+
+  /**
+   * Подтверждение покупки С КЛАВИАТУРЫ. Мыши здесь нет намеренно: нажатие
+   * кнопкой покупает узел ПОД КУРСОРОМ, и общий признак означал бы, что промах
+   * по пустому месту панели тратит счёт на выбранное клавиатурой.
+   */
+  get menuConfirmPressed(): boolean {
+    return this.wasPressed('Space');
+  }
+
+  /** Нажатие левой кнопки в меню: цель ему задаёт курсор, а не выбор. */
+  get pointerPressed(): boolean {
+    return this.mouseLeftJustPressed;
   }
 
   /**

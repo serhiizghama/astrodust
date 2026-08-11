@@ -31,7 +31,7 @@ import {
   actionTarget,
   cursorSide,
   AimSourceTracker,
-  ToolModeState,
+  ActionBarState,
 } from '../src/core';
 import { check, UNLOCKED, luna, FakeInput, asInput } from './harness';
 import { readdirSync, readFileSync } from 'node:fs';
@@ -458,18 +458,16 @@ const { world } = first;
   // Прокладка ленты — тоже только клавиатурой: выбрать режим, выбрать вид,
   // применить несколько раз подряд, снести. Ни одного события мыши.
   {
-    const tool = new ToolModeState();
+    const tool = new ActionBarState();
     // Технология ленты уже открыта: проверяется прокладка с клавиатуры,
     // а не путь, которым лента стала доступна.
     const catalog = new BuildCatalogState(UNLOCKED);
 
-    down('KeyR');
-    if (input.toolModePressed) tool.cycle();
-    up('KeyR');
-    input.endStep();
-    down('KeyR');
-    if (input.toolModePressed) tool.cycle();
-    up('KeyR');
+    // Слот строительства — прямым выбором, за одно нажатие.
+    const digit = down('Digit2');
+    const slot = input.slotPressed;
+    if (slot !== null) tool.select(slot);
+    up('Digit2');
     input.endStep();
 
     let picked = false;
@@ -486,17 +484,13 @@ const { world } = first;
 
     const size = CONVEYOR.size;
     const w = new World(64, 64, first.world.profile);
-    const module = new LandingModule({ x: 0, y: 0, w: 1, h: 1 });
-    module.credits = CONVEYOR.sectionCost * 4;
     const registry = new BuildingRegistry();
     let laid = 0;
     for (let i = 0; i < 3; i++) {
       down('Space');
       if (input.toolPressed && tool.building) {
         const at = 20 + i * size;
-        if (
-          Builder.apply(w, registry, module, catalog.kind, at, 32, at, 32, UNLOCKED) === 'placed'
-        ) {
+        if (Builder.apply(w, registry, catalog.kind, at, 32, at, 32, UNLOCKED) === 'placed') {
           laid++;
         }
       }
@@ -508,8 +502,7 @@ const { world } = first;
     down('Space');
     const removed =
       input.toolPressed &&
-      Builder.apply(w, registry, module, catalog.kind, mid + 1, 33, mid + 1, 33, UNLOCKED) ===
-        'demolished';
+      Builder.apply(w, registry, catalog.kind, mid + 1, 33, mid + 1, 33, UNLOCKED) === 'demolished';
     up('Space');
     input.endStep();
 
@@ -524,6 +517,49 @@ const { world } = first;
         w.get(mid + size, 32) === MAT.CONVEYOR_RIGHT &&
         !input.mouseLeftHeld,
       `вид ${catalog.name}, положено ${laid}, снято ${removed}`,
+    );
+    check('Ввод: цифра слота подавляет переключение вкладки браузером', digit.prevented);
+  }
+
+  // --- Курсор над интерфейсом ---
+  //
+  // Признак нужен ровно затем, чтобы клик по панели не копал дыру под ней,
+  // и ровно НЕ затем, чтобы забытая над панелью мышь отбирала у клавиатуры
+  // основное действие игры.
+  {
+    win.emit('mousedown', { button: 0 });
+    input.overUi = true;
+    const mouseBlocked = !input.toolHeld && !input.toolPressed;
+    down('Space');
+    const keyStillWorks = input.toolHeld && input.toolPressed;
+    up('Space');
+    win.emit('mouseup', { button: 0 });
+    input.endStep();
+
+    win.emit('mousedown', { button: 0 });
+    input.overUi = false;
+    const mousePasses = input.toolHeld && input.toolPressed;
+    win.emit('mouseup', { button: 0 });
+    input.endStep();
+
+    check(
+      'Ввод: над интерфейсом мышиное применение до мира не доходит, а клавиша доходит',
+      mouseBlocked && keyStillWorks && mousePasses,
+      `мышь над панелью ${!mouseBlocked}, клавиша ${keyStillWorks}, мышь над миром ${mousePasses}`,
+    );
+  }
+
+  // Сочетание с модификатором принадлежит браузеру: `Ctrl`+цифра переключает
+  // вкладку, и отбирать это у игрока игра не вправе.
+  {
+    const e = keyEvent('Digit3');
+    win.emit('keydown', Object.assign(e, { ctrlKey: true }));
+    const stolen = input.slotPressed !== null;
+    win.emit('keyup', keyEvent('Digit3'));
+    input.endStep();
+    check(
+      'Ввод: цифра с модификатором остаётся браузеру и слот не выбирает',
+      !e.prevented && !stolen,
     );
   }
 }
@@ -711,7 +747,7 @@ const { world } = first;
     const w = ground(96, 96);
     const p = new Player(40, 94 - PLAYER.hitboxH, research.tuning);
     const zone = { x: 2, y: 2, w: 3, h: 3 };
-    const g = new Game(w, p, new Camera(w.width, w.height), new LandingModule(zone, research));
+    const g = new Game(w, p, new Camera(w.width, w.height), new LandingModule(zone));
     const input = new FakeInput();
     input.right = right;
     for (let i = 0; i < 30; i++) {
@@ -754,7 +790,7 @@ const { world } = first;
     }
     const p = new Player(24, 94 - PLAYER.hitboxH, research.tuning);
     const cam = new Camera(w.width, w.height);
-    const g = new Game(w, p, cam, new LandingModule({ x: 2, y: 2, w: 3, h: 3 }, research));
+    const g = new Game(w, p, cam, new LandingModule({ x: 2, y: 2, w: 3, h: 3 }));
 
     const input = new FakeInput();
     input.right = true;
@@ -788,7 +824,7 @@ const { world } = first;
     for (let y = zone.y + zone.h; y < zone.y + zone.h + 2; y++) {
       for (let x = zone.x - 2; x < zone.x + zone.w + 2; x++) w.set(x, y, MAT.MODULE_HULL);
     }
-    const mod = new LandingModule(zone, research);
+    const mod = new LandingModule(zone);
     const p = new Player(4, 94 - PLAYER.hitboxH, research.tuning);
     const g = new Game(w, p, new Camera(w.width, w.height), mod);
 
@@ -807,7 +843,7 @@ const { world } = first;
   // Машины — тоже после автомата и РАНЬШЕ приёмника.
   {
     const w = ground(96, 96);
-    const mod = new LandingModule({ x: 2, y: 2, w: 4, h: 4 }, research);
+    const mod = new LandingModule({ x: 2, y: 2, w: 4, h: 4 });
     mod.credits = 10_000;
     const p = new Player(4, 94 - PLAYER.hitboxH, research.tuning);
     const g = new Game(w, p, new Camera(w.width, w.height), mod);
@@ -816,7 +852,7 @@ const { world } = first;
     const by = 96 - 2 - SEPARATOR.height;
     const cx = bx + (SEPARATOR_KIND.width >> 1);
     const cy = by + (SEPARATOR_KIND.height >> 1);
-    Builder.apply(w, g.buildings, mod, SEPARATOR_KIND, cx, cy, cx, cy, UNLOCKED);
+    Builder.apply(w, g.buildings, SEPARATOR_KIND, cx, cy, cx, cy, UNLOCKED);
     const machine = g.buildings.all[0] as Separator;
 
     // Пульпа на две ячейки выше приёмной грани: на грань её кладёт автомат.
@@ -834,13 +870,13 @@ const { world } = first;
   // Смена режима действует на ЭТОМ же шаге: переключатель читается до
   // применения инструмента.
   {
-    const tool = new ToolModeState();
+    const tool = new ActionBarState();
     const wasDigging = tool.digging;
     tool.cycle();
     check(
       'Порядок шага: смена режима видна немедленно, а не со следующего шага',
-      wasDigging && !tool.digging && tool.collecting,
-      `был «${wasDigging ? 'копание' : '?'}», стал «${tool.name}»`,
+      wasDigging && !tool.digging && tool.building,
+      `слот ${tool.activeSlot}, копание ${tool.digging}`,
     );
   }
 
@@ -856,7 +892,7 @@ const { world } = first;
       w,
       p,
       new Camera(w.width, w.height),
-      new LandingModule({ x: 2, y: 2, w: 3, h: 3 }, research),
+      new LandingModule({ x: 2, y: 2, w: 3, h: 3 }),
     );
     g.advanceWorld(FIXED_DT, {
       input: NO_INPUT,
@@ -887,7 +923,7 @@ const { world } = first;
       for (let y = 30; y < 40; y++) w.set(x, y, MAT.REGOLITH_LOOSE);
     }
     const p = new Player(10, 94 - PLAYER.hitboxH, research.tuning);
-    const mod = new LandingModule({ x: 2, y: 2, w: 3, h: 3 }, research);
+    const mod = new LandingModule({ x: 2, y: 2, w: 3, h: 3 });
     const g = new Game(w, p, new Camera(w.width, w.height), mod);
     for (let i = 0; i < 240; i++) {
       g.advanceWorld(FIXED_DT, { input: NO_INPUT, faceX: 0, dig });
